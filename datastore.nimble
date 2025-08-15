@@ -12,7 +12,7 @@ requires "nim >= 2.0.14",
          "questionable >= 0.10.15 & < 0.11.0",
          "sqlite3_abi >= 3.47.0.0 & < 4.0.0.0",
          "leveldbstatic >= 0.2.0 & < 0.3.0",
-         "stew >= 0.2.0 & < 0.3.0",
+         "stew >= 0.2.0 & < 0.5.0",
          "unittest2 >= 0.2.3 & < 0.3.0"
 
 task coverage, "generates code coverage report":
