@@ -238,8 +238,8 @@ suite "Key":
       Key.init(":b").?parent.isFailure
       Key.init(":b").?parent.isFailure
 
-      key.parent.tryGet() == Key.init("a:b/c").tryGet()
-      key.parent.?parent.tryGet() == Key.init("a:b").tryGet()
+      !(key.parent) == !Key.init("a:b/c")
+      !(key.parent.?parent) == !Key.init("a:b")
       key.parent.?parent.?parent.isFailure
 
   test "key path":
@@ -247,11 +247,11 @@ suite "Key":
       key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
-      key.path.tryGet() == Key.init("/a:b/c/d").tryGet()
-      key.parent.?path.tryGet() == Key.init("a:b/c").tryGet()
+      !(key.path) == !Key.init("/a:b/c/d")
+      !(key.parent.?path) == !Key.init("a:b/c")
 
-      Key.init("a:b/c:d").?path.tryGet() == Key.init("a:b/c").tryGet()
-      Key.init("a:b/c/d:e").?path.tryGet() == Key.init("a:b/c/d").tryGet()
+      !(Key.init("a:b/c:d").?path) == !Key.init("a:b/c")
+      !(Key.init("a:b/c/d:e").?path) == !Key.init("a:b/c/d")
 
   test "key child":
     let
