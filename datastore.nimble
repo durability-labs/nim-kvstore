@@ -11,7 +11,7 @@ requires "nim >= 2.0.14",
          "chronos >= 4.0.4 & < 5.0.0",
          "questionable >= 0.10.15 & < 0.11.0",
          "sqlite3_abi >= 3.47.0.0 & < 4.0.0.0",
-         "leveldbstatic >= 0.2.0 & < 0.3.0",
+         "https://github.com/durability-labs/nim-leveldbstatic >= 0.2.2",
          "stew >= 0.2.0 & < 0.5.0",
          "unittest2 >= 0.2.3 & < 0.3.0"
 
