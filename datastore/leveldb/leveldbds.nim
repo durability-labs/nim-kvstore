@@ -90,7 +90,6 @@ method query*(
     return failure("LevelDbDatastore.query: query.sort is not SortOrder.Ascending. Unsupported.")
 
   var
-    iter = QueryIter()
     dbIter = self.db.queryIter(
       prefix = getQueryString(query),
       keysOnly = not query.value,
@@ -98,15 +97,13 @@ method query*(
       limit = query.limit
     )
 
-  proc next(): Future[?!QueryResponse] {.async: (raises: [CancelledError]).} =
-    if iter.finished:
+  proc next: Future[?!QueryResponse] {.async: (raises: [CancelledError]).} =
+    if dbIter.finished:
       return failure(newException(QueryEndedError, "Calling next on a finished query!"))
 
     try:
       let (keyStr, valueStr) = dbIter.next()
-
       if dbIter.finished:
-        iter.finished = true
         return success (Key.none, EmptyBytes)
       else:
         let key = Key.init(keyStr).expect("LevelDbDatastore.query (next) Failed to create key.")
@@ -114,13 +111,13 @@ method query*(
     except LevelDbException as e:
       return failure("LevelDbDatastore.query -> next exception: " & $e.msg)
 
-  proc dispose(): Future[?!void] {.async: (raises: [CancelledError]).} =
-    dbIter.dispose()
-    return success()
+  proc finished: bool =
+    dbIter.finished
 
-  iter.next = next
-  iter.dispose = dispose
-  return success iter
+  proc dispose =
+    dbIter.dispose()
+
+  return success QueryIter.new(next, finished, dispose)
 
 method modifyGet*(
   self: LevelDbDatastore,

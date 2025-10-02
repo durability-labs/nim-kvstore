@@ -228,7 +228,6 @@ method query*(
   query: Query): Future[?!QueryIter] {.async: (raises: [CancelledError]).} =
 
   var
-    iter = QueryIter()
     queryStr = if query.value:
         QueryStmtDataIdStr
       else:
@@ -269,8 +268,10 @@ method query*(
     if not (v == SQLITE_OK):
       return failure newException(DatastoreError, $sqlite3_errstr(v))
 
+  var finished = false
+
   proc next(): Future[?!QueryResponse] {.async: (raises: [CancelledError]).} =
-    if iter.finished:
+    if finished:
       return failure(newException(QueryEndedError, "Calling next on a finished query!"))
 
     let
@@ -302,7 +303,7 @@ method query*(
           v = sqlite3_errcode(sqlite3_db_handle(s))
 
         if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
-          iter.finished = true
+          finished = true
           return failure newException(DatastoreError, $sqlite3_errstr(v))
 
       let
@@ -317,20 +318,20 @@ method query*(
 
       return success (key.some, data)
     of SQLITE_DONE:
-      iter.finished = true
+      finished = true
       return success (Key.none, EmptyBytes)
     else:
-      iter.finished = true
+      finished = true
       return failure newException(DatastoreError, $sqlite3_errstr(v))
 
-  iter.dispose = proc(): Future[?!void] {.async: (raises: [CancelledError]).} =
+  proc isFinished(): bool =
+    finished
+
+  proc dispose() =
     discard sqlite3_reset(s)
     discard sqlite3_clear_bindings(s)
-    iter.next = nil
-    return success()
 
-  iter.next = next
-  return success iter
+  return success QueryIter.new(next, isFinished, dispose)
 
 proc new*(
   T: type SQLiteDatastore,

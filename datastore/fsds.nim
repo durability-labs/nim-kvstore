@@ -186,15 +186,11 @@ method query*(
   let
     walker = dirWalker(basePath)
 
-  var
-    iter = QueryIter.new()
-
-  proc next(): Future[?!QueryResponse] {.async: (raises: [CancelledError]).} =
+  proc next: Future[?!QueryResponse] {.async: (raises: [CancelledError]).} =
     let
       path = walker()
 
     if finished(walker):
-      iter.finished = true
       return success (Key.none, EmptyBytes)
 
     var
@@ -220,8 +216,10 @@ method query*(
 
     return success (key.some, data)
 
-  iter.next = next
-  return success iter
+  proc finished(): bool =
+    walker.finished
+
+  return success QueryIter.new(next, finished)
 
 method modifyGet*(
   self: FSDatastore,

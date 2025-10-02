@@ -53,9 +53,9 @@ type
   QueryResponse*[T] = tuple[key: ?Key, value: ?!T]
   GetNext*[T] = proc(): Future[?!QueryResponse[T]] {.async: (raises: [CancelledError]), gcsafe, closure.}
   QueryIter*[T] = ref object
-    finished*: bool
-    next*: GetNext[T]
-    dispose*: IterDispose
+    nextImpl: GetNext[T]
+    finishedImpl: IterFinished
+    disposeImpl: IterDispose
 
 export types, key, IterDispose, Key, Query, SortOrder, QueryEndedError
 
@@ -160,23 +160,29 @@ proc query*[T](self: TypedDatastore, q: Query): Future[?!QueryIter[T]] {.async: 
     let childErr = newException(CatchableError, "Error executing query with key " & $q.key, parentException = error)
     return failure(childErr)
 
-  var iter = QueryIter[T]()
-  iter.dispose = proc (): Future[?!void] {.async: (raises: [CancelledError]).} =
-    await dsIter.dispose()
-
-  if dsIter.finished:
-    iter.finished = true
-    return success(iter)
-
-  proc getNext: Future[?!QueryResponse[T]] {.async: (raises: [CancelledError]).} =
+  proc next: Future[?!QueryResponse[T]] {.async: (raises: [CancelledError]).} =
     without pair =? await dsIter.next(), error:
       return failure(error)
 
-    if dsIter.finished:
-      iter.finished = true
-
     return success((key: pair.key, value: T.decode(pair.data)))
 
-  iter.next = getNext
+  proc isFinished: bool =
+    dsIter.finished
 
-  return success(iter)
+  proc dispose =
+    dsIter.dispose()
+
+  return success QueryIter[T](
+    nextImpl: next,
+    finishedImpl: isFinished,
+    disposeImpl: dispose
+  )
+
+proc next*[T](iter: QueryIter[T]): Future[?!QueryResponse[T]] {.async: (raises: [CancelledError]).} =
+  await iter.nextImpl()
+
+proc finished*[T](iter: QueryIter[T]): bool =
+  iter.finishedImpl()
+
+proc dispose*[T](iter: QueryIter[T]) =
+  iter.disposeImpl()

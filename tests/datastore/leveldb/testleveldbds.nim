@@ -116,8 +116,6 @@ suite "LevelDB Query: keys should disregard trailing wildcards":
       res[2].key.get == key3
       res[2].data == val3
 
-    (await iter.dispose()).tryGet
-
   test "Backwards":
     let
       q = Query.init(Key.init("/a\\*").tryGet)
@@ -136,5 +134,3 @@ suite "LevelDB Query: keys should disregard trailing wildcards":
 
       res[2].key.get == key3
       res[2].data == val3
-
-    (await iter.dispose()).tryGet

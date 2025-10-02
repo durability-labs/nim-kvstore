@@ -42,8 +42,6 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
       res[2].key.get == key3
       res[2].data == val3
 
-    (await iter.dispose()).tryGet
-
   test "Key should query all keys without values":
     let
       q = Query.init(key1, value = false)
@@ -69,8 +67,6 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
       res[2].key.get == key3
       res[2].data.len == 0
 
-    (await iter.dispose()).tryGet
-
   test "Key should not query parent":
     let
       q = Query.init(key2)
@@ -92,8 +88,6 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
 
       res[1].key.get == key3
       res[1].data == val3
-
-    (await iter.dispose()).tryGet
 
   test "Key should all list all keys at the same level":
     let
@@ -126,7 +120,23 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
       res[2].key.get == key3
       res[2].data == val3
 
-    (await iter.dispose()).tryGet
+  test "Query iterator should be disposed when it goes out of scope":
+    when defined(gcOrc) or defined(gcArc):
+      let q = Query.init(key1)
+
+      (await ds.put(key1, val1)).tryGet
+      (await ds.put(key2, val2)).tryGet
+      (await ds.put(key3, val3)).tryGet
+
+      proc openIterator {.async.} =
+        let iter = (await ds.query(q)).tryGet
+        discard await iter.next()
+
+      await openIterator()
+
+      (await ds.close()).tryGet() # crashes if iter not disposed
+    else:
+      skip()
 
   if testLimitsAndOffsets:
     test "Should apply limit":
@@ -150,8 +160,6 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
       check:
         res.len == 10
 
-      (await iter.dispose()).tryGet
-
     test "Should not apply offset":
       let
         key = Key.init("/a").tryGet
@@ -172,8 +180,6 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
 
       check:
         res.len == 10
-
-      (await iter.dispose()).tryGet
 
     test "Should not apply offset and limit":
       let
@@ -204,8 +210,6 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
         check:
           res[i].key.get == key
           res[i].data == val
-
-      (await iter.dispose()).tryGet
 
   if testSortOrder:
     test "Should apply sort order - descending":
@@ -240,5 +244,3 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
         check:
           res[i].key.get == kvs[i].key.get
           res[i].data == kvs[i].data
-
-      (await iter.dispose()).tryGet
