@@ -7,12 +7,10 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
 
-import pkg/datastore/fsds
+import pkg/datastore
 
 import ./dscommontests
-import ./modifycommontests
 import ./querycommontests
-import ./typeddscommontests
 
 suite "Test Basic FSDatastore":
   let
@@ -31,15 +29,14 @@ suite "Test Basic FSDatastore":
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    fsStore = FSDatastore.new(root = basePathAbs, depth = 3).tryGet()
+    fsStore = FSDatastore.new(root = basePathAbs, depth = 16).tryGet()
 
   teardownAll:
+    require((await fsStore.close()).isOk)
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
   basicStoreTests(fsStore, key, bytes, otherBytes)
-  modifyTests(fsStore, key)
-  typedDsTests(fsStore, key)
 
 suite "Test Misc FSDatastore":
   let
@@ -73,9 +70,9 @@ suite "Test Misc FSDatastore":
       key = Key.init("/a/b/c/d").tryGet()
 
     check:
-      (await fs.put(key, bytes)).isErr
+      (await fs.put(RawRecord.init(key, bytes))).isErr
       (await fs.get(key)).isErr
-      (await fs.delete(key)).isErr
+      (await fs.delete(RawRecord.init(key, EmptyBytes))).isErr
       (await fs.has(key)).isErr
 
   test "Test valid key (path) depth":
@@ -83,11 +80,14 @@ suite "Test Misc FSDatastore":
       fs = FSDatastore.new(root = basePathAbs, depth = 3).tryGet()
       key = Key.init("/a/b/c").tryGet()
 
+    require (await fs.put(key, bytes)).isOk
+    let stored = (await fs.get(key)).tryGet()
     check:
-      (await fs.put(key, bytes)).isOk
-      (await fs.get(key)).isOk
-      (await fs.delete(key)).isOk
-      (await fs.has(key)).isOk
+      (await fs.get(key)).tryGet() == stored
+
+    require (await fs.delete(stored)).isOk
+    check:
+      not (await fs.has(key)).tryGet()
 
   test "Test key cannot write outside of root":
     let
@@ -95,9 +95,9 @@ suite "Test Misc FSDatastore":
       key = Key.init("/a/../../c").tryGet()
 
     check:
-      (await fs.put(key, bytes)).isErr
+      (await fs.put(RawRecord.init(key, bytes))).isErr
       (await fs.get(key)).isErr
-      (await fs.delete(key)).isErr
+      (await fs.delete(RawRecord.init(key, EmptyBytes))).isErr
       (await fs.has(key)).isErr
 
   test "Test key cannot convert to invalid path":
@@ -112,9 +112,9 @@ suite "Test Misc FSDatastore":
         key = Key.init("/" & c).tryGet()
 
       check:
-        (await fs.put(key, bytes)).isErr
+        (await fs.put(RawRecord.init(key, bytes))).isErr
         (await fs.get(key)).isErr
-        (await fs.delete(key)).isErr
+        (await fs.delete(RawRecord.init(key, EmptyBytes))).isErr
         (await fs.has(key)).isErr
 
 suite "Test Query":
@@ -146,4 +146,26 @@ suite "Test Query":
     testLimitsAndOffsets = false,
     testSortOrder = false
   )
-  typedDsQueryTests(ds)
+
+  test "Query should exclude siblings outside the namespace":
+    let
+      rootKey = Key.init("/ns").tryGet()
+      leftKey = Key.init(rootKey, Key.init("/left").tryGet()).tryGet()
+      leftChild = Key.init(leftKey, Key.init("/child").tryGet()).tryGet()
+      rightKey = Key.init(rootKey, Key.init("/right").tryGet()).tryGet()
+
+    (await ds.put(RawRecord.init(leftKey, "left".toBytes))).tryGet()
+    (await ds.put(RawRecord.init(leftChild, "left child".toBytes))).tryGet()
+    (await ds.put(RawRecord.init(rightKey, "right".toBytes))).tryGet()
+
+    let iter = (await ds.query(Query.init(leftKey))).tryGet()
+    let res = (await allFinished(toSeq(iter)))
+      .mapIt(it.read.tryGet)
+      .filterIt(it.isSome)
+      .mapIt(it.get)
+
+    check:
+      res.len == 2
+      res.filterIt(it.key == leftKey).len == 1
+      res.filterIt(it.key == leftChild).len == 1
+      res.filterIt(it.key == rightKey).len == 0

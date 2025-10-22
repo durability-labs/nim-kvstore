@@ -1,25 +1,42 @@
 {.push raises: [].}
 
 import std/os
-import std/options
 import std/tables
 import std/strutils
+import std/options
+import std/random
+import std/times
 
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
+import pkg/stew/endians2
 
-import ./defaultimpl
+import ./key
+import ./query
 import ./datastore
+
+const
+  TokenBytes = sizeof(uint64)
+  FileExt* = "dsobj"
+  EmptyBytes* = newSeq[byte](0)
 
 export datastore
 
-type
-  FSDatastore* = ref object of Datastore
-    root*: string
-    ignoreProtected: bool
-    depth: int
-    locks: TableRef[Key, AsyncLock]
+type FSDatastore* = ref object of Datastore
+  root*: string
+  ignoreProtected: bool
+  depth: int
+  locks: TableRef[Key, AsyncLock]
+
+randomize() # TODO: We should probably use a stronger rng here?
+
+proc moveFile(src, dst: string): ?!void {.raises: [].} =
+  try:
+    os.moveFile(src, dst)
+    success()
+  except Exception as exc:
+    failure newBackendError("unable to move '" & src & "' to '" & dst & "': " & exc.msg)
 
 proc validDepth*(self: FSDatastore, key: Key): bool =
   key.len <= self.depth
@@ -35,9 +52,7 @@ proc path*(self: FSDatastore, key: Key): ?!string =
   if not self.validDepth(key):
     return failure "Path has invalid depth!"
 
-  var
-    segments: seq[string]
-
+  var segments: seq[string]
   for ns in key:
     let basename = ns.value.extractFilename
     if basename == "" or not basename.isValidFilename:
@@ -53,45 +68,18 @@ proc path*(self: FSDatastore, key: Key): ?!string =
       # `:` are replaced with `/`
       segments.add(ns.field / ns.value)
 
-  let
-    fullname = (self.root / segments.joinPath())
-      .absolutePath()
-      .catch()
-      .get()
-      .addFileExt(FileExt)
+  let absolute = ?((self.root / segments.joinPath()).absolutePath().catch())
+  let fullname = absolute.addFileExt(FileExt)
 
   if not self.isRootSubdir(fullname):
     return failure "Path is outside of `root` directory!"
 
   return success fullname
 
-method has*(self: FSDatastore, key: Key): Future[?!bool] {.async: (raises: [CancelledError]).} =
-  return self.path(key).?fileExists()
-
-method delete*(self: FSDatastore, key: Key): Future[?!void] {.async: (raises: [CancelledError]).} =
-  without path =? self.path(key), error:
-    return failure error
-
-  if not path.fileExists():
-    return success()
-
-  try:
-    removeFile(path)
-  except OSError as e:
-    return failure e
-
-  return success()
-
-method delete*(self: FSDatastore, keys: seq[Key]): Future[?!void] {.async: (raises: [CancelledError]).} =
-  for key in keys:
-    if err =? (await self.delete(key)).errorOption:
-      return failure err
-
-  return success()
-
-proc readFile*(self: FSDatastore, path: string): ?!seq[byte] =
-  var
-    file: File
+proc readVersioned*(
+    self: FSDatastore, path: string, key: Key, data = true
+): ?!RawRecord =
+  var file: File
 
   defer:
     file.close
@@ -99,79 +87,178 @@ proc readFile*(self: FSDatastore, path: string): ?!seq[byte] =
   if not file.open(path):
     return failure "unable to open file!"
 
+  let size = ?catch (file.getFileSize)
+  if size < TokenBytes:
+    return failure newCorruptionError("File too small for record: " & path)
+
+  var header: array[TokenBytes, byte]
+  if ?catch (file.readBuffer(addr header[0], TokenBytes)) != TokenBytes:
+    return failure "unable to read token header"
+
+  let token = uint64.fromBytesLE(header)
+  let payloadLen = size - TokenBytes
+
+  let value =
+    if data:
+      var value = newSeq[byte](payloadLen)
+      if payloadLen > 0 and ?catch (file.readBytes(value, 0, payloadLen)) != payloadLen:
+        return failure "unable to read payload"
+      value
+    else:
+      EmptyBytes
+
+  return success RawRecord.init(key, value, token)
+
+proc writeVersioned*(
+    self: FSDatastore, path: string, token: uint64, value: seq[byte]
+): ?!void =
+  ?catch(createDir(parentDir(path)))
+
+  let tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
+
+  var file: File
+  defer:
+    file.close()
+    ?catch(removeFile(tmp))
+
+  if not file.open(tmp, fmWrite):
+    return failure newBackendError("unable to open temporary file '" & tmp & "'")
+
+  let header = token.toBytesLE()
+  if ?catch(file.writeBuffer(addr header[0], TokenBytes)) != TokenBytes:
+    return failure newBackendError("Failed writing token")
+
+  if value.len > 0:
+    if ?catch (file.writeBytes(value, 0, value.len)) != value.len:
+      return failure newBackendError("Failed writing data")
+
+  file.flushFile()
+  ?moveFile(tmp, path)
+
+  return success()
+
+method has*(
+    self: FSDatastore, key: Key
+): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  return self.path(key) .? fileExists()
+
+proc acquire*(
+    self: FSDatastore, key: Key
+): Future[AsyncLock] {.async: (raises: [CancelledError]).} =
+  var lock = self.locks.mgetOrPut(key, newAsyncLock())
+  await lock.acquire()
+  lock
+
+proc release*(self: FSDatastore, key: Key, lock: AsyncLock) {.raises: [].} =
+  if lock.locked:
+    try:
+      lock.release()
+    except CatchableError as err:
+      raiseAssert(err.msg) # shouldn't happen
+    finally:
+      if not lock.locked:
+        self.locks.del(key)
+
+template withLock(self: FSDatastore, key: Key, body: untyped) =
+  let lock = await self.acquire(key)
   try:
-    let
-      size = file.getFileSize
+    body
+  finally:
+    self.release(key, lock)
 
-    var
-      bytes = newSeq[byte](size)
-      read = 0
-
-    while read < size:
-      read += file.readBytes(bytes, read, size)
-
-    if read < size:
-      return failure $read & " bytes were read from " & path &
-        " but " & $size & " bytes were expected"
-
-    return success bytes
-
-  except CatchableError as e:
-    return failure e
-
-method get*(self: FSDatastore, key: Key): Future[?!seq[byte]] {.async: (raises: [CancelledError]).} =
-  without path =? self.path(key), error:
-    return failure error
+method get*(
+    self: FSDatastore, key: Key
+): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+  let path = ?self.path(key)
 
   if not path.fileExists():
-    return failure(
-      newException(DatastoreKeyNotFound, "Key doesn't exist"))
+    return failure newException(DatastoreKeyNotFound, "Key doesn't exist")
 
-  return self.readFile(path)
+  return self.readVersioned(path, key)
+
+method get*(
+    self: FSDatastore, keys: seq[Key]
+): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  var records: seq[RawRecord]
+  for key in keys:
+    let path = ?self.path(key)
+
+    if not path.fileExists():
+      continue
+
+    let record = ?self.readVersioned(path, key)
+
+    records.add(record)
+
+  return success records
 
 method put*(
-  self: FSDatastore,
-  key: Key,
-  data: seq[byte]): Future[?!void] {.async: (raises: [CancelledError]).} =
+    self: FSDatastore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  var conflicts: seq[Key]
 
-  without path =? self.path(key), error:
-    return failure error
+  for record in records:
+    let path = ?self.path(record.key)
 
-  try:
-    createDir(parentDir(path))
-    writeFile(path, data)
-  except CatchableError as e:
-    return failure e
+    self.withLock(record.key):
+      var conflict = false
+      if not path.fileExists():
+        if record.token != 0:
+          conflict = true
+        else:
+          ?self.writeVersioned(path, 1'u64, record.val)
+      else:
+        let current = ?self.readVersioned(path, record.key)
 
-  return success()
+        if current.token != record.token:
+          conflict = true
+        else:
+          ?self.writeVersioned(path, current.token + 1, record.val)
 
-method put*(
-  self: FSDatastore,
-  batch: seq[BatchEntry]): Future[?!void] {.async: (raises: [CancelledError]).} =
+      if conflict:
+        conflicts.add(record.key)
 
-  for entry in batch:
-    if err =? (await self.put(entry.key, entry.data)).errorOption:
-      return failure err
+  return success conflicts
 
-  return success()
+method delete*(
+    self: FSDatastore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  var skipped: seq[Key]
 
-proc dirWalker(path: string): (iterator: string {.raises: [Defect], gcsafe.}) =
-  return iterator(): string =
-    try:
-      for p in path.walkDirRec(yieldFilter = {pcFile}, relative = true):
-        yield p
-    except CatchableError as exc:
-      raise newException(Defect, exc.msg)
+  for record in records:
+    let path = ?self.path(record.key)
+
+    self.withLock(record.key):
+      if not path.fileExists():
+        skipped.add(record.key)
+        continue
+
+      let current = ?self.readVersioned(path, record.key)
+
+      if current.token != record.token:
+        skipped.add(record.key)
+        continue
+
+      ?catch(removeFile(path))
+
+  return success skipped
+
+proc dirWalker(path: string): (iterator (): string {.raises: [Defect], gcsafe.}) =
+  return
+    iterator (): string =
+      try:
+        for p in path.walkDirRec(yieldFilter = {pcFile}, relative = true):
+          yield p
+      except CatchableError as exc:
+        raise newException(Defect, exc.msg)
 
 method close*(self: FSDatastore): Future[?!void] {.async: (raises: [CancelledError]).} =
   return success()
 
 method query*(
-  self: FSDatastore,
-  query: Query): Future[?!QueryIter] {.async: (raises: [CancelledError]).} =
-
-  without path =? self.path(query.key), error:
-    return failure error
+    self: FSDatastore, query: Query
+): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
+  let path = ?self.path(query.key)
 
   let basePath =
     # it there is a file in the directory
@@ -183,80 +270,47 @@ method query*(
     else:
       path.changeFileExt("")
 
-  let
-    walker = dirWalker(basePath)
+  let walker = dirWalker(basePath)
+  proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
+    while true:
+      let path = walker()
 
-  proc next: Future[?!QueryResponse] {.async: (raises: [CancelledError]).} =
-    let
-      path = walker()
+      if finished(walker):
+        return success RawRecord.none
 
-    if finished(walker):
-      return success (Key.none, EmptyBytes)
+      var keyPath = basePath
 
-    var
-      keyPath = basePath
+      keyPath.removePrefix(self.root)
+      keyPath = keyPath / path.changeFileExt("")
+      keyPath = keyPath.replace("\\", "/")
 
-    keyPath.removePrefix(self.root)
-    keyPath = keyPath / path.changeFileExt("")
-    keyPath = keyPath.replace("\\", "/")
+      let key = ?Key.init(keyPath)
+      if key != query.key and not query.key.ancestor(key):
+        continue
 
-    let
-      key = Key.init(keyPath).expect("should not fail")
-      data =
-        if query.value:
-          try:
-            self.readFile((basePath / path).absolutePath)
-              .expect("Should read file")
-          except ValueError as err:
-            return failure err
-          except OSError as err:
-            return failure err
-        else:
-          @[]
-
-    return success (key.some, data)
+      return success (
+        ?self.readVersioned(?catch((basePath / path).absolutePath), key, query.value)
+      ).some
 
   proc finished(): bool =
     walker.finished
 
   return success QueryIter.new(next, finished)
 
-method modifyGet*(
-  self: FSDatastore,
-  key: Key,
-  fn: ModifyGet): Future[?!seq[byte]] {.async: (raises: [CancelledError]).} =
-  var lock: AsyncLock
-  try:
-    lock = self.locks.mgetOrPut(key, newAsyncLock())
-    return await defaultModifyGetImpl(self, lock, key, fn)
-  finally:
-    if not lock.locked:
-      self.locks.del(key)
-
-method modify*(
-  self: FSDatastore,
-  key: Key,
-  fn: Modify): Future[?!void] {.async: (raises: [CancelledError]).} =
-  var lock: AsyncLock
-
-  try:
-    lock = self.locks.mgetOrPut(key, newAsyncLock())
-    return await defaultModifyImpl(self, lock, key, fn)
-  finally:
-    if not lock.locked:
-      self.locks.del(key)
-
 proc new*(
-  T: type FSDatastore,
-  root: string,
-  depth = 2,
-  caseSensitive = true,
-  ignoreProtected = false): ?!T =
-
-  let root = ? (
-    block:
-      if root.isAbsolute: root
-      else: getCurrentDir() / root).catch
+    T: type FSDatastore,
+    root: string,
+    depth = 2,
+    caseSensitive = true,
+    ignoreProtected = false,
+): ?!T =
+  let root =
+    ?(
+      block:
+        if root.isAbsolute: root
+        else:
+          getCurrentDir() / root
+    ).catch
 
   if not dirExists(root):
     return failure "directory does not exist: " & root
@@ -265,5 +319,5 @@ proc new*(
     root: root,
     ignoreProtected: ignoreProtected,
     depth: depth,
-    locks: newTable[Key, AsyncLock]()
-    )
+    locks: newTable[Key, AsyncLock](),
+  )
