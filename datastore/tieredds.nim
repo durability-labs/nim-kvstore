@@ -1,14 +1,11 @@
 {.push raises: [].}
 
-import std/sequtils
-
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
 
+import ./key
 import ./datastore
-
-export datastore
 
 type
   TieredDatastore* = ref object of Datastore
@@ -39,112 +36,109 @@ method has*(
 
   return success false
 
-method delete*(
+method get*(
   self: TieredDatastore,
-  key: Key): Future[?!void] {.async: (raises: [CancelledError]).} =
+  key: Key): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
 
-  let
-    pending = await allFinished(self.stores.mapIt(it.delete(key)))
+  for idx, store in self.stores.pairs():
+    let fetched = await store.get(key)
+    if fetched.isOk:
+      let record = fetched.get()
 
-  for fut in pending:
-    ? await fut
+      # Backfill to upper tiers (best effort)
+      if idx > 0:
+        for backIdx in 0 ..< idx:
+          # Use put directly - ignore conflicts during backfill
+          discard await self.stores[backIdx].put(@[record])
 
-  return success()
+      return success record
 
-method delete*(
-  self: TieredDatastore,
-  keys: seq[Key]): Future[?!void] {.async: (raises: [CancelledError]).} =
+    let err = fetched.error
+    if err of DatastoreKeyNotFound:
+      continue
 
-  for key in keys:
-    let
-      pending = await allFinished(self.stores.mapIt(it.delete(key)))
+    return failure err
 
-    for fut in pending:
-      ? await fut
-
-  return success()
+  return failure newException(DatastoreKeyNotFound, "Key doesn't exist")
 
 method get*(
   self: TieredDatastore,
-  key: Key): Future[?!seq[byte]] {.async: (raises: [CancelledError]).} =
+  keys: seq[Key]): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  ## Get multiple records, backfilling to upper tiers as we go
 
-  var
-    bytes: seq[byte]
+  var results: seq[RawRecord]
+  var remaining = keys
+
+  for idx, store in self.stores.pairs():
+    if remaining.len == 0:
+      break
+
+    let fetched = await store.get(remaining)
+    if fetched.isErr:
+      return failure fetched.error
+
+    let records = fetched.get()
+
+    # Backfill to upper tiers if this isn't the first tier (best effort)
+    if idx > 0 and records.len > 0:
+      for backIdx in 0 ..< idx:
+        discard await self.stores[backIdx].put(records)
+
+    results.add(records)
+
+    # Remove found keys from remaining
+    var foundKeys: seq[Key]
+    for record in records:
+      foundKeys.add(record.key)
+
+    var stillRemaining: seq[Key]
+    for key in remaining:
+      if key notin foundKeys:
+        stillRemaining.add(key)
+    remaining = stillRemaining
+
+  return success results
+
+method put*(
+  self: TieredDatastore,
+  records: seq[RawRecord]): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## Put records to all tiers
+  ## Returns keys that were skipped due to conflicts in ANY tier
+
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  var allSkipped: seq[Key]
 
   for store in self.stores:
-    without bytes =? (await store.get(key)):
-      continue
+    let skipped = ? (await store.put(records))
+    # Collect any keys that failed in this tier
+    for key in skipped:
+      if key notin allSkipped:
+        allSkipped.add(key)
 
-    if bytes.len <= 0:
-      continue
+  return success allSkipped
 
-    # put found data into stores logically in front of the current store
-    for s in self.stores:
-      if s == store: break
-      if(
-        let res = (await s.put(key, bytes));
-        res.isErr):
-        return failure res.error
-
-    return success bytes
-
-method put*(
+method delete*(
   self: TieredDatastore,
-  key: Key,
-  data: seq[byte]): Future[?!void] {.async: (raises: [CancelledError]).} =
+  records: seq[RawRecord]): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## Delete records from all tiers
+  ## Returns keys that were skipped due to conflicts in ANY tier
 
-  let
-    pending = await allFinished(self.stores.mapIt(it.put(key, data)))
+  if records.len == 0:
+    return success(newSeq[Key]())
 
-  for fut in pending:
-    ? await fut
+  var allSkipped: seq[Key]
 
+  for store in self.stores:
+    let skipped = ? (await store.delete(records))
+    # Collect any keys that failed in this tier
+    for key in skipped:
+      if key notin allSkipped:
+        allSkipped.add(key)
+
+  return success allSkipped
+
+method close*(
+  self: TieredDatastore): Future[?!void] {.async: (raises: [CancelledError]).} =
   return success()
-
-method put*(
-  self: TieredDatastore,
-  batch: seq[BatchEntry]): Future[?!void] {.async: (raises: [CancelledError]).} =
-
-  for entry in batch:
-    let
-      pending = await allFinished(self.stores.mapIt(it.put(entry.key, entry.data)))
-
-    for fut in pending:
-      ? await fut
-
-  return success()
-
-method modifyGet*(
-  self: TieredDatastore,
-  key: Key,
-  fn: ModifyGet): Future[?!seq[byte]] {.async: (raises: [CancelledError]).} =
-
-  let
-    pending = await allFinished(self.stores.mapIt(it.modifyGet(key, fn)))
-
-  var aux = newSeq[byte]()
-
-  for fut in pending:
-    let res = ? await fut
-    aux.add(res)
-
-  return success(aux)
-
-method modify*(
-  self: TieredDatastore,
-  key: Key,
-  fn: Modify): Future[?!void] {.async: (raises: [CancelledError]).} =
-
-  let
-    pending = await allFinished(self.stores.mapIt(it.modify(key, fn)))
-
-  for fut in pending:
-    ? await fut
-
-  return success()
-
-# method query*(
-#   self: TieredDatastore,
-#   query: ...): Future[?!(?...)] {.async.} =
-#
-#   return success ....some

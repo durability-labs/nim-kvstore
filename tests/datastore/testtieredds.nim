@@ -5,11 +5,11 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
 
+import pkg/datastore/key
 import pkg/datastore/fsds
 import pkg/datastore/sql
 import pkg/datastore/tieredds
 
-import ./modifycommontests
 import ./dscommontests
 import ./typeddscommontests
 
@@ -18,7 +18,7 @@ suite "Test Basic Tired Datastore":
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
     key = Key.init("a:b/c/d:e").get
-    root = "tests" / "test_data"
+    root = "test_data"
     path = currentSourcePath() # get this file's name
     rootAbs = path.parentDir / root
 
@@ -33,16 +33,19 @@ suite "Test Basic Tired Datastore":
     createDir(rootAbs)
 
     ds1 = SQLiteDatastore.new(Memory).tryGet
-    ds2 = FSDatastore.new(rootAbs, depth = 5).tryGet
+    ds2 = FSDatastore.new(rootAbs, depth = 10).tryGet
     tiredDs = TieredDatastore.new(@[ds1, ds2]).tryGet
 
   teardownAll:
+    (await tiredDs.close()).tryGet
+    echo rootAbs
+
     removeDir(rootAbs)
     require(not dirExists(rootAbs))
 
   basicStoreTests(tiredDs, key, bytes, otherBytes)
-  modifyTests(tiredDs, key, dsCount = 2)
-  typedDsTests(tiredDs, key, dsCount = 2)
+  typedDsTests(tiredDs, key)
+  # typedDsQueryTests(tiredDs)
 
 suite "TieredDatastore":
   # assumes tests/test_all is run from project root, e.g. with `nimble test`
@@ -62,7 +65,7 @@ suite "TieredDatastore":
     require(not dirExists(rootAbs))
     createDir(rootAbs)
     ds1 = SQLiteDatastore.new(Memory).get
-    ds2 = FSDatastore.new(rootAbs, depth = 5).get
+    ds2 = FSDatastore.new(rootAbs, depth = 10).get
 
   teardown:
     if not ds1.isNil:
@@ -92,27 +95,26 @@ suite "TieredDatastore":
       TieredDatastore.new(@[ds1, ds2]).tryGet.stores == stores
 
   test "put":
-    let
-      ds = TieredDatastore.new(ds1, ds2).get
-      putRes = await ds.put(key, bytes)
+    let ds = TieredDatastore.new(ds1, ds2).tryGet
+    (await ds.put(RawRecord.init(key, bytes))).tryGet()
 
     check:
-      putRes.isOk
-      (await ds1.get(key)).tryGet == bytes
-      (await ds2.get(key)).tryGet == bytes
+      (await ds1.get(key)).tryGet().val == bytes
+      (await ds2.get(key)).tryGet().val == bytes
 
   test "delete":
     let
       ds = TieredDatastore.new(ds1, ds2).get
 
-    (await ds.put(key, bytes)).tryGet
-    (await ds.delete(key)).tryGet
+    (await ds.put(RawRecord.init(key, bytes))).tryGet()
+    let stored = (await ds.get(key)).tryGet()
+    (await ds.delete(stored)).tryGet()
 
     expect DatastoreKeyNotFound:
-      discard (await ds1.get(key)).tryGet
+      discard (await ds1.get(key)).tryGet()
 
     expect DatastoreKeyNotFound:
-      discard (await ds2.get(key)).tryGet
+      discard (await ds2.get(key)).tryGet()
 
   test "contains":
     let
@@ -122,7 +124,7 @@ suite "TieredDatastore":
       not (await ds1.has(key)).tryGet
       not (await ds2.has(key)).tryGet
 
-    (await ds.put(key, bytes)).tryGet
+    (await ds.put(RawRecord.init(key, bytes))).tryGet()
 
     check:
       (await ds.has(key)).tryGet
@@ -138,12 +140,12 @@ suite "TieredDatastore":
       not (await ds2.has(key)).tryGet
       not (await ds.has(key)).tryGet
 
-    (await ds.put(key, bytes)).tryGet
+    (await ds.put(RawRecord.init(key, bytes))).tryGet()
 
     check:
-      (await ds.get(key)).tryGet == bytes
-      (await ds1.get(key)).tryGet == bytes
-      (await ds2.get(key)).tryGet == bytes
+      (await ds.get(key)).tryGet().val == bytes
+      (await ds1.get(key)).tryGet().val == bytes
+      (await ds2.get(key)).tryGet().val == bytes
 
     (await ds1.close()).tryGet
     ds1 = nil
@@ -153,6 +155,6 @@ suite "TieredDatastore":
 
     check:
       not (await ds1.has(key)).tryGet
-      (await ds2.get(key)).tryGet == bytes
-      (await ds.get(key)).tryGet == bytes
-      (await ds1.get(key)).tryGet == bytes
+      (await ds2.get(key)).tryGet().val == bytes
+      (await ds.get(key)).tryGet().val == bytes
+      (await ds1.get(key)).tryGet().val == bytes
