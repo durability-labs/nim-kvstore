@@ -10,19 +10,22 @@ suite "Datastore (base)":
     key = Key.init("a").get
     ds = Datastore()
 
+  let record = Record.init(key, @[1.byte])
+
   test "put":
-    expect Defect: discard ds.put(key, @[1.byte])
+    expect Defect: (await ds.put(record)).tryGet
 
   test "delete":
-    expect Defect: discard ds.delete(key)
+    expect Defect: discard (await ds.delete(record))
 
   test "contains":
-    expect Defect: discard ds.has(key)
+    expect Defect: discard (await ds.has(key)).tryGet
 
   test "get":
-    expect Defect: discard ds.get(key)
+    expect Defect:
+      var rec: Record[seq[byte]] = (await ds.get[:seq[byte]](key)).tryGet
 
   test "query":
     expect Defect:
-      let iter = (await ds.query(Query.init(key))).tryGet
+      let iter = (await ds.query[:seq[byte]](Query.init(key))).tryGet
       for n in iter: discard

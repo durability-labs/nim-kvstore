@@ -1,18 +1,17 @@
-import std/options
 import std/os
 import std/tables
+import std/sequtils
 
 import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
 
+import pkg/datastore
 import pkg/datastore/mountedds
 import pkg/datastore/sql
 import pkg/datastore/fsds
 
 import ./dscommontests
-import ./modifycommontests
-import ./typeddscommontests
 
 suite "Test Basic Mounted Datastore":
   let
@@ -20,7 +19,7 @@ suite "Test Basic Mounted Datastore":
     path = currentSourcePath() # get this file's name
     rootAbs = path.parentDir / root
 
-    key = Key.init("a:b/c/d:e").get
+    namespaceLeaf = Key.init("segment").tryGet
     sqlKey = Key.init("/root/sql").tryGet
     fsKey = Key.init("/root/fs").tryGet
 
@@ -38,7 +37,7 @@ suite "Test Basic Mounted Datastore":
     createDir(rootAbs)
 
     sql = SQLiteDatastore.new(Memory).tryGet
-    fs = FSDatastore.new(rootAbs, depth = 5).tryGet
+    fs = FSDatastore.new(rootAbs, depth = 10).tryGet
     mountedDs = MountedDatastore.new({
       sqlKey: Datastore(sql),
       fsKey: Datastore(fs)}.toTable)
@@ -49,16 +48,39 @@ suite "Test Basic Mounted Datastore":
     require(not dirExists(rootAbs))
 
   suite "Mounted sql":
-    let namespace = Key.init(sqlKey, key).tryGet
+    let namespace = sqlKey / namespaceLeaf
     basicStoreTests(mountedDs, namespace, bytes, otherBytes)
-    modifyTests(mountedDs, namespace)
-    typedDsTests(mountedDs, namespace)
 
   suite "Mounted fs":
-    let namespace = Key.init(fsKey, key).tryGet
+    let namespace = fsKey / namespaceLeaf
     basicStoreTests(mountedDs, namespace, bytes, otherBytes)
-    modifyTests(mountedDs, namespace)
-    typedDsTests(mountedDs, namespace)
+
+  test "Bulk operations across mounts":
+    let
+      sqlKeyA = (sqlKey / namespaceLeaf / "bulk-sql").tryGet
+      fsKeyB = (fsKey / namespaceLeaf / "bulk-fs").tryGet
+      initial = @[
+        RawRecord.init(sqlKeyA, @[1.byte]),
+        RawRecord.init(fsKeyB, @[2.byte])
+      ]
+
+    # initial insert should succeed for both backends
+    check (await mountedDs.put(initial)).tryGet.len == 0
+
+    let fetched = (await mountedDs.get(@[sqlKeyA, fsKeyB])).tryGet
+    check fetched.len == 2
+
+    let sqlRecord = fetched.filterIt(it.key == sqlKeyA)[0]
+    let fsRecord = fetched.filterIt(it.key == fsKeyB)[0]
+
+    # using an outdated token must register a conflict for the sql record
+    let staleSql = sqlRecord.withToken(sqlRecord.token + 1)
+    let conflicts = (await mountedDs.put(@[staleSql])).tryGet
+    check conflicts.len == 1
+    check conflicts[0] == sqlKeyA
+
+    let skipped = (await mountedDs.delete(@[sqlRecord, fsRecord])).tryGet
+    check skipped.len == 0  # both should be deleted successfully
 
 suite "Test Mounted Datastore":
 
@@ -70,11 +92,10 @@ suite "Test Mounted Datastore":
 
     mounted.mount(key, ds).tryGet
 
-    check: mounted.stores.len == 1
+    check mounted.stores.len == 1
     mounted.stores.withValue(key, store):
-      check:
-        store.key == key
-        store.store == ds
+      check store.key == key
+      check store.store == ds
 
   test "Should find with exact key":
     let
@@ -83,9 +104,8 @@ suite "Test Mounted Datastore":
       mounted = MountedDatastore.new({key: Datastore(ds)}.toTable).tryGet
       store = mounted.findStore(key).tryGet
 
-    check:
-      store.key == key
-      store.store == ds
+    check store.key == key
+    check store.store == ds
 
   test "Should find with child key":
     let
@@ -95,9 +115,8 @@ suite "Test Mounted Datastore":
       mounted = MountedDatastore.new({key: Datastore(ds)}.toTable).tryGet
       store = mounted.findStore(childKey).tryGet
 
-    check:
-      store.key == key
-      store.store == ds
+    check store.key == key
+    check store.store == ds
 
   test "Should error on missing key":
     let
@@ -126,12 +145,11 @@ suite "Test Mounted Datastore":
       store1 = mounted.findStore(nestedKey1).tryGet
       store2 = mounted.findStore(nestedKey2).tryGet
 
-    check:
-      store1.key == key1
-      store1.store == ds1
+    check store1.key == key1
+    check store1.store == ds1
 
-      store2.key == key2
-      store2.store == ds2
+    check store2.key == key2
+    check store2.store == ds2
 
   test "Should find with field:value key":
     let
@@ -142,9 +160,7 @@ suite "Test Mounted Datastore":
       mounted = MountedDatastore.new({key: Datastore(ds)}.toTable).tryGet
 
     for k in @[findKey1, findKey2]:
-      let
-        store = mounted.findStore(k).tryGet
+      let store = mounted.findStore(k).tryGet
 
-      check:
-        store.key == key
-        store.store == ds
+      check store.key == key
+      check store.store == ds
