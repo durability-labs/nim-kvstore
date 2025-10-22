@@ -125,9 +125,6 @@ method put*(
     var record = record
     var changed = false
 
-    if record.token == 0:
-      record.token += 1'u64 # treat token 0 as no token for inserts
-
     proc onRow(s: RawStmtPtr) =
       changed = true
 
