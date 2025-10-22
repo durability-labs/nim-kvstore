@@ -142,6 +142,20 @@ proc disposeIfUnreleased*[T](x: var AutoDisposed[T]) =
   mixin dispose
   if x.val != nil: dispose(x.release)
 
+proc prepare*[Params, Res](
+  T: type SQLiteStmt[Params, Res],
+  env: SQLite,
+  stmt: string,
+  prepFlags: cuint = 0): ?!T =
+
+  var
+    s: RawStmtPtr
+
+  checkErr sqlite3_prepare_v3(
+    env, stmt.cstring, stmt.len.cint, prepFlags, addr s, nil)
+
+  success T(s)
+
 proc exec*[P](s: SQLiteStmt[P, void], params: P = ()): ?!void =
 
   let
@@ -208,19 +222,14 @@ template open*(
 
   checkErr sqlite3_open_v2(dbPath.cstring, addr env, flags.cint, nil)
 
-proc prepare*[Params, Res](
-  T: type SQLiteStmt[Params, Res],
-  env: SQLite,
-  stmt: string,
-  prepFlags: cuint = 0): ?!T =
+proc exec*(env: SQLite, q: string): ?!void =
+  var s = ? NoParamsStmt.prepare(env, q)
 
-  var
-    s: RawStmtPtr
+  ? s.exec()
+  # NB: dispose of the prepared query statement and free associated memory
+  s.dispose
 
-  checkErr sqlite3_prepare_v3(
-    env, stmt.cstring, stmt.len.cint, prepFlags, addr s, nil)
-
-  success T(s)
+  success()
 
 proc query*[P](
   s: SQLiteStmt[P, void],
@@ -266,4 +275,3 @@ proc query*(
   # NB: dispose of the prepared query statement and free associated memory
   s.dispose
   return res
-

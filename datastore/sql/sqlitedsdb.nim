@@ -2,6 +2,8 @@
 
 import std/os
 import std/strformat
+import std/strutils
+import std/sequtils
 
 import pkg/questionable
 import pkg/questionable/results
@@ -18,14 +20,10 @@ type
   # queries but it fits with the rest of the SQLite wrapper adapted from
   # status-im/nwaku, at least in its current form in ./sqlite
   ContainsStmt* = SQLiteStmt[(string), void]
-  DeleteStmt* = SQLiteStmt[(string), void]
-  GetStmt* = SQLiteStmt[(string), void]
-  PutStmt* = SQLiteStmt[(string, seq[byte], int64, int64), void]
   QueryStmt* = SQLiteStmt[(string), void]
-  GetVersionedStmt* = SQLiteStmt[(string), void]
-  InsertVersionedStmt* = SQLiteStmt[(string, seq[byte], int64, int64), void]
-  UpdateVersionedStmt* = SQLiteStmt[(seq[byte], int64, int64, string, int64), void]
-  DeleteVersionedStmt* = SQLiteStmt[(string, int64), void]
+  GetSingleStmt* = SQLiteStmt[(string), void]
+  UpsertStmt* = SQLiteStmt[(string, seq[byte], int64, int64), void]
+  DeleteStmt* = SQLiteStmt[(string, int64), void]
   GetChangesStmt* = NoParamsStmt
   BeginStmt* = NoParamsStmt
   EndStmt* = NoParamsStmt
@@ -34,16 +32,11 @@ type
   SQLiteDsDb* = object
     readOnly*: bool
     dbPath*: string
-    containsStmt*: ContainsStmt
-    deleteStmt*: DeleteStmt
     env*: SQLite
-    getDataCol*: BoundDataCol
-    getStmt*: GetStmt
-    putStmt*: PutStmt
-    getVersionedStmt*: GetVersionedStmt
-    updateVersionedStmt*: UpdateVersionedStmt
-    insertVersionedStmt*: InsertVersionedStmt
-    deleteVersionedStmt*: DeleteVersionedStmt
+    containsStmt*: ContainsStmt
+    getSingleStmt*: GetSingleStmt
+    upsertStmt*: UpsertStmt
+    deleteStmt*: DeleteStmt
     getChangesStmt*: GetChangesStmt
     beginStmt*: BeginStmt
     endStmt*: EndStmt
@@ -69,53 +62,32 @@ const
   # EXISTS returns a boolean value represented by an integer:
   # https://sqlite.org/datatype3.html#boolean_datatype
   # https://sqlite.org/lang_expr.html#the_exists_operator
-  ContainsStmtStr* = """
+  ContainsStmtStr* = fmt"""
     SELECT EXISTS(
-      SELECT 1 FROM """ & TableName & """
-      WHERE """ & IdColName & """ = ?
+      SELECT 1 FROM {TableName}
+      WHERE {IdColName} = ?
     )
   """
 
   ContainsStmtExistsCol* = 0
 
-  CreateStmtStr* = """
-    CREATE TABLE IF NOT EXISTS """ & TableName & """ (
-      """ & IdColName & """ """ & IdColType & """ NOT NULL PRIMARY KEY,
-      """ & DataColName & """ """ & DataColType & """,
-      """ & VersionColName & """ """ & VersionColType & """ NOT NULL,
-      """ & TimestampColName & """ """ & TimestampColType & """ NOT NULL
+  CreateStmtStr* = fmt"""
+    CREATE TABLE IF NOT EXISTS {TableName} (
+      {IdColName} {IdColType} NOT NULL PRIMARY KEY,
+      {DataColName} {DataColType},
+      {VersionColName} {VersionColType} NOT NULL,
+      {TimestampColName} {TimestampColType} NOT NULL
     ) WITHOUT ROWID;
   """
 
-  DeleteStmtStr* = """
-    DELETE FROM """ & TableName & """
-    WHERE """ & IdColName & """ = ?
+  QueryStmtIdStr* = fmt"""
+    SELECT {IdColName} FROM {TableName}
+        WHERE {IdColName} GLOB ?
   """
 
-  GetStmtStr* = """
-    SELECT """ & DataColName & """ FROM """ & TableName & """
-    WHERE """ & IdColName & """ = ?
-  """
-
-  GetStmtDataCol* = 0
-
-  PutStmtStr* = """
-    REPLACE INTO """ & TableName & """ (
-      """ & IdColName & """,
-      """ & DataColName & """,
-      """ & VersionColName & """,
-      """ & TimestampColName & """
-    ) VALUES (?, ?, ?, ?)
-  """
-
-  QueryStmtIdStr* = """
-    SELECT """ & IdColName & """ FROM """ & TableName &
-        """ WHERE """ & IdColName & """ GLOB ?
-  """
-
-  QueryStmtDataIdStr* = """
-    SELECT """ & IdColName & """, """ & DataColName & """ FROM """ & TableName &
-        """ WHERE """ & IdColName & """ GLOB ?
+  QueryStmtDataIdStr* = fmt"""
+    SELECT {IdColName}, {DataColName} FROM {TableName}
+        WHERE {IdColName} GLOB ?
   """
 
   QueryStmtOffset* = """
@@ -126,23 +98,37 @@ const
     LIMIT ?
   """
 
-  QueryStmtOrderAscending* = """
-    ORDER BY """ & IdColName & """ ASC
+  QueryStmtOrderAscending* = fmt"""
+    ORDER BY {IdColName} ASC
   """
 
-  QueryStmtOrderDescending* = """
-    ORDER BY """ & IdColName & """ DESC
+  QueryStmtOrderDescending* = fmt"""
+    ORDER BY {IdColName} DESC
   """
 
-  GetVersionedStmtStr* = fmt"""
+  GetSingleStmtDataCol* = 0
+  GetSingleStmtVersionCol* = 1
+
+  # NOTE: This SELECT is left as an oprimization, it could be done with GetManyStmtStr
+  GetSingleStmtStr* = fmt"""
     SELECT {DataColName}, {VersionColName} FROM {TableName}
     WHERE {IdColName} = ?
   """
 
-  GetVersionedStmtDataCol* = 0
-  GetVersionedStmtVersionCol* = 1
+  GetManyStmtIdCol* = 0
+  GetManyStmtDataCol* = 1
+  GetManyStmtVersionCol* = 2
 
-  InsertVersionedStmtStr* = fmt"""
+  # NOTE: This statment is not prepared, it is contructed dynamicaly
+  GetManyStmtStr* = fmt"""
+    SELECT {IdColName}, {DataColName}, {VersionColName} FROM {TableName}
+    WHERE {IdColName} IN ($1)
+  """
+
+  UpsertStmtDataCol* = 0
+  UpsertStmtVersionCol* = 1
+
+  UpsertStmtStr* = fmt"""
     INSERT INTO {TableName}
     (
       {IdColName},
@@ -151,20 +137,26 @@ const
       {TimestampColName}
     )
     VALUES (?, ?, ?, ?)
-  """
-
-  UpdateVersionedStmtStr* = fmt"""
-    UPDATE {TableName}
+    ON CONFLICT({IdColName}) DO UPDATE
     SET
-      {DataColName} = ?,
-      {VersionColName} = ?,
-      {TimestampColName} = ?
-    WHERE {IdColName} = ? AND {VersionColName} = ?
+      {DataColName} = excluded.{DataColName},
+      {VersionColName} = excluded.{VersionColName} + 1,
+      {TimestampColName} = excluded.{TimestampColName}
+    WHERE
+      {IdColName} = excluded.{IdColName} AND
+      {VersionColName} = excluded.{VersionColName}
+    RETURNING {DataColName}, {VersionColName}
   """
 
-  DeleteVersionedStmtStr* = fmt"""
+  DeleteStmtStr* = fmt"""
     DELETE FROM {TableName}
     WHERE {IdColName} = ? AND {VersionColName} = ?
+    RETURNING 1
+  """
+
+  DeleteManyStmtStr* = fmt"""
+    DELETE FROM {TableName}
+    WHERE ({IdColName}, {VersionColName}) IN ($1)
   """
 
   GetChangesStmtStr* = fmt"""
@@ -185,6 +177,12 @@ const
 
   QueryStmtIdCol* = 0
   QueryStmtDataCol* = 1
+
+template makeGetManyStmStr*(ids: openArray[string]): ?!string =
+  catch (GetManyStmtStr % ids.mapIt( "\"" & it & "\"" ).join(", "))
+
+template makeDeleteManyStmStr*(ids: openArray[(string, uint64)]): ?!string =
+  catch (DeleteManyStmtStr % ids.mapIt( "(\"" & it[0] & "\", " & $it[1] & ")" ).join(", "))
 
 proc checkColMetadata(s: RawStmtPtr, i: int, expectedName: string) =
   let
@@ -278,6 +276,16 @@ proc getDBFilePath*(path: string): ?!string =
   except CatchableError as exc:
     return failure(exc.msg)
 
+proc checkChanges*(self: SQLiteDsDb): ?!int =
+  var changes = 0
+  proc onChanges(s: RawStmtPtr) =
+    changes = changesCol(s, 0)()
+
+  if err =? self.getChangesStmt.query((), onChanges).errorOption:
+    return failure(err)
+
+  return success changes
+
 proc close*(self: var SQLiteDsDb) =
 
   var
@@ -291,9 +299,6 @@ proc close*(self: var SQLiteDsDb) =
   if not RawStmtPtr(self.containsStmt).isNil:
     self.containsStmt.dispose
 
-  if not RawStmtPtr(self.getStmt).isNil:
-    self.getStmt.dispose
-
   if not RawStmtPtr(self.beginStmt).isNil:
     self.beginStmt.dispose
 
@@ -303,29 +308,20 @@ proc close*(self: var SQLiteDsDb) =
   if not RawStmtPtr(self.rollbackStmt).isNil:
     self.rollbackStmt.dispose
 
+  if not RawStmtPtr(self.getSingleStmt).isNil:
+    self.getSingleStmt.dispose
+
+  if not RawStmtPtr(self.upsertStmt).isNil:
+    self.upsertStmt.dispose
+
   if not RawStmtPtr(self.deleteStmt).isNil:
     self.deleteStmt.dispose
-
-  if not RawStmtPtr(self.putStmt).isNil:
-    self.putStmt.dispose
-
-  if not RawStmtPtr(self.getVersionedStmt).isNil:
-    self.getVersionedStmt.dispose
-
-  if not RawStmtPtr(self.updateVersionedStmt).isNil:
-    self.updateVersionedStmt.dispose
-
-  if not RawStmtPtr(self.insertVersionedStmt).isNil:
-    self.insertVersionedStmt.dispose
-
-  if not RawStmtPtr(self.deleteVersionedStmt).isNil:
-    self.deleteVersionedStmt.dispose
 
   if not RawStmtPtr(self.getChangesStmt).isNil:
     self.getChangesStmt.dispose
 
 proc open*(
-  T: type SQLiteDsDb,
+  _: type SQLiteDsDb,
   path = Memory,
   flags = SQLITE_OPEN_READONLY): ?!SQLiteDsDb =
 
@@ -361,13 +357,9 @@ proc open*(
 
   var
     containsStmt: ContainsStmt
+    getSingleStmt: GetSingleStmt
+    upsertStmt: UpsertStmt
     deleteStmt: DeleteStmt
-    getStmt: GetStmt
-    putStmt: PutStmt
-    getVersionedStmt: GetVersionedStmt
-    updateVersionedStmt: UpdateVersionedStmt
-    insertVersionedStmt: InsertVersionedStmt
-    deleteVersionedStmt: DeleteVersionedStmt
     getChangesStmt: GetChangesStmt
     beginStmt: BeginStmt
     endStmt: EndStmt
@@ -376,20 +368,11 @@ proc open*(
   if not readOnly:
     checkExec(env.val, CreateStmtStr)
 
+    upsertStmt = ? UpsertStmt.prepare(
+      env.val, UpsertStmtStr, SQLITE_PREPARE_PERSISTENT)
+
     deleteStmt = ? DeleteStmt.prepare(
       env.val, DeleteStmtStr, SQLITE_PREPARE_PERSISTENT)
-
-    putStmt = ? PutStmt.prepare(
-      env.val, PutStmtStr, SQLITE_PREPARE_PERSISTENT)
-
-    insertVersionedStmt = ? InsertVersionedStmt.prepare(
-      env.val, InsertVersionedStmtStr, SQLITE_PREPARE_PERSISTENT)
-
-    updateVersionedStmt = ? UpdateVersionedStmt.prepare(
-      env.val, UpdateVersionedStmtStr, SQLITE_PREPARE_PERSISTENT)
-
-    deleteVersionedStmt = ? DeleteVersionedStmt.prepare(
-      env.val, DeleteVersionedStmtStr, SQLITE_PREPARE_PERSISTENT)
 
     getChangesStmt = ? GetChangesStmt.prepare(
       env.val, GetChangesStmtStr, SQLITE_PREPARE_PERSISTENT)
@@ -406,32 +389,17 @@ proc open*(
   containsStmt = ? ContainsStmt.prepare(
     env.val, ContainsStmtStr, SQLITE_PREPARE_PERSISTENT)
 
-  getStmt = ? GetStmt.prepare(
-    env.val, GetStmtStr, SQLITE_PREPARE_PERSISTENT)
+  getSingleStmt = ? GetSingleStmt.prepare(
+    env.val, GetSingleStmtStr, SQLITE_PREPARE_PERSISTENT)
 
-  getVersionedStmt = ? GetVersionedStmt.prepare(
-    env.val, GetVersionedStmtStr, SQLITE_PREPARE_PERSISTENT)
-
-  # if a readOnly/existing database does not satisfy the expected schema
-  # `pepare()` will fail and `new` will return an error with message
-  # "SQL logic error"
-
-  let
-    getDataCol = dataCol(RawStmtPtr(getStmt), GetStmtDataCol)
-
-  success T(
+  success SQLiteDsDb(
     readOnly: readOnly,
     dbPath: path,
-    containsStmt: containsStmt,
-    deleteStmt: deleteStmt,
     env: env.release,
-    getStmt: getStmt,
-    getDataCol: getDataCol,
-    putStmt: putStmt,
-    getVersionedStmt: getVersionedStmt,
-    updateVersionedStmt: updateVersionedStmt,
-    insertVersionedStmt: insertVersionedStmt,
-    deleteVersionedStmt: deleteVersionedStmt,
+    containsStmt: containsStmt,
+    getSingleStmt: getSingleStmt,
+    upsertStmt: upsertStmt,
+    deleteStmt: deleteStmt,
     getChangesStmt: getChangesStmt,
     beginStmt: beginStmt,
     endStmt: endStmt,
