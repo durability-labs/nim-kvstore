@@ -14,8 +14,8 @@ type
     key*: Key
     val*: T
 
-  Middleware*[T] = proc(failed: seq[T]): Future[seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
-  ValueProducer*[T] = proc(): Future[T] {.gcsafe, async: (raises: [CancelledError]).}
+  Middleware*[T] = proc(failed: seq[T]): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
+  ValueProducer*[T] = proc(): Future[?!T] {.gcsafe, async: (raises: [CancelledError]).}
 
   RawRecord* = Record[seq[byte]]
   RawMiddleware* = Middleware[RawRecord]
