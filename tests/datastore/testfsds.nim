@@ -2,6 +2,7 @@ import std/options
 import std/sequtils
 import std/os
 from std/algorithm import sort, reversed
+import std/tables
 
 import pkg/asynctest/chronos/unittest2
 import pkg/chronos
@@ -11,7 +12,6 @@ import pkg/datastore
 
 import ./dscommontests
 import ./querycommontests
-import ./typeddscommontests
 
 suite "Test Basic FSDatastore":
   let
