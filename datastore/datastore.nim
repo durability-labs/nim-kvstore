@@ -136,17 +136,17 @@ proc tryPut*(
     records = records
 
   while true:
+    if remaining == 0:
+      return failure newMaxRetriesError("tryPut max retries reached")
+
     let keys = ?(await self.put(records))
     records = records.filterIt(it.key in keys)
     if records.len == 0:
       break
 
-    if remaining == 0:
-      return failure newMaxRetriesError("tryPut max retries reached")
-
     # Prepare next attempt using middleware
     if not middleware.isNil:
-      records = await middleware(records)
+      records = ?(await middleware(records))
 
     if records.len == 0:
       # Middleware gave up or all keys disappeared
@@ -189,17 +189,17 @@ proc tryDelete*(
     records = records
 
   while true:
+    if remaining == 0:
+      return failure newMaxRetriesError("tryDelete max retries reached")
+
     let keys = ?(await self.delete(records))
     records = records.filterIt(it.key in keys)
     if records.len == 0:
       break
 
-    if remaining == 0:
-      return failure newMaxRetriesError("tryDelete max retries reached")
-
     # Prepare next attempt using middleware
     if not middleware.isNil:
-      records = await middleware(records)
+      records = ?(await middleware(records))
 
     if records.len == 0:
       # Middleware gave up or all keys disappeared
@@ -240,7 +240,7 @@ proc getOrPut*(
     return failure(err)
 
   # Key doesn't exist - produce value and try to insert
-  let value = await producer()
+  let value = ?(await producer())
   ?(await self.tryPut(RawRecord.init(key, value), maxRetries))
 
   # Successfully inserted, return the record
