@@ -147,15 +147,15 @@ const
       {VersionColName},
       {TimestampColName}
     )
-    VALUES (?, ?, ?, ?)
+    VALUES (?, ?, ? + 1, ?)
     ON CONFLICT({IdColName}) DO UPDATE
     SET
       {DataColName} = excluded.{DataColName},
-      {VersionColName} = excluded.{VersionColName} + 1,
+      {VersionColName} = excluded.{VersionColName},
       {TimestampColName} = excluded.{TimestampColName}
     WHERE
-      {IdColName} = excluded.{IdColName} AND
-      {VersionColName} = excluded.{VersionColName}
+      {TableName}.{IdColName} = excluded.{IdColName} AND
+      {TableName}.{VersionColName} = excluded.{VersionColName} - 1
     RETURNING {DataColName}, {VersionColName}
   """
 
