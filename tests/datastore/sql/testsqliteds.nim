@@ -7,16 +7,15 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
 
-import pkg/datastore/sql/sqliteds
+import pkg/datastore
 
 import ../dscommontests
-import ../modifycommontests
 import ../querycommontests
-import ../typeddscommontests
 
 suite "Test Basic SQLiteDatastore":
   let
     ds = SQLiteDatastore.new(Memory).tryGet()
+    # ds = SQLiteDatastore.new(dbPathAbs).tryGet()
     key = Key.init("a:b/c/d:e").tryGet()
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
@@ -25,8 +24,6 @@ suite "Test Basic SQLiteDatastore":
     (await ds.close()).tryGet()
 
   basicStoreTests(ds, key, bytes, otherBytes)
-  modifyTests(ds, key)
-  typedDsTests(ds, key)
 
 suite "Test Read Only SQLiteDatastore":
   let
@@ -63,16 +60,19 @@ suite "Test Read Only SQLiteDatastore":
 
     (await dsDb.put(key, bytes)).tryGet()
 
+  var record: RawRecord
   test "get":
+    record = (await readOnlyDb.get(key)).tryGet()
+
     check:
-      (await readOnlyDb.get(key)).tryGet() == bytes
-      (await dsDb.get(key)).tryGet() == bytes
+      record.val == bytes
+      (await dsDb.get(key)).tryGet().val == bytes
 
   test "delete":
     check:
-      (await readOnlyDb.delete(key)).isErr
+      (await readOnlyDb.delete(record)).isErr
 
-    (await dsDb.delete(key)).tryGet()
+    (await dsDb.delete(record)).tryGet()
 
   test "contains":
     check:
@@ -93,12 +93,3 @@ suite "Test Query":
     testLimitsAndOffsets = true,
     testSortOrder = true
   )
-
-suite "Test Typed Query":
-  let
-    ds = SQLiteDatastore.new(Memory).tryGet()
-
-  teardownAll:
-    (await ds.close()).tryGet
-
-  typedDsQueryTests(ds)

@@ -21,82 +21,85 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
     let
       q = Query.init(key1)
 
-    (await ds.put(key1, val1)).tryGet
-    (await ds.put(key2, val2)).tryGet
-    (await ds.put(key3, val3)).tryGet
+    (await ds.put(RawRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawRecord.init(key3, val3))).tryGet()
 
     let
       iter = (await ds.query(q)).tryGet
       res = (await allFinished(toSeq(iter)))
         .mapIt( it.read.tryGet )
-        .filterIt( it.key.isSome )
+        .filterIt( it.isSome )
+        .mapIt( it.get )
 
     check:
       res.len == 3
-      res[0].key.get == key1
-      res[0].data == val1
+      res[0].key == key1
+      res[0].val == val1
 
-      res[1].key.get == key2
-      res[1].data == val2
+      res[1].key == key2
+      res[1].val == val2
 
-      res[2].key.get == key3
-      res[2].data == val3
+      res[2].key == key3
+      res[2].val == val3
 
   test "Key should query all keys without values":
     let
       q = Query.init(key1, value = false)
 
-    (await ds.put(key1, val1)).tryGet
-    (await ds.put(key2, val2)).tryGet
-    (await ds.put(key3, val3)).tryGet
+    (await ds.put(RawRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawRecord.init(key3, val3))).tryGet()
 
     let
       iter = (await ds.query(q)).tryGet
       res = (await allFinished(toSeq(iter)))
         .mapIt( it.read.tryGet )
-        .filterIt( it.key.isSome )
+        .filterIt( it.isSome )
+        .mapIt( it.get )
 
     check:
       res.len == 3
-      res[0].key.get == key1
-      res[0].data.len == 0
+      res[0].key == key1
+      res[0].val.len == 0
 
-      res[1].key.get == key2
-      res[1].data.len == 0
+      res[1].key == key2
+      res[1].val.len == 0
 
-      res[2].key.get == key3
-      res[2].data.len == 0
+      res[2].key == key3
+      res[2].val.len == 0
 
   test "Key should not query parent":
     let
       q = Query.init(key2)
 
-    (await ds.put(key1, val1)).tryGet
-    (await ds.put(key2, val2)).tryGet
-    (await ds.put(key3, val3)).tryGet
+    (await ds.put(RawRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawRecord.init(key3, val3))).tryGet()
 
     let
       iter = (await ds.query(q)).tryGet
       res = (await allFinished(toSeq(iter)))
         .mapIt( it.read.tryGet )
-        .filterIt( it.key.isSome )
+        .filterIt( it.isSome )
+        .mapIt( it.get )
 
     check:
       res.len == 2
-      res[0].key.get == key2
-      res[0].data == val2
+      res[0].key == key2
+      res[0].val == val2
 
-      res[1].key.get == key3
-      res[1].data == val3
+      res[1].key == key3
+      res[1].val == val3
 
   test "Key should all list all keys at the same level":
     let
       queryKey = Key.init("/a").tryGet
       q = Query.init(queryKey)
 
-    (await ds.put(key1, val1)).tryGet
-    (await ds.put(key2, val2)).tryGet
-    (await ds.put(key3, val3)).tryGet
+    (await ds.put(RawRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawRecord.init(key3, val3))).tryGet()
 
     let
       iter = (await ds.query(q)).tryGet
@@ -104,29 +107,30 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
     var
       res = (await allFinished(toSeq(iter)))
         .mapIt( it.read.tryGet )
-        .filterIt( it.key.isSome )
+        .filterIt( it.isSome )
+        .mapIt( it.get )
 
-    res.sort do (a, b: QueryResponse) -> int:
-      cmp(a.key.get.id, b.key.get.id)
+    res.sort do (a, b: RawRecord) -> int:
+      cmp(a.key.id, b.key.id)
 
     check:
       res.len == 3
-      res[0].key.get == key1
-      res[0].data == val1
+      res[0].key == key1
+      res[0].val == val1
 
-      res[1].key.get == key2
-      res[1].data == val2
+      res[1].key == key2
+      res[1].val == val2
 
-      res[2].key.get == key3
-      res[2].data == val3
+      res[2].key == key3
+      res[2].val == val3
 
   test "Query iterator should be disposed when it goes out of scope":
     when defined(gcOrc) or defined(gcArc):
       let q = Query.init(key1)
 
-      (await ds.put(key1, val1)).tryGet
-      (await ds.put(key2, val2)).tryGet
-      (await ds.put(key3, val3)).tryGet
+      (await ds.put(RawRecord.init(key1, val1))).tryGet()
+      (await ds.put(RawRecord.init(key2, val2))).tryGet()
+      (await ds.put(RawRecord.init(key3, val3))).tryGet()
 
       proc openIterator {.async.} =
         let iter = (await ds.query(q)).tryGet
@@ -149,13 +153,14 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
           key = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        (await ds.put(key, val)).tryGet
+        (await ds.put(RawRecord.init(key, val))).tryGet()
 
       let
         iter = (await ds.query(q)).tryGet
         res = (await allFinished(toSeq(iter)))
           .mapIt( it.read.tryGet )
-          .filterIt( it.key.isSome )
+          .filterIt( it.isSome )
+          .mapIt( it.get )
 
       check:
         res.len == 10
@@ -170,13 +175,14 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
           key = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        (await ds.put(key, val)).tryGet
+        (await ds.put(RawRecord.init(key, val))).tryGet()
 
       let
         iter = (await ds.query(q)).tryGet
         res = (await allFinished(toSeq(iter)))
           .mapIt( it.read.tryGet )
-          .filterIt( it.key.isSome )
+          .filterIt( it.isSome )
+          .mapIt( it.get )
 
       check:
         res.len == 10
@@ -191,13 +197,14 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
           key = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        (await ds.put(key, val)).tryGet
+        (await ds.put(RawRecord.init(key, val))).tryGet()
 
       let
         iter = (await ds.query(q)).tryGet
         res = (await allFinished(toSeq(iter)))
           .mapIt( it.read.tryGet )
-          .filterIt( it.key.isSome )
+          .filterIt( it.isSome )
+          .mapIt( it.get )
 
       check:
         res.len == 5
@@ -208,8 +215,8 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
           key = Key.init(key, Key.init("/" & $(i + 95)).tryGet).tryGet
 
         check:
-          res[i].key.get == key
-          res[i].data == val
+          res[i].key == key
+          res[i].val == val
 
   if testSortOrder:
     test "Should apply sort order - descending":
@@ -217,30 +224,31 @@ template queryTests*(ds: Datastore, testLimitsAndOffsets = true, testSortOrder =
         key = Key.init("/a").tryGet
         q = Query.init(key, sort = SortOrder.Descending)
 
-      var kvs: seq[QueryResponse]
+      var kvs: seq[RawRecord]
       for i in 0..<100:
         let
           k = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        kvs.add((k.some, val))
-        (await ds.put(k, val)).tryGet
+        kvs.add(RawRecord.init(k, val))
+        (await ds.put(RawRecord.init(k, val))).tryGet()
 
       # lexicographic sort, as it comes from the backend
-      kvs.sort do (a, b: QueryResponse) -> int:
-        cmp(a.key.get.id, b.key.get.id)
+      kvs.sort do (a, b: RawRecord) -> int:
+        cmp(a.key.id, b.key.id)
 
       kvs = kvs.reversed
       let
         iter = (await ds.query(q)).tryGet
         res = (await allFinished(toSeq(iter)))
           .mapIt( it.read.tryGet )
-          .filterIt( it.key.isSome )
+          .filterIt( it.isSome )
+          .mapIt( it.get )
 
       check:
         res.len == 100
 
       for i, r in res[1..^1]:
         check:
-          res[i].key.get == kvs[i].key.get
-          res[i].data == kvs[i].data
+          res[i].key == kvs[i].key
+          res[i].val == kvs[i].val

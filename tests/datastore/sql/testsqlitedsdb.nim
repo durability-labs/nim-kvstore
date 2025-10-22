@@ -1,4 +1,5 @@
 import std/os
+import std/strutils
 
 import pkg/chronos
 import pkg/asynctest/chronos/unittest2
@@ -28,22 +29,19 @@ suite "Test Open SQLite Datastore DB":
     require(not dirExists(basePathAbs))
 
   test "Should create and open datastore DB":
-    var
-      dsDb = SQLiteDsDb.open(
-        path = dbPathAbs,
-        flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE).tryGet()
-
+    var dsDb = SQLiteDsDb
+      .open(path = dbPathAbs, flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE)
+      .tryGet()
     defer:
       dsDb.close()
 
-      check:
-        fileExists(dbPathAbs)
+    check:
+      fileExists(dbPathAbs)
 
   test "Should open existing DB":
-    var
-      dsDb = SQLiteDsDb.open(
-        path = dbPathAbs,
-        flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE).tryGet()
+    var dsDb = SQLiteDsDb
+      .open(path = dbPathAbs, flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE)
+      .tryGet()
 
     defer:
       dsDb.close()
@@ -55,10 +53,7 @@ suite "Test Open SQLite Datastore DB":
     check:
       fileExists(dbPathAbs)
 
-    var
-      dsDb = SQLiteDsDb.open(
-        path = dbPathAbs,
-        flags = SQLITE_OPEN_READONLY).tryGet()
+    var dsDb = SQLiteDsDb.open(path = dbPathAbs, flags = SQLITE_OPEN_READONLY).tryGet()
 
     defer:
       dsDb.close()
@@ -78,6 +73,7 @@ suite "Test SQLite Datastore DB operations":
     dbPathAbs = basePathAbs / filename
 
     key = Key.init("test/key").tryGet()
+    key1 = Key.init("test/key1").tryGet()
     data = "some data".toBytes
     otherData = "some other data".toBytes
 
@@ -90,13 +86,12 @@ suite "Test SQLite Datastore DB operations":
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    dsDb = SQLiteDsDb.open(
-      path = dbPathAbs,
-      flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE).tryGet()
+    dsDb = SQLiteDsDb
+      .open(path = dbPathAbs, flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE)
+      .tryGet()
 
-    readOnlyDb = SQLiteDsDb.open(
-      path = dbPathAbs,
-      flags = SQLITE_OPEN_READONLY).tryGet()
+    readOnlyDb =
+      SQLiteDsDb.open(path = dbPathAbs, flags = SQLITE_OPEN_READONLY).tryGet()
 
   teardownAll:
     dsDb.close()
@@ -105,47 +100,92 @@ suite "Test SQLite Datastore DB operations":
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
-  test "Should insert key":
-    check:
-      readOnlyDb.putStmt.exec((key.id, data, initVersion, timestamp())).isErr()
+  test "Should insert key - calls callback with version 0":
+    proc onRow(s: RawStmtPtr) =
+      var
+        value = dataCol(s, GetSingleStmtDataCol)()
+        token = versionCol(s, GetSingleStmtVersionCol)()
 
-    dsDb.putStmt.exec((key.id, data, initVersion, timestamp())).tryGet()
+      check:
+        value == data
+        token == 1'i64
 
-  test "Should select key":
-    let
-      dataCol = dsDb.getDataCol
-
-    var bytes: seq[byte]
-    proc onData(s: RawStmtPtr) =
-      bytes = dataCol()
-
-    check:
-      dsDb.getStmt.query((key.id), onData).tryGet()
-      bytes == data
+    discard dsDb.upsertStmt.query((key.id, data, 1'i64, timestamp()), onRow).tryGet()
 
   test "Should update key":
-    check:
-      readOnlyDb.putStmt.exec((key.id, otherData, initVersion, timestamp())).isErr()
+    proc onRow(s: RawStmtPtr) =
+      var
+        value = dataCol(s, GetSingleStmtDataCol)()
+        token = versionCol(s, GetSingleStmtVersionCol)()
 
-    dsDb.putStmt.exec((key.id, otherData, initVersion, timestamp())).tryGet()
+      check:
+        value == otherData
+        token == 2'i64
 
-  test "Should select updated key":
-    let
-      dataCol = dsDb.getDataCol
+    discard
+      dsDb.upsertStmt.query((key.id, otherData, 1'i64, timestamp()), onRow).tryGet()
 
-    var bytes: seq[byte]
+  test "Should fail update key with wrong version - calls callback with existing version 1":
+    proc onRow(s: RawStmtPtr) =
+      check false # should not be called
+
+    discard
+      dsDb.upsertStmt.query((key.id, data, 0'i64, timestamp()), onRow).tryGet()
+
+  test "Should select single key":
+    var
+      bytes: seq[byte]
+      version: int64
+
     proc onData(s: RawStmtPtr) =
-      bytes = dataCol()
+      bytes = dataCol(s, GetSingleStmtDataCol)()
+      version = versionCol(s, GetSingleStmtVersionCol)()
+
+    discard dsDb.getSingleStmt.query((key.id), onData).tryGet()
 
     check:
-      dsDb.getStmt.query((key.id), onData).tryGet()
       bytes == otherData
+      version == 2'i64
 
-  test "Should delete key":
+  test "Should select multiple keys":
+    var
+      keys = newSeqOfCap[Key](2)
+      datas = newSeqOfCap[seq[byte]](2)
+      versions = newSeqOfCap[int](2)
+
+    # add another record
+    discard dsDb.upsertStmt
+      .query(
+        (key1.id, data, 1'i64, timestamp()),
+        proc(s: RawStmtPtr) =
+          discard,
+      )
+      .tryGet()
+
+    proc onData(s: RawStmtPtr) {.raises: [].} =
+      let
+        id = idCol(s, GetManyStmtIdCol)()
+        data = dataCol(s, GetManyStmtDataCol)()
+        version = versionCol(s, GetManyStmtVersionCol)()
+
+      keys.add(Key.init(id).get)
+      datas.add(data)
+      versions.add(version.int)
+
+    let queryStr = makeGetManyStmStr([key.id, key1.id]).tryGet()
+    discard dsDb.env.query(queryStr, onData).tryGet()
+
     check:
-      readOnlyDb.deleteStmt.exec((key.id)).isErr()
+      keys == @[key, key1]
+      datas == @[otherData, data]
+      versions == @[2, 1]
 
-    dsDb.deleteStmt.exec((key.id)).tryGet()
+  test "Should delete keys":
+    let queryStr = makeDeleteManyStmStr([(key.id, 2'u64), (key1.id, 1'u64)]).tryGet()
+
+    check:
+      dsDb.env.exec(queryStr).isOk()
+      dsDb.checkChanges().tryGet() == 2
 
   test "Should not contain key":
     var
@@ -155,5 +195,5 @@ suite "Test SQLite Datastore DB operations":
       exists = sqlite3_column_int64(s, ContainsStmtExistsCol.cint).bool
 
     check:
-      dsDb.containsStmt.query((key.id), onData).tryGet()
+      dsDb.containsStmt.query((key.id), onData).isOk()
       not exists

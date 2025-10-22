@@ -1,237 +1,194 @@
 {.push raises: [].}
 
 import std/times
+import std/sequtils
 import std/options
+import std/sets
 
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
 import pkg/sqlite3_abi
 
+import ../key
+import ../query
 import ../datastore
 import ./sqlitedsdb
 import ./sqliteutils
 
-export datastore, sqlitedsdb
+export sqlitedsdb
 
-type
-  SQLiteDatastore* = ref object of Datastore
-    readOnly: bool
-    db: SQLiteDsDb
+type SQLiteDatastore* = ref object of Datastore
+  readOnly: bool
+  db: SQLiteDsDb
 
 proc path*(self: SQLiteDatastore): string =
   self.db.dbPath
 
-proc `readOnly=`*(self: SQLiteDatastore): bool
-  {.error: "readOnly should not be assigned".}
+proc `readOnly=`*(
+  self: SQLiteDatastore
+): bool {.error: "readOnly should not be assigned".}
 
 proc timestamp*(t = epochTime()): int64 =
   (t * 1_000_000).int64
 
-const initVersion* = 0.int64
-
 type RollbackError* = object of CatchableError
 
 proc newRollbackError(rbErr: ref CatchableError, opErrMsg: string): ref RollbackError =
-  let
-    msg = "Rollback initiated because of: " & opErrMsg & ". Rollback failed because of: " & rbErr.msg
-  return newException(RollbackError, msg, parentException = rbErr)
+  let msg =
+    "Rollback initiated because of: " & opErrMsg & ". Rollback failed because of: " &
+    rbErr.msg
+  newException(RollbackError, msg, parentException = rbErr)
 
-proc newRollbackError(rbErr: ref CatchableError, opErr: ref CatchableError): ref RollbackError =
-  return newRollbackError(rbErr, opErr)
+proc newRollbackError(
+    rbErr: ref CatchableError, opErr: ref CatchableError
+): ref RollbackError =
+  newRollbackError(rbErr, opErr.msg)
 
-method modifyGet*(self: SQLiteDatastore, key: Key, fn: ModifyGet): Future[?!seq[byte]] {.async: (raises: [CancelledError]).} =
-  var
-    retriesLeft = 100 # allows reasonable concurrency, avoids infinite loop
-    aux: seq[byte]
+proc ensureWritable(self: SQLiteDatastore): ?!void =
+  if self.readOnly:
+    return failure(newBackendError("SQLite datastore opened read-only"))
+  success()
 
-  while retriesLeft > 0:
-    var
-      currentData: seq[byte]
-      currentVersion: int64
+proc boundedToken(token: uint64): ?!int64 =
+  if token > uint64(high(int64)):
+    return failure(newCorruptionError("SQLite token overflow"))
+  success token.int64
 
-    proc onData(s: RawStmtPtr) =
-      currentData = dataCol(s, GetVersionedStmtDataCol)()
-      currentVersion = versionCol(s, GetVersionedStmtVersionCol)()
-
-    if err =? self.db.getVersionedStmt.query((key.id), onData).errorOption:
-      return failure(err)
-
-    let maybeCurrentData = if currentData.len > 0: some(currentData) else: seq[byte].none
-    var maybeNewData: ?seq[byte]
-
-    try:
-      (maybeNewData, aux) = await fn(maybeCurrentData)
-    except CancelledError as err:
-      raise err
-    except CatchableError as err:
-      return failure(err)
-
-    if maybeCurrentData == maybeNewData:
-      # no need to change currently stored value
-      break
-
-    if err =? self.db.beginStmt.exec().errorOption:
-      return failure(err)
-    if currentData =? maybeCurrentData and newData =? maybeNewData:
-      let updateParams = (
-        newData,
-        currentVersion + 1,
-        timestamp(),
-        key.id,
-        currentVersion
-      )
-      if err =? (self.db.updateVersionedStmt.exec(updateParams)).errorOption:
-        if rbErr =? self.db.rollbackStmt.exec().errorOption:
-          return failure(newRollbackError(rbErr, err))
-        return failure(err)
-    elif currentData =? maybeCurrentData:
-      let deleteParams = (
-        key.id,
-        currentVersion
-      )
-      if err =? (self.db.deleteVersionedStmt.exec(deleteParams)).errorOption:
-        if rbErr =? self.db.rollbackStmt.exec().errorOption:
-          return failure(newRollbackError(rbErr, err))
-        return failure(err)
-    elif newData =? maybeNewData:
-      let insertParams = (
-        key.id,
-        newData,
-        initVersion,
-        timestamp()
-      )
-      if err =? (self.db.insertVersionedStmt.exec(insertParams)).errorOption:
-        if rbErr =? self.db.rollbackStmt.exec().errorOption:
-          return failure(newRollbackError(rbErr, err))
-        return failure(err)
-
-    var changes = 0.int64
-    proc onChangesResult(s: RawStmtPtr) =
-      changes = changesCol(s, 0)()
-
-    if err =? self.db.getChangesStmt.query((), onChangesResult).errorOption:
-      if rbErr =? self.db.rollbackStmt.exec().errorOption:
-        return failure(newRollbackError(rbErr, err))
-      return failure(err)
-
-    if changes == 1:
-      if err =? self.db.endStmt.exec().errorOption:
-        if rbErr =? self.db.rollbackStmt.exec().errorOption:
-          return failure(newRollbackError(rbErr, err))
-        return failure(err)
-      break
-    elif changes == 0:
-      if rbErr =? self.db.rollbackStmt.exec().errorOption:
-        return failure(newRollbackError(rbErr, "Unable to retry after race condition was detected"))
-      retriesLeft.dec
-    else:
-      let msg = "Unexpected number of changes, expected either 0 or 1, was " & $changes
-      if rbErr =? self.db.rollbackStmt.exec().errorOption:
-        return failure(newRollbackError(rbErr, msg))
-      return failure(msg)
-
-  if retriesLeft == 0:
-    return failure("Retry limit exceeded")
-
-  return success(aux)
-
-
-method modify*(self: SQLiteDatastore, key: Key, fn: Modify): Future[?!void] {.async: (raises: [CancelledError]).} =
-  proc wrappedFn(maybeValue: ?seq[byte]): Future[(?seq[byte], seq[byte])] {.async.} =
-    let res = await fn(maybeValue)
-    let ignoredAux = newSeq[byte]()
-    return (res, ignoredAux)
-
-  if err =? (await self.modifyGet(key, wrappedFn)).errorOption:
-    return failure(err)
-  else:
-    return success()
-
-method has*(self: SQLiteDatastore, key: Key): Future[?!bool] {.async: (raises: [CancelledError]).} =
-  var
-    exists = false
-
-  proc onData(s: RawStmtPtr) =
+method has*(
+    self: SQLiteDatastore, key: Key
+): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  var exists = false
+  proc onRow(s: RawStmtPtr) =
     exists = sqlite3_column_int64(s, ContainsStmtExistsCol.cint).bool
 
-  if err =? self.db.containsStmt.query((key.id), onData).errorOption:
-    return failure err
+  if err =? self.db.containsStmt.query((key.id), onRow).errorOption:
+    return failure(err)
 
   return success exists
 
-method delete*(self: SQLiteDatastore, key: Key): Future[?!void] {.async: (raises: [CancelledError]).} =
-  return self.db.deleteStmt.exec((key.id))
+method get*(
+    self: SQLiteDatastore, key: Key
+): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+  var
+    rowFound = false
+    value: seq[byte]
+    token = 0'i64
 
-method delete*(self: SQLiteDatastore, keys: seq[Key]): Future[?!void] {.async: (raises: [CancelledError]).} =
-  if err =? self.db.beginStmt.exec().errorOption:
+  proc onRow(s: RawStmtPtr) =
+    rowFound = true
+    value = dataCol(s, GetSingleStmtDataCol)()
+    token = versionCol(s, GetSingleStmtVersionCol)()
+
+  if err =? self.db.getSingleStmt.query((key.id), onRow).errorOption:
     return failure(err)
 
-  for key in keys:
-    if err =? self.db.deleteStmt.exec((key.id)).errorOption:
-      if rbErr =? self.db.rollbackStmt.exec().errorOption:
-        return failure(newRollbackError(rbErr, err))
+  if not rowFound:
+    return failure(newException(DatastoreKeyNotFound, "Key doesn't exist"))
 
-      return failure err.msg
+  if token < 0:
+    return failure(newCorruptionError("Negative token stored for " & $key))
 
-  if err =? self.db.endStmt.exec().errorOption:
-    return failure err.msg
+  return success RawRecord.init(key, value, token.uint64)
 
-  return success()
+method get*(
+    self: SQLiteDatastore, keys: seq[Key]
+): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  var records: seq[RawRecord]
 
-method get*(self: SQLiteDatastore, key: Key): Future[?!seq[byte]] {.async: (raises: [CancelledError]).} =
-  # see comment in ./filesystem_datastore re: finer control of memory
-  # allocation in `method get`, could apply here as well if bytes were read
-  # incrementally with `sqlite3_blob_read`
+  proc onRow(s: RawStmtPtr) =
+    let
+      key = idCol(s, GetManyStmtIdCol)()
+      value = dataCol(s, GetManyStmtDataCol)()
+      token = versionCol(s, GetManyStmtVersionCol)()
+
+    records.add(RawRecord.init(?Key.init(key), value, token.uint64))
+
+  let queryStr = ?makeGetManyStmStr(keys.mapIt(it.id))
+  if err =? self.db.env.query(queryStr, onRow).errorOption:
+    return failure err
+
+  return success records
+
+method put*(
+    self: SQLiteDatastore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  if err =? self.ensureWritable().errorOption:
+    return failure(err)
 
   var
-    bytes: seq[byte]
+    skipped: seq[Key]
+    stamp = timestamp()
 
-  proc onData(s: RawStmtPtr) =
-    bytes = self.db.getDataCol()
+  ?self.db.beginStmt.exec() # begin transaction
+  for record in records:
+    var record = record
+    var changed = false
 
-  if err =? self.db.getStmt.query((key.id), onData).errorOption:
-    return failure(err)
+    if record.token == 0:
+      record.token += 1'u64 # treat token 0 as no token for inserts
 
-  if bytes.len <= 0:
-    return failure(
-      newException(DatastoreKeyNotFound, "Key doesn't exist"))
+    proc onRow(s: RawStmtPtr) =
+      changed = true
 
-  return success bytes
+    if err =?
+        self.db.upsertStmt.query(
+          (record.key.id, record.val, (?boundedToken(record.token)), stamp), onRow
+        ).errorOption:
+      ?self.db.rollbackStmt.exec() # revert transaction
+      return failure(err)
 
-method put*(self: SQLiteDatastore, key: Key, data: seq[byte]): Future[?!void] {.async: (raises: [CancelledError]).} =
-  return self.db.putStmt.exec((key.id, data, initVersion, timestamp()))
+    if not changed:
+      skipped.add(record.key)
 
-method put*(self: SQLiteDatastore, batch: seq[BatchEntry]): Future[?!void] {.async: (raises: [CancelledError]).} =
-  if err =? self.db.beginStmt.exec().errorOption:
+  ?self.db.endStmt.exec() # commit transaction
+
+  return success skipped
+
+method delete*(
+    self: SQLiteDatastore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ?self.ensureWritable()
+
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  var deletedIds = initHashSet[string]()
+
+  # Build dynamic DELETE statement with all (id, version) pairs and RETURNING
+  let queryStr = ?makeDeleteManyStmStr(records.mapIt((it.key.id, it.token)))
+  let queryWithReturning = queryStr & " RETURNING " & IdColName
+
+  ?self.db.beginStmt.exec()
+
+  # Execute delete and track what was actually deleted via RETURNING
+  proc onRow(s: RawStmtPtr) =
+    deletedIds.incl($sqlite3_column_text_not_null(s, 0.cint))
+
+  if err =? self.db.env.query(queryWithReturning, onRow).errorOption:
+    ?self.db.rollbackStmt.exec()
     return failure err
 
-  for entry in batch:
-    if err =? self.db.putStmt.exec((entry.key.id, entry.data, initVersion, timestamp())).errorOption:
-      if rbErr =? self.db.rollbackStmt.exec().errorOption:
-        return failure(newRollbackError(rbErr, err))
+  ?self.db.endStmt.exec()
 
-      return failure err
+  # Find skipped keys (those not in deletedIds)
+  var skipped: seq[Key]
+  for record in records:
+    if record.key.id notin deletedIds:
+      skipped.add(record.key)
 
-  if err =? self.db.endStmt.exec().errorOption:
-    return failure err
+  return success skipped
 
-  return success()
-
-method close*(self: SQLiteDatastore): Future[?!void] {.async: (raises: [CancelledError]).} =
+method close*(
+    self: SQLiteDatastore
+): Future[?!void] {.async: (raises: [CancelledError]).} =
   self.db.close()
-
   return success()
 
 method query*(
-  self: SQLiteDatastore,
-  query: Query): Future[?!QueryIter] {.async: (raises: [CancelledError]).} =
-
-  var
-    queryStr = if query.value:
-        QueryStmtDataIdStr
-      else:
-        QueryStmtIdStr
+    self: SQLiteDatastore, query: Query
+): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
+  var queryStr = if query.value: QueryStmtDataIdStr else: QueryStmtIdStr
 
   if query.sort == SortOrder.Descending:
     queryStr &= QueryStmtOrderDescending
@@ -242,53 +199,50 @@ method query*(
     queryStr &= QueryStmtLimit
 
   if query.offset != 0:
-    queryStr &=  QueryStmtOffset
+    queryStr &= QueryStmtOffset
 
   let
-    queryStmt = QueryStmt.prepare(
-      self.db.env, queryStr).expect("Query prepare should not fail")
+    queryStmt =
+      QueryStmt.prepare(self.db.env, queryStr).expect("Query prepare should not fail")
     s = RawStmtPtr(queryStmt)
 
-  var
-    v = sqlite3_bind_text(
-      s, 1.cint, (query.key.id & "*").cstring, -1.cint, SQLITE_TRANSIENT_GCSAFE)
+  var v = sqlite3_bind_text(
+    s, 1.cint, (query.key.id & "*").cstring, -1.cint, SQLITE_TRANSIENT_GCSAFE
+  )
 
-  if not (v == SQLITE_OK):
+  if v != SQLITE_OK:
     return failure newException(DatastoreError, $sqlite3_errstr(v))
 
   if query.limit != 0:
     v = sqlite3_bind_int(s, 2.cint, query.limit.cint)
 
-    if not (v == SQLITE_OK):
+    if v != SQLITE_OK:
       return failure newException(DatastoreError, $sqlite3_errstr(v))
 
   if query.offset != 0:
     v = sqlite3_bind_int(s, 3.cint, query.offset.cint)
 
-    if not (v == SQLITE_OK):
+    if v != SQLITE_OK:
       return failure newException(DatastoreError, $sqlite3_errstr(v))
 
   var finished = false
-
-  proc next(): Future[?!QueryResponse] {.async: (raises: [CancelledError]).} =
+  proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
     if finished:
       return failure(newException(QueryEndedError, "Calling next on a finished query!"))
 
-    let
-      v = sqlite3_step(s)
+    let v = sqlite3_step(s)
 
     case v
     of SQLITE_ROW:
       let
-        key = Key.init(
-          $sqlite3_column_text_not_null(s, QueryStmtIdCol))
-          .expect("Key should should not fail")
+        key = Key.init($sqlite3_column_text_not_null(s, QueryStmtIdCol)).expect(
+            "Key should should not fail"
+          )
 
-        blob: ?pointer =
+        blob: pointer =
           if query.value:
-              sqlite3_column_blob(s, QueryStmtDataCol).some
-            else:
-              pointer.none
+            sqlite3_column_blob(s, QueryStmtDataCol)
+          else: nil
 
       # detect out-of-memory error
       # see the conversion table and final paragraph of:
@@ -298,9 +252,8 @@ method query*(
       # the "data" column can be NULL so in order to detect an out-of-memory
       # error it is necessary to check that the result is a null pointer and
       # that the result code is an error code
-      if blob.isSome and blob.get().isNil:
-        let
-          v = sqlite3_errcode(sqlite3_db_handle(s))
+      if blob.isNil:
+        let v = sqlite3_errcode(sqlite3_db_handle(s))
 
         if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
           finished = true
@@ -308,18 +261,16 @@ method query*(
 
       let
         dataLen = sqlite3_column_bytes(s, QueryStmtDataCol)
-        data = if blob.isSome:
-            @(
-              toOpenArray(cast[ptr UncheckedArray[byte]](blob.get),
-              0,
-              dataLen - 1))
+        data =
+          if not blob.isNil:
+            @(toOpenArray(cast[ptr UncheckedArray[byte]](blob), 0, dataLen - 1))
           else:
             @[]
 
-      return success (key.some, data)
+      return success RawRecord.init(key, data).some
     of SQLITE_DONE:
       finished = true
-      return success (Key.none, EmptyBytes)
+      return success RawRecord.none
     else:
       finished = true
       return failure newException(DatastoreError, $sqlite3_errstr(v))
@@ -333,24 +284,14 @@ method query*(
 
   return success QueryIter.new(next, isFinished, dispose)
 
-proc new*(
-  T: type SQLiteDatastore,
-  path: string,
-  readOnly = false): ?!T =
+proc new*(T: type SQLiteDatastore, path: string, readOnly = false): ?!T =
+  let flags =
+    if readOnly:
+      SQLITE_OPEN_READONLY
+    else:
+      SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE
 
-  let
-    flags =
-      if readOnly: SQLITE_OPEN_READONLY
-      else: SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE
+  success T(db: ?SQLiteDsDb.open(path, flags), readOnly: readOnly)
 
-  success T(
-    db: ? SQLiteDsDb.open(path, flags),
-    readOnly: readOnly)
-
-proc new*(
-  T: type SQLiteDatastore,
-  db: SQLiteDsDb): ?!T =
-
-  success T(
-    db: db,
-    readOnly: db.readOnly)
+proc new*(T: type SQLiteDatastore, db: SQLiteDsDb): ?!T =
+  success T(db: db, readOnly: db.readOnly)
