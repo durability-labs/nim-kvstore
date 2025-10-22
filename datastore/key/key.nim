@@ -116,7 +116,13 @@ func relative*(self: Key, parent: Key): ?!Key =
   if self.len < parent.len:
     return failure "Not a parent of this key!"
 
-  Key.init(self.namespaces[parent.namespaces.high..self.namespaces.high])
+  if self.namespaces[0 ..< parent.len] != parent.namespaces:
+    return failure "Not a parent of this key!"
+
+  if parent.len == self.len:
+    return success Key(namespaces: @[])
+
+  return success Key(namespaces: self.namespaces[parent.len ..< self.len])
 
 func ancestor*(self, other: Key): bool =
   if other.len <= self.len: false
