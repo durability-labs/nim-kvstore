@@ -110,7 +110,7 @@ suite "Test SQLite Datastore DB operations":
         value == data
         token == 1'i64
 
-    discard dsDb.upsertStmt.query((key.id, data, 1'i64, timestamp()), onRow).tryGet()
+    discard dsDb.upsertStmt.query((key.id, data, 0'i64, timestamp()), onRow).tryGet()
 
   test "Should update key":
     proc onRow(s: RawStmtPtr) =
@@ -155,7 +155,7 @@ suite "Test SQLite Datastore DB operations":
     # add another record
     discard dsDb.upsertStmt
       .query(
-        (key1.id, data, 1'i64, timestamp()),
+        (key1.id, data, 0'i64, timestamp()),
         proc(s: RawStmtPtr) =
           discard,
       )

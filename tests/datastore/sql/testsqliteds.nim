@@ -13,6 +13,7 @@ import ../dscommontests
 import ../querycommontests
 
 suite "Test Basic SQLiteDatastore":
+
   let
     ds = SQLiteDatastore.new(Memory).tryGet()
     # ds = SQLiteDatastore.new(dbPathAbs).tryGet()
@@ -24,6 +25,7 @@ suite "Test Basic SQLiteDatastore":
     (await ds.close()).tryGet()
 
   basicStoreTests(ds, key, bytes, otherBytes)
+  helperTests(ds, key)
 
 suite "Test Read Only SQLiteDatastore":
   let
