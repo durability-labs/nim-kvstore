@@ -139,3 +139,135 @@ proc query*[T](
     dsIter.dispose()
 
   success QueryIter[T].new(next = next, finished = isFinished, dispose = dispose)
+
+# Typed helper functions
+proc tryPut*[T](
+    self: Datastore,
+    records: seq[Record[T]],
+    maxRetries = 3,
+    middleware: Middleware[Record[T]] = nil,
+): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+  ## Bulk put with retry on conflicts for typed records
+  ## Returns a list containing failed records, or empty list on success
+  ##
+  ## If middleware is provided, calls it with failed records to resolve conflicts
+  ##
+
+  if records.len == 0:
+    return success(newSeq[Record[T]]())
+
+  # Convert to raw for base operation
+  let rawRecords = records.mapIt(it.toRaw)
+
+  # Create raw middleware wrapper if typed middleware provided
+  var rawMiddleware: RawMiddleware = nil
+  if not middleware.isNil:
+    rawMiddleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      # Call typed middleware
+      let resolved = ?(await middleware(failed.mapIt( ?toRecord[T](it) )))
+
+      # Convert back to raw
+      success resolved.mapIt(toRaw[T](it))
+
+  # Call raw tryPut
+  let failedRaw = ?(await rawds.tryPut(self, rawRecords, maxRetries, rawMiddleware))
+
+  # Convert failed records back to typed
+  var failedTyped: seq[Record[T]]
+  for raw in failedRaw:
+    let converted = toRecord[T](raw)
+    if converted.isErr:
+      return failure(converted.error)
+    failedTyped.add(converted.value)
+
+  return success(failedTyped)
+
+proc tryPut*[T](
+    self: Datastore, record: Record[T], maxRetries = 3, middleware: Middleware[Record[T]] = nil
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Single-record wrapper for tryPut with typed records
+  ##
+
+  let results = ?(await self.tryPut(@[record], maxRetries, middleware))
+  if results.len > 0:
+    return failure newException(DatastoreError, "Unable to put record due to conflict")
+
+  return success()
+
+proc tryDelete*[T](
+    self: Datastore,
+    records: seq[Record[T]],
+    maxRetries = 3,
+    middleware: Middleware[Record[T]] = nil,
+): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+  ## Bulk delete with retry on conflicts for typed records
+  ## Returns a list containing failed records, or empty list on success
+  ##
+  ## If middleware is provided, calls it with failed records to resolve conflicts
+  ##
+
+  if records.len == 0:
+    return success(newSeq[Record[T]]())
+
+  # Convert to raw for base operation
+  let rawRecords = records.mapIt(it.toRaw)
+
+  # Create raw middleware wrapper if typed middleware provided
+  var rawMiddleware: RawMiddleware = nil
+  if not middleware.isNil:
+    rawMiddleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      # Call typed middleware
+      let resolved = ?(await middleware(failed.mapIt( ?toRecord[T](it) )))
+
+      # Convert back to raw
+      success resolved.mapIt(toRaw[T](it))
+
+  # Call raw tryDelete
+  let failedRaw = ?(await rawds.tryDelete(self, rawRecords, maxRetries, rawMiddleware))
+
+  # Convert failed records back to typed
+  var failedTyped: seq[Record[T]]
+  for raw in failedRaw:
+    let converted = toRecord[T](raw)
+    if converted.isErr:
+      return failure(converted.error)
+    failedTyped.add(converted.value)
+
+  return success(failedTyped)
+
+proc tryDelete*[T](
+    self: Datastore, record: Record[T], maxRetries = 3, middleware: Middleware[Record[T]] = nil
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Single-record wrapper for tryDelete with typed records
+  ##
+
+  let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
+  if results.len > 0:
+    return failure newException(DatastoreError, "Unable to delete record due to conflict")
+
+  return success()
+
+proc getOrPut*[T](
+    self: Datastore, key: Key, producer: ValueProducer[T], maxRetries = 3
+): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
+  ## Get existing typed record or lazily insert using producer
+  ## Producer is only called if key is missing
+  ## Errors if backend fails or retries exhausted
+  ##
+
+  # Try to get first
+  let existing = await self.get[:T](key)
+  if existing.isOk:
+    return existing
+
+  let err = existing.error
+  if not (err of DatastoreKeyNotFound):
+    return failure(err)
+
+  # Key doesn't exist - produce value and try to insert
+  let value = ?(await producer())
+  let record = Record[T].init(key, value)
+  ?(await self.tryPut(record, maxRetries))
+
+  # Successfully inserted, return the record
+  return success(record)
