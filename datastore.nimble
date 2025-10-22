@@ -1,19 +1,15 @@
 mode = ScriptMode.Verbose
 
-packageName   = "datastore"
-version       = "0.4.0"
-author        = "nim-datastore authors, Status Research & Development GmbH"
-description   = "Simple, unified API for multiple data stores"
-license       = "Apache License 2.0 or MIT"
+packageName = "datastore"
+version = "0.4.0"
+author = "nim-datastore authors, Status Research & Development GmbH"
+description = "Simple, unified API for multiple data stores"
+license = "Apache License 2.0 or MIT"
 
 requires "nim >= 2.0.14",
-         "asynctest >= 0.5.2 & < 0.6.0",
-         "chronos >= 4.0.4 & < 5.0.0",
-         "questionable >= 0.10.15 & < 0.11.0",
-         "sqlite3_abi >= 3.47.0.0 & < 4.0.0.0",
-         "https://github.com/durability-labs/nim-leveldbstatic >= 0.2.2",
-         "stew >= 0.2.0 & < 0.5.0",
-         "unittest2 >= 0.2.3 & < 0.3.0"
+  "asynctest >= 0.5.2 & < 0.6.0", "chronos >= 4.0.4 & < 5.0.0",
+  "questionable >= 0.10.15 & < 0.11.0", "sqlite3_abi >= 3.47.0.0 & < 4.0.0.0",
+  "stew >= 0.2.0 & < 0.5.0", "unittest2 >= 0.2.3 & < 0.3.0"
 
 task coverage, "generates code coverage report":
   var (output, exitCode) = gorgeEx("which lcov")
@@ -41,12 +37,16 @@ task coverage, "generates code coverage report":
     echo "  *****************************************************************"
     echo ""
 
-  exec("nimble --verbose test --verbosity:0 --hints:off --lineDir:on --nimcache:nimcache --passC:-fprofile-arcs --passC:-ftest-coverage --passL:-fprofile-arcs --passL:-ftest-coverage")
+  exec(
+    "nimble --verbose test --verbosity:0 --hints:off --lineDir:on --nimcache:nimcache --passC:-fprofile-arcs --passC:-ftest-coverage --passL:-fprofile-arcs --passL:-ftest-coverage"
+  )
   exec("cd nimcache; rm *.c; cd ..")
   mkDir("coverage")
   exec("lcov --capture --directory nimcache --output-file coverage/coverage.info")
   exec("$(which bash) -c 'shopt -s globstar; ls $(pwd)/datastore/{*,**/*}.nim'")
-  exec("$(which bash) -c 'shopt -s globstar; lcov --extract coverage/coverage.info  $(pwd)/datastore/{*,**/*}.nim --output-file coverage/coverage.f.info'")
+  exec(
+    "$(which bash) -c 'shopt -s globstar; lcov --extract coverage/coverage.info  $(pwd)/datastore/{*,**/*}.nim --output-file coverage/coverage.f.info'"
+  )
   echo "Generating HTML coverage report"
   exec("genhtml coverage/coverage.f.info --output-directory coverage/report")
   echo "Opening HTML coverage report in browser..."

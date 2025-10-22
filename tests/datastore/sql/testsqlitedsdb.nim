@@ -129,8 +129,7 @@ suite "Test SQLite Datastore DB operations":
     proc onRow(s: RawStmtPtr) =
       check false # should not be called
 
-    discard
-      dsDb.upsertStmt.query((key.id, data, 0'i64, timestamp()), onRow).tryGet()
+    discard dsDb.upsertStmt.query((key.id, data, 0'i64, timestamp()), onRow).tryGet()
 
   test "Should select single key":
     var
@@ -188,8 +187,7 @@ suite "Test SQLite Datastore DB operations":
       dsDb.checkChanges().tryGet() == 2
 
   test "Should not contain key":
-    var
-      exists = false
+    var exists = false
 
     proc onData(s: RawStmtPtr) =
       exists = sqlite3_column_int64(s, ContainsStmtExistsCol.cint).bool

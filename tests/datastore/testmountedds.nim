@@ -38,10 +38,9 @@ suite "Test Basic Mounted Datastore":
 
     sql = SQLiteDatastore.new(Memory).tryGet
     fs = FSDatastore.new(rootAbs, depth = 10).tryGet
-    mountedDs = MountedDatastore.new({
-      sqlKey: Datastore(sql),
-      fsKey: Datastore(fs)}.toTable)
-      .tryGet
+    mountedDs = MountedDatastore.new(
+      {sqlKey: Datastore(sql), fsKey: Datastore(fs)}.toTable
+    ).tryGet
 
   teardownAll:
     removeDir(rootAbs)
@@ -59,10 +58,7 @@ suite "Test Basic Mounted Datastore":
     let
       sqlKeyA = (sqlKey / namespaceLeaf / "bulk-sql").tryGet
       fsKeyB = (fsKey / namespaceLeaf / "bulk-fs").tryGet
-      initial = @[
-        RawRecord.init(sqlKeyA, @[1.byte]),
-        RawRecord.init(fsKeyB, @[2.byte])
-      ]
+      initial = @[RawRecord.init(sqlKeyA, @[1.byte]), RawRecord.init(fsKeyB, @[2.byte])]
 
     # initial insert should succeed for both backends
     check (await mountedDs.put(initial)).tryGet.len == 0
@@ -80,10 +76,9 @@ suite "Test Basic Mounted Datastore":
     check conflicts[0] == sqlKeyA
 
     let skipped = (await mountedDs.delete(@[sqlRecord, fsRecord])).tryGet
-    check skipped.len == 0  # both should be deleted successfully
+    check skipped.len == 0 # both should be deleted successfully
 
 suite "Test Mounted Datastore":
-
   test "Should mount datastore":
     let
       ds = SQLiteDatastore.new(Memory).tryGet
@@ -138,9 +133,9 @@ suite "Test Mounted Datastore":
       nestedKey1 = Key.init("/sql/anotherkey").tryGet
       nestedKey2 = Key.init("/sql/nested/key").tryGet
 
-      mounted = MountedDatastore.new({
-        key1: Datastore(ds1),
-        key2: Datastore(ds2)}.toTable).tryGet
+      mounted = MountedDatastore.new(
+        {key1: Datastore(ds1), key2: Datastore(ds2)}.toTable
+      ).tryGet
 
       store1 = mounted.findStore(nestedKey1).tryGet
       store2 = mounted.findStore(nestedKey2).tryGet
