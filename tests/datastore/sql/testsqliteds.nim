@@ -2,6 +2,7 @@ import std/options
 import std/os
 import std/sequtils
 from std/algorithm import sort, reversed
+import std/tables
 
 import pkg/asynctest/chronos/unittest2
 import pkg/chronos
@@ -91,3 +92,4 @@ suite "Test Query":
     (await ds.close()).tryGet
 
   queryTests(ds, testLimitsAndOffsets = true, testSortOrder = true)
+

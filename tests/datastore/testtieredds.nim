@@ -11,7 +11,6 @@ import pkg/datastore/sql
 import pkg/datastore/tieredds
 
 import ./dscommontests
-import ./typeddscommontests
 
 suite "Test Basic Tired Datastore":
   let
@@ -43,8 +42,6 @@ suite "Test Basic Tired Datastore":
 
   basicStoreTests(tiredDs, key, bytes, otherBytes)
   helperTests(tiredDs, key)
-  typedDsTests(tiredDs, key)
-  # typedDsQueryTests(tiredDs)
 
 suite "TieredDatastore":
   # assumes tests/test_all is run from project root, e.g. with `nimble test`

@@ -1,4 +1,22 @@
+import std/tables
+
+import pkg/asynctest/chronos/unittest2
+import pkg/stew/byteutils
+import pkg/stew/endians2
+import pkg/questionable
+import pkg/questionable/results
+
 import pkg/datastore
+
+# Encoder/decoder for int type (needed for typed query tests)
+proc encode(i: int): seq[byte] =
+  @(cast[uint64](i).toBytesBE)
+
+proc decode(T: type int, bytes: seq[byte]): ?!T =
+  if bytes.len >= sizeof(uint64):
+    success(cast[int](uint64.fromBytesBE(bytes)))
+  else:
+    failure("not enough bytes to decode int")
 
 template queryTests*(
     ds: Datastore, testLimitsAndOffsets = true, testSortOrder = true
@@ -249,3 +267,39 @@ template queryTests*(
         check:
           res[i].key == kvs[i].key
           res[i].val == kvs[i].val
+
+  ## Tests for typed query operations using query[T]
+  test "query with typed int results":
+    let
+      source = { "a": 11, "b": 22, "c": 33, "d": 44 }.toTable()
+      Root = Key.init("/typed-querytest").tryGet()
+
+    # Insert typed data
+    for k, v in source:
+      let putKey = (Root / k).tryGet()
+      let record = Record[int](key: putKey, val: v, token: 0)
+      (await ds.put(record)).tryGet()
+
+    # Query with typed results
+    let iter = (await query[int](ds, Query.init(Root))).tryGet()
+
+    var results = initTable[string, int]()
+
+    while not iter.finished:
+      let item = (await iter.next()).tryGet()
+
+      if item.isNone:
+        continue
+
+      let
+        record = item.get
+        key = record.key
+        value = record.val
+
+      check:
+        key.value notin results
+
+      results[key.value] = value
+
+    check:
+      results == source
