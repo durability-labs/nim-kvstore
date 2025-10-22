@@ -38,12 +38,11 @@ suite "Test Basic Tired Datastore":
 
   teardownAll:
     (await tiredDs.close()).tryGet
-    echo rootAbs
-
     removeDir(rootAbs)
     require(not dirExists(rootAbs))
 
   basicStoreTests(tiredDs, key, bytes, otherBytes)
+  helperTests(tiredDs, key)
   typedDsTests(tiredDs, key)
   # typedDsQueryTests(tiredDs)
 
@@ -52,7 +51,7 @@ suite "TieredDatastore":
   let
     bytes = @[1.byte, 2.byte, 3.byte]
     key = Key.init("a:b/c/d:e").get
-    root = "tests" / "test_data"
+    root = "test_data"
     path = currentSourcePath() # get this file's name
     rootAbs = path.parentDir / root
 

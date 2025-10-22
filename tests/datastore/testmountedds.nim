@@ -49,10 +49,12 @@ suite "Test Basic Mounted Datastore":
   suite "Mounted sql":
     let namespace = sqlKey / namespaceLeaf
     basicStoreTests(mountedDs, namespace, bytes, otherBytes)
+    helperTests(mountedDs, namespace)
 
   suite "Mounted fs":
     let namespace = fsKey / namespaceLeaf
     basicStoreTests(mountedDs, namespace, bytes, otherBytes)
+    helperTests(mountedDs, namespace)
 
   test "Bulk operations across mounts":
     let
