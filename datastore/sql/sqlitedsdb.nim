@@ -11,10 +11,10 @@ import pkg/questionable/results
 import ./sqliteutils
 
 type
-  BoundIdCol* = proc (): string {.closure, gcsafe, raises: [].}
-  BoundVersionCol* = proc (): int64 {.closure, gcsafe, raises: [].}
-  BoundDataCol* = proc (): seq[byte] {.closure, gcsafe, raises: [].}
-  BoundTimestampCol* = proc (): int64 {.closure, gcsafe, raises: [].}
+  BoundIdCol* = proc(): string {.closure, gcsafe, raises: [].}
+  BoundVersionCol* = proc(): int64 {.closure, gcsafe, raises: [].}
+  BoundDataCol* = proc(): seq[byte] {.closure, gcsafe, raises: [].}
+  BoundTimestampCol* = proc(): int64 {.closure, gcsafe, raises: [].}
 
   # feels odd to use `void` for prepared statements corresponding to SELECT
   # queries but it fits with the rest of the SQLite wrapper adapted from
@@ -62,7 +62,8 @@ const
   # EXISTS returns a boolean value represented by an integer:
   # https://sqlite.org/datatype3.html#boolean_datatype
   # https://sqlite.org/lang_expr.html#the_exists_operator
-  ContainsStmtStr* = fmt"""
+  ContainsStmtStr* =
+    fmt"""
     SELECT EXISTS(
       SELECT 1 FROM {TableName}
       WHERE {IdColName} = ?
@@ -71,7 +72,8 @@ const
 
   ContainsStmtExistsCol* = 0
 
-  CreateStmtStr* = fmt"""
+  CreateStmtStr* =
+    fmt"""
     CREATE TABLE IF NOT EXISTS {TableName} (
       {IdColName} {IdColType} NOT NULL PRIMARY KEY,
       {DataColName} {DataColType},
@@ -80,29 +82,35 @@ const
     ) WITHOUT ROWID;
   """
 
-  QueryStmtIdStr* = fmt"""
+  QueryStmtIdStr* =
+    fmt"""
     SELECT {IdColName} FROM {TableName}
         WHERE {IdColName} GLOB ?
   """
 
-  QueryStmtDataIdStr* = fmt"""
+  QueryStmtDataIdStr* =
+    fmt"""
     SELECT {IdColName}, {DataColName} FROM {TableName}
         WHERE {IdColName} GLOB ?
   """
 
-  QueryStmtOffset* = """
+  QueryStmtOffset* =
+    """
     OFFSET ?
   """
 
-  QueryStmtLimit* = """
+  QueryStmtLimit* =
+    """
     LIMIT ?
   """
 
-  QueryStmtOrderAscending* = fmt"""
+  QueryStmtOrderAscending* =
+    fmt"""
     ORDER BY {IdColName} ASC
   """
 
-  QueryStmtOrderDescending* = fmt"""
+  QueryStmtOrderDescending* =
+    fmt"""
     ORDER BY {IdColName} DESC
   """
 
@@ -110,7 +118,8 @@ const
   GetSingleStmtVersionCol* = 1
 
   # NOTE: This SELECT is left as an oprimization, it could be done with GetManyStmtStr
-  GetSingleStmtStr* = fmt"""
+  GetSingleStmtStr* =
+    fmt"""
     SELECT {DataColName}, {VersionColName} FROM {TableName}
     WHERE {IdColName} = ?
   """
@@ -120,7 +129,8 @@ const
   GetManyStmtVersionCol* = 2
 
   # NOTE: This statment is not prepared, it is contructed dynamicaly
-  GetManyStmtStr* = fmt"""
+  GetManyStmtStr* =
+    fmt"""
     SELECT {IdColName}, {DataColName}, {VersionColName} FROM {TableName}
     WHERE {IdColName} IN ($1)
   """
@@ -128,7 +138,8 @@ const
   UpsertStmtDataCol* = 0
   UpsertStmtVersionCol* = 1
 
-  UpsertStmtStr* = fmt"""
+  UpsertStmtStr* =
+    fmt"""
     INSERT INTO {TableName}
     (
       {IdColName},
@@ -148,30 +159,36 @@ const
     RETURNING {DataColName}, {VersionColName}
   """
 
-  DeleteStmtStr* = fmt"""
+  DeleteStmtStr* =
+    fmt"""
     DELETE FROM {TableName}
     WHERE {IdColName} = ? AND {VersionColName} = ?
     RETURNING 1
   """
 
-  DeleteManyStmtStr* = fmt"""
+  DeleteManyStmtStr* =
+    fmt"""
     DELETE FROM {TableName}
     WHERE ({IdColName}, {VersionColName}) IN ($1)
   """
 
-  GetChangesStmtStr* = fmt"""
+  GetChangesStmtStr* =
+    fmt"""
     SELECT changes()
   """
 
-  BeginTransactionStr* = """
+  BeginTransactionStr* =
+    """
     BEGIN;
   """
 
-  EndTransactionStr* = """
+  EndTransactionStr* =
+    """
     END;
   """
 
-  RollbackTransactionStr* = """
+  RollbackTransactionStr* =
+    """
     ROLLBACK;
   """
 
@@ -179,40 +196,38 @@ const
   QueryStmtDataCol* = 1
 
 template makeGetManyStmStr*(ids: openArray[string]): ?!string =
-  catch (GetManyStmtStr % ids.mapIt( "\"" & it & "\"" ).join(", "))
+  catch (GetManyStmtStr % ids.mapIt("\"" & it & "\"").join(", "))
 
 template makeDeleteManyStmStr*(ids: openArray[(string, uint64)]): ?!string =
-  catch (DeleteManyStmtStr % ids.mapIt( "(\"" & it[0] & "\", " & $it[1] & ")" ).join(", "))
+  catch (
+    DeleteManyStmtStr % ids.mapIt("(\"" & it[0] & "\", " & $it[1] & ")").join(", ")
+  )
 
 proc checkColMetadata(s: RawStmtPtr, i: int, expectedName: string) =
-  let
-    colName = sqlite3_column_origin_name(s, i.cint)
+  let colName = sqlite3_column_origin_name(s, i.cint)
 
   if colName.isNil:
-    raise (ref Defect)(msg: "no column exists for index " & $i & " in `" &
-      $sqlite3_sql(s) & "`")
+    raise (ref Defect)(
+      msg: "no column exists for index " & $i & " in `" & $sqlite3_sql(s) & "`"
+    )
 
   if $colName != expectedName:
-    raise (ref Defect)(msg: "original column name for index " & $i & " was \"" &
-      $colName & "\" in `" & $sqlite3_sql(s) & "` but callee expected \"" &
-      expectedName & "\"")
+    raise (ref Defect)(
+      msg:
+        "original column name for index " & $i & " was \"" & $colName & "\" in `" &
+        $sqlite3_sql(s) & "` but callee expected \"" & expectedName & "\""
+    )
 
-proc idCol*(
-  s: RawStmtPtr,
-  index: int): BoundIdCol =
-
+proc idCol*(s: RawStmtPtr, index: int): BoundIdCol =
   checkColMetadata(s, index, IdColName)
 
-  return proc (): string =
+  return proc(): string =
     $sqlite3_column_text_not_null(s, index.cint)
 
-proc dataCol*(
-  s: RawStmtPtr,
-  index: int): BoundDataCol =
-
+proc dataCol*(s: RawStmtPtr, index: int): BoundDataCol =
   checkColMetadata(s, index, DataColName)
 
-  return proc (): seq[byte] =
+  return proc(): seq[byte] =
     let
       i = index.cint
       blob = sqlite3_column_blob(s, i)
@@ -226,8 +241,7 @@ proc dataCol*(
     # it is necessary to check that the result is a null pointer and that the
     # result code is an error code
     if blob.isNil:
-      let
-        v = sqlite3_errcode(sqlite3_db_handle(s))
+      let v = sqlite3_errcode(sqlite3_db_handle(s))
 
       if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
         raise (ref Defect)(msg: $sqlite3_errstr(v))
@@ -238,28 +252,20 @@ proc dataCol*(
 
     @(toOpenArray(dataBytes, 0, dataLen - 1))
 
-proc timestampCol*(
-  s: RawStmtPtr,
-  index: int): BoundTimestampCol =
-
+proc timestampCol*(s: RawStmtPtr, index: int): BoundTimestampCol =
   checkColMetadata(s, index, TimestampColName)
 
-  return proc (): int64 =
+  return proc(): int64 =
     sqlite3_column_int64(s, index.cint)
 
-proc versionCol*(
-  s: RawStmtPtr,
-  index: int): BoundVersionCol =
-
+proc versionCol*(s: RawStmtPtr, index: int): BoundVersionCol =
   checkColMetadata(s, index, VersionColName)
 
-  return proc (): int64 =
+  return proc(): int64 =
     sqlite3_column_int64(s, index.cint)
 
-proc changesCol*(
-  s: RawStmtPtr,
-  index: int): BoundVersionCol =
-  return proc (): int64 =
+proc changesCol*(s: RawStmtPtr, index: int): BoundVersionCol =
+  return proc(): int64 =
     sqlite3_column_int64(s, index.cint)
 
 proc getDBFilePath*(path: string): ?!string =
@@ -268,8 +274,10 @@ proc getDBFilePath*(path: string): ?!string =
       (parent, name, ext) = path.normalizePathEnd.splitFile
       dbExt = if ext == "": DbExt else: ext
       absPath =
-        if parent.isAbsolute: parent
-        else: getCurrentDir() / parent
+        if parent.isAbsolute:
+          parent
+        else:
+          getCurrentDir() / parent
       dbPath = absPath / name & dbExt
 
     return success dbPath
@@ -287,9 +295,7 @@ proc checkChanges*(self: SQLiteDsDb): ?!int =
   return success changes
 
 proc close*(self: var SQLiteDsDb) =
-
-  var
-    env: AutoDisposed[SQLite]
+  var env: AutoDisposed[SQLite]
 
   defer:
     disposeIfUnreleased(env)
@@ -321,25 +327,26 @@ proc close*(self: var SQLiteDsDb) =
     self.getChangesStmt.dispose
 
 proc open*(
-  _: type SQLiteDsDb,
-  path = Memory,
-  flags = SQLITE_OPEN_READONLY): ?!SQLiteDsDb =
-
+    _: type SQLiteDsDb, path = Memory, flags = SQLITE_OPEN_READONLY
+): ?!SQLiteDsDb =
   # make it optional to enable WAL with it enabled being the default?
 
   # make it possible to specify a custom page size?
   # https://www.sqlite.org/pragma.html#pragma_page_size
   # https://www.sqlite.org/intern-v-extern-blob.html
 
-  var
-    env: AutoDisposed[SQLite]
+  var env: AutoDisposed[SQLite]
 
   defer:
     disposeIfUnreleased(env)
 
   let
     isMemory = path == Memory
-    absPath = if isMemory: Memory else: ?path.getDBFilePath
+    absPath =
+      if isMemory:
+        Memory
+      else:
+        ?path.getDBFilePath
     readOnly = (SQLITE_OPEN_READONLY and flags).bool
 
   if not isMemory:
@@ -350,8 +357,7 @@ proc open*(
 
   open(absPath, env.val, flags)
 
-  var
-    pragmaStmt = journalModePragmaStmt(env.val)
+  var pragmaStmt = journalModePragmaStmt(env.val)
 
   checkExec(pragmaStmt)
 
@@ -368,29 +374,26 @@ proc open*(
   if not readOnly:
     checkExec(env.val, CreateStmtStr)
 
-    upsertStmt = ? UpsertStmt.prepare(
-      env.val, UpsertStmtStr, SQLITE_PREPARE_PERSISTENT)
+    upsertStmt = ?UpsertStmt.prepare(env.val, UpsertStmtStr, SQLITE_PREPARE_PERSISTENT)
 
-    deleteStmt = ? DeleteStmt.prepare(
-      env.val, DeleteStmtStr, SQLITE_PREPARE_PERSISTENT)
+    deleteStmt = ?DeleteStmt.prepare(env.val, DeleteStmtStr, SQLITE_PREPARE_PERSISTENT)
 
-    getChangesStmt = ? GetChangesStmt.prepare(
-      env.val, GetChangesStmtStr, SQLITE_PREPARE_PERSISTENT)
+    getChangesStmt =
+      ?GetChangesStmt.prepare(env.val, GetChangesStmtStr, SQLITE_PREPARE_PERSISTENT)
 
-  beginStmt = ? BeginStmt.prepare(
-    env.val, BeginTransactionStr, SQLITE_PREPARE_PERSISTENT)
+  beginStmt =
+    ?BeginStmt.prepare(env.val, BeginTransactionStr, SQLITE_PREPARE_PERSISTENT)
 
-  endStmt = ? EndStmt.prepare(
-    env.val, EndTransactionStr, SQLITE_PREPARE_PERSISTENT)
+  endStmt = ?EndStmt.prepare(env.val, EndTransactionStr, SQLITE_PREPARE_PERSISTENT)
 
-  rollbackStmt = ? RollbackStmt.prepare(
-    env.val, RollbackTransactionStr, SQLITE_PREPARE_PERSISTENT)
+  rollbackStmt =
+    ?RollbackStmt.prepare(env.val, RollbackTransactionStr, SQLITE_PREPARE_PERSISTENT)
 
-  containsStmt = ? ContainsStmt.prepare(
-    env.val, ContainsStmtStr, SQLITE_PREPARE_PERSISTENT)
+  containsStmt =
+    ?ContainsStmt.prepare(env.val, ContainsStmtStr, SQLITE_PREPARE_PERSISTENT)
 
-  getSingleStmt = ? GetSingleStmt.prepare(
-    env.val, GetSingleStmtStr, SQLITE_PREPARE_PERSISTENT)
+  getSingleStmt =
+    ?GetSingleStmt.prepare(env.val, GetSingleStmtStr, SQLITE_PREPARE_PERSISTENT)
 
   success SQLiteDsDb(
     readOnly: readOnly,
@@ -403,4 +406,5 @@ proc open*(
     getChangesStmt: getChangesStmt,
     beginStmt: beginStmt,
     endStmt: endStmt,
-    rollbackStmt: rollbackStmt)
+    rollbackStmt: rollbackStmt,
+  )

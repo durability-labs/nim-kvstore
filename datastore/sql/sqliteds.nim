@@ -242,7 +242,8 @@ method query*(
         blob: pointer =
           if query.value:
             sqlite3_column_blob(s, QueryStmtDataCol)
-          else: nil
+          else:
+            nil
 
       # detect out-of-memory error
       # see the conversion table and final paragraph of:

@@ -58,7 +58,7 @@ proc get*[T](
   ##
 
   let raw = ?(await rawds.get(self, keys))
-  success raw.mapIt( ?toRecord[T](it) )
+  success raw.mapIt(?toRecord[T](it))
 
 proc get*[T](
     self: Datastore, key: Key
@@ -77,7 +77,7 @@ proc put*[T](
   ## due to conflicts.
   ##
 
-  rawds.put(self, records.mapIt( it.toRaw ))
+  rawds.put(self, records.mapIt(it.toRaw))
 
 proc put*[T](
     self: Datastore, record: Record[T]
@@ -102,7 +102,7 @@ proc delete*[T](
   ## Returns a sequence of keys that were skipped due to conflicts.
   ##
 
-  rawds.delete(self, records.mapIt( it.toRaw ))
+  rawds.delete(self, records.mapIt(it.toRaw))
 
 proc delete*[T](
     self: Datastore, record: Record[T]
@@ -119,10 +119,12 @@ proc contains*(
 ): Future[bool] {.async: (raises: [CancelledError]).} =
   return (await rawds.has(self, key)) |? false
 
-proc query*[T](self: Datastore, q: Query): Future[?!QueryIter[T]] {.async: (raises: [CancelledError]).} =
+proc query*[T](
+    self: Datastore, q: Query
+): Future[?!QueryIter[T]] {.async: (raises: [CancelledError]).} =
   let dsIter = ?(await rawds.query(self, q))
 
-  proc next: Future[?!(?Record[T])] {.async: (raises: [CancelledError]).} =
+  proc next(): Future[?!(?Record[T])] {.async: (raises: [CancelledError]).} =
     let rawOpt = ?(await dsIter.next())
     if rawOpt.isNone:
       return success Record[T].none
@@ -130,14 +132,10 @@ proc query*[T](self: Datastore, q: Query): Future[?!QueryIter[T]] {.async: (rais
     let decoded = ?(toRecord[T](rawOpt.get()))
     success decoded.some
 
-  proc isFinished: bool =
+  proc isFinished(): bool =
     dsIter.finished
 
-  proc dispose =
+  proc dispose() =
     dsIter.dispose()
 
-  success QueryIter[T].new(
-    next =  next,
-    finished = isFinished,
-    dispose = dispose
-  )
+  success QueryIter[T].new(next = next, finished = isFinished, dispose = dispose)

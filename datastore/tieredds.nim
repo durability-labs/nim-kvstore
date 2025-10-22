@@ -7,14 +7,10 @@ import pkg/questionable/results
 import ./key
 import ./datastore
 
-type
-  TieredDatastore* = ref object of Datastore
-    stores: seq[Datastore]
+type TieredDatastore* = ref object of Datastore
+  stores: seq[Datastore]
 
-proc new*(
-  T: type TieredDatastore,
-  stores: varargs[Datastore]): ?!T =
-
+proc new*(T: type TieredDatastore, stores: varargs[Datastore]): ?!T =
   if stores.len == 0:
     failure "stores must contain at least one Datastore"
   else:
@@ -24,9 +20,8 @@ proc stores*(self: TieredDatastore): seq[Datastore] =
   self.stores
 
 method has*(
-  self: TieredDatastore,
-  key: Key): Future[?!bool] {.async: (raises: [CancelledError]).} =
-
+    self: TieredDatastore, key: Key
+): Future[?!bool] {.async: (raises: [CancelledError]).} =
   for store in self.stores:
     without res =? (await store.has(key)), err:
       return failure(err)
@@ -37,9 +32,8 @@ method has*(
   return success false
 
 method get*(
-  self: TieredDatastore,
-  key: Key): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
-
+    self: TieredDatastore, key: Key
+): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
   for idx, store in self.stores.pairs():
     let fetched = await store.get(key)
     if fetched.isOk:
@@ -62,8 +56,8 @@ method get*(
   return failure newException(DatastoreKeyNotFound, "Key doesn't exist")
 
 method get*(
-  self: TieredDatastore,
-  keys: seq[Key]): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+    self: TieredDatastore, keys: seq[Key]
+): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Get multiple records, backfilling to upper tiers as we go
 
   var results: seq[RawRecord]
@@ -100,8 +94,8 @@ method get*(
   return success results
 
 method put*(
-  self: TieredDatastore,
-  records: seq[RawRecord]): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+    self: TieredDatastore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## Put records to all tiers
   ## Returns keys that were skipped due to conflicts in ANY tier
 
@@ -111,7 +105,7 @@ method put*(
   var allSkipped: seq[Key]
 
   for store in self.stores:
-    let skipped = ? (await store.put(records))
+    let skipped = ?(await store.put(records))
     # Collect any keys that failed in this tier
     for key in skipped:
       if key notin allSkipped:
@@ -120,8 +114,8 @@ method put*(
   return success allSkipped
 
 method delete*(
-  self: TieredDatastore,
-  records: seq[RawRecord]): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+    self: TieredDatastore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## Delete records from all tiers
   ## Returns keys that were skipped due to conflicts in ANY tier
 
@@ -131,7 +125,7 @@ method delete*(
   var allSkipped: seq[Key]
 
   for store in self.stores:
-    let skipped = ? (await store.delete(records))
+    let skipped = ?(await store.delete(records))
     # Collect any keys that failed in this tier
     for key in skipped:
       if key notin allSkipped:
@@ -140,5 +134,6 @@ method delete*(
   return success allSkipped
 
 method close*(
-  self: TieredDatastore): Future[?!void] {.async: (raises: [CancelledError]).} =
+    self: TieredDatastore
+): Future[?!void] {.async: (raises: [CancelledError]).} =
   return success()

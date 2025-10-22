@@ -9,14 +9,13 @@ const
   Delimiter* = ":"
   Separator* = "/"
 
-type
-  Namespace* = object
-    field*: string
-    value*: string
+type Namespace* = object
+  field*: string
+  value*: string
 
 func init*(T: type Namespace, field, value: string): ?!T =
   if value.contains(Delimiter):
-      return failure ("value string must not contain Delimiter " & Delimiter)
+    return failure ("value string must not contain Delimiter " & Delimiter)
 
   if value.contains(Separator):
     return failure ("value string must not contain Separator " & Separator)
@@ -37,13 +36,12 @@ func init*(T: type Namespace, id: string): ?!T =
     if id.count(Delimiter) > 1:
       return failure (&"id string must not contain more than one " & Delimiter)
 
-  let
-    (field, value) = block:
-      let parts = id.split(Delimiter)
-      if parts.len > 1:
-        (parts[0], parts[^1])
-      else:
-        ("", parts[^1])
+  let (field, value) = block:
+    let parts = id.split(Delimiter)
+    if parts.len > 1:
+      (parts[0], parts[^1])
+    else:
+      ("", parts[^1])
 
   T.init(field.strip, value.strip)
 

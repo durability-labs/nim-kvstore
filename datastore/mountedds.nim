@@ -18,7 +18,9 @@ type
   MountedDatastore* = ref object of Datastore
     stores*: Table[Key, MountedStore]
 
-method mount*(self: MountedDatastore, key: Key, store: Datastore): ?!void {.base, gcsafe.} =
+method mount*(
+    self: MountedDatastore, key: Key, store: Datastore
+): ?!void {.base, gcsafe.} =
   ## Mount a store on a namespace - namespaces are only `/`
   ##
 
@@ -34,8 +36,7 @@ func findStore*(self: MountedDatastore, key: Key): ?!MountedStore =
   ##
 
   for (k, v) in self.stores.pairs:
-    var
-      mounted = key
+    var mounted = key
 
     while mounted.len > 0:
       if ?k.path == ?mounted.path:
@@ -49,29 +50,27 @@ func findStore*(self: MountedDatastore, key: Key): ?!MountedStore =
   failure newException(DatastoreKeyNotFound, "No datastore found for key")
 
 proc dispatch(
-  self: MountedDatastore,
-  key: Key): ?!tuple[store: MountedStore, relative: Key] =
+    self: MountedDatastore, key: Key
+): ?!tuple[store: MountedStore, relative: Key] =
   ## Helper to retrieve the store and corresponding relative key
   ##
 
-  let
-    mounted = ?self.findStore(key)
+  let mounted = ?self.findStore(key)
 
   return success (store: mounted, relative: ?key.relative(mounted.key))
 
 method has*(
-  self: MountedDatastore,
-  key: Key): Future[?!bool] {.async: (raises: [CancelledError]).} =
-
-  let mounted = ? self.dispatch(key)
+    self: MountedDatastore, key: Key
+): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  let mounted = ?self.dispatch(key)
 
   return (await mounted.store.store.has(mounted.relative))
 
-method get*(self: MountedDatastore, key: Key): Future[?!RawRecord]
-    {.async: (raises: [CancelledError]).} =
-
-  let mounted = ? self.dispatch(key)
-  let child = ? (await mounted.store.store.get(mounted.relative))
+method get*(
+    self: MountedDatastore, key: Key
+): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+  let mounted = ?self.dispatch(key)
+  let child = ?(await mounted.store.store.get(mounted.relative))
 
   let globalKey = mounted.store.key / child.key
   return success RawRecord.init(globalKey, child.val, child.token)
@@ -79,7 +78,6 @@ method get*(self: MountedDatastore, key: Key): Future[?!RawRecord]
 method get*(
     self: MountedDatastore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
-
   type GetBatch = object
     store: MountedStore
     keys: seq[Key]
@@ -87,17 +85,16 @@ method get*(
   var batches = initTable[Key, GetBatch]()
 
   for key in keys:
-    let dispatched = ? self.dispatch(key)
-    var batch = batches.mgetOrPut(dispatched.store.key, GetBatch(
-      store: dispatched.store,
-      keys: @[]
-    ))
+    let dispatched = ?self.dispatch(key)
+    var batch = batches.mgetOrPut(
+      dispatched.store.key, GetBatch(store: dispatched.store, keys: @[])
+    )
     batch.keys.add(dispatched.relative)
     batches[dispatched.store.key] = batch
 
   var collected: seq[RawRecord]
   for batch in batches.values:
-    let results = ? (await batch.store.store.get(batch.keys))
+    let results = ?(await batch.store.store.get(batch.keys))
     for record in results:
       let globalKey = batch.store.key / record.key
       collected.add(RawRecord.init(globalKey, record.val, record.token))
@@ -107,7 +104,6 @@ method get*(
 method put*(
     self: MountedDatastore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-
   type PutBatch = object
     store: MountedStore
     records: seq[RawRecord]
@@ -115,17 +111,16 @@ method put*(
   var batches = initTable[Key, PutBatch]()
 
   for record in records:
-    let dispatched = ? self.dispatch(record.key)
-    var batch = batches.mgetOrPut(dispatched.store.key, PutBatch(
-      store: dispatched.store,
-      records: @[]
-    ))
+    let dispatched = ?self.dispatch(record.key)
+    var batch = batches.mgetOrPut(
+      dispatched.store.key, PutBatch(store: dispatched.store, records: @[])
+    )
     batch.records.add(RawRecord.init(dispatched.relative, record.val, record.token))
     batches[dispatched.store.key] = batch
 
   var conflicts: seq[Key]
   for batch in batches.values:
-    let skipped = ? (await batch.store.store.put(batch.records))
+    let skipped = ?(await batch.store.store.put(batch.records))
     for relKey in skipped:
       conflicts.add(batch.store.key / relKey)
 
@@ -134,7 +129,6 @@ method put*(
 method delete*(
     self: MountedDatastore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-
   type DeleteBatch = object
     store: MountedStore
     records: seq[RawRecord]
@@ -142,23 +136,24 @@ method delete*(
   var batches = initTable[Key, DeleteBatch]()
 
   for record in records:
-    let dispatched = ? self.dispatch(record.key)
-    var batch = batches.mgetOrPut(dispatched.store.key, DeleteBatch(
-      store: dispatched.store,
-      records: @[]
-    ))
+    let dispatched = ?self.dispatch(record.key)
+    var batch = batches.mgetOrPut(
+      dispatched.store.key, DeleteBatch(store: dispatched.store, records: @[])
+    )
     batch.records.add(RawRecord.init(dispatched.relative, record.val, record.token))
     batches[dispatched.store.key] = batch
 
   var skipped: seq[Key]
   for batch in batches.values:
-    let relSkipped = ? (await batch.store.store.delete(batch.records))
+    let relSkipped = ?(await batch.store.store.delete(batch.records))
     for relKey in relSkipped:
       skipped.add(batch.store.key / relKey)
 
   return success skipped
 
-method close*(self: MountedDatastore): Future[?!void] {.async: (raises: [CancelledError]).} =
+method close*(
+    self: MountedDatastore
+): Future[?!void] {.async: (raises: [CancelledError]).} =
   for s in self.stores.values:
     discard await s.store.close()
 
@@ -166,9 +161,9 @@ method close*(self: MountedDatastore): Future[?!void] {.async: (raises: [Cancell
   return success()
 
 func new*(
-  T: type MountedDatastore,
-  stores: Table[Key, Datastore] = initTable[Key, Datastore]()): ?!T =
-
+    T: type MountedDatastore,
+    stores: Table[Key, Datastore] = initTable[Key, Datastore](),
+): ?!T =
   var self = T()
   for (k, v) in stores.pairs:
     self.stores[?k.path] = MountedStore(store: v, key: k)

@@ -80,8 +80,7 @@ suite "Test Read Only SQLiteDatastore":
       not (await dsDb.has(key)).tryGet()
 
 suite "Test Query":
-  var
-    ds: SQLiteDatastore
+  var ds: SQLiteDatastore
 
   setup:
     ds = SQLiteDatastore.new(Memory).tryGet()
@@ -89,7 +88,4 @@ suite "Test Query":
   teardown:
     (await ds.close()).tryGet
 
-  queryTests(ds,
-    testLimitsAndOffsets = true,
-    testSortOrder = true
-  )
+  queryTests(ds, testLimitsAndOffsets = true, testSortOrder = true)

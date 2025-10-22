@@ -22,7 +22,9 @@ proc newBackendError*(msg: string): ref DatastoreBackendError =
 proc newCorruptionError*(msg: string): ref DatastoreCorruption =
   newException(DatastoreCorruption, msg)
 
-proc newMaxRetriesError*(msg: string = "Max retries reached"): ref DatastoreMaxRetriesError =
+proc newMaxRetriesError*(
+    msg: string = "Max retries reached"
+): ref DatastoreMaxRetriesError =
   newException(DatastoreMaxRetriesError, msg)
 
 proc withValue*[T](record: Record[T], value: T): Record[T] =
@@ -40,9 +42,7 @@ method has*(
 
 method get*(
     self: Datastore, keys: seq[Key]
-): Future[?!seq[RawRecord]] {.
-    base, gcsafe, async: (raises: [CancelledError])
-.} =
+): Future[?!seq[RawRecord]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Get a list of records specified by the keys
   ##
 
@@ -50,9 +50,7 @@ method get*(
 
 method get*(
     self: Datastore, key: Key
-): Future[?!RawRecord] {.
-    base, gcsafe, async: (raises: [CancelledError])
-.} =
+): Future[?!RawRecord] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Get a single record
   ##
 
@@ -60,9 +58,7 @@ method get*(
 
 method put*(
     self: Datastore, records: seq[RawRecord]
-): Future[?!seq[Key]] {.
-    base, gcsafe, async: (raises: [CancelledError])
-.} =
+): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Insert or update a group of records
   ##
   ## The sequence will contain records that couldn't be inserted/updated
@@ -104,7 +100,8 @@ proc delete*(
 
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
-    return failure newException(DatastoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(DatastoreError, "Unable to delete record due to conflict")
 
   success()
 
@@ -115,16 +112,14 @@ method close*(
 
 method query*(
     self: Datastore, query: Query
-): Future[?!QueryIterRaw] {.
-    base, gcsafe, async: (raises: [CancelledError])
-.} =
+): Future[?!QueryIterRaw] {.base, gcsafe, async: (raises: [CancelledError]).} =
   raiseAssert("Not implemented!")
 
 proc tryPut*(
     self: Datastore,
     records: seq[RawRecord],
     maxRetries = 3,
-    middleware: RawMiddleware = nil
+    middleware: RawMiddleware = nil,
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk put with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
@@ -142,7 +137,7 @@ proc tryPut*(
 
   while true:
     let keys = ?(await self.put(records))
-    records = records.filterIt( it.key in keys )
+    records = records.filterIt(it.key in keys)
     if records.len == 0:
       break
 
@@ -162,10 +157,7 @@ proc tryPut*(
   return success records
 
 proc tryPut*(
-    self: Datastore,
-    record: RawRecord,
-    maxRetries = 3,
-    middleware: RawMiddleware = nil
+    self: Datastore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryPut
   ##
@@ -180,7 +172,7 @@ proc tryDelete*(
     self: Datastore,
     records: seq[RawRecord],
     maxRetries = 3,
-    middleware: RawMiddleware = nil
+    middleware: RawMiddleware = nil,
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
@@ -218,25 +210,20 @@ proc tryDelete*(
   return success records
 
 proc tryDelete*(
-    self: Datastore,
-    record: RawRecord,
-    maxRetries = 3,
-    middleware: RawMiddleware = nil
+    self: Datastore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryDelete
   ##
 
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(DatastoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(DatastoreError, "Unable to delete record due to conflict")
 
   return success()
 
 proc getOrPut*(
-    self: Datastore,
-    key: Key,
-    producer: RawValueProducer,
-    maxRetries = 3
+    self: Datastore, key: Key, producer: RawValueProducer, maxRetries = 3
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
   ## Get existing record or lazily insert using producer
   ## Producer is only called if key is missing

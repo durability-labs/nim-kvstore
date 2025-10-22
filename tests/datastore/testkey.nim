@@ -36,32 +36,28 @@ suite "Namespace":
       Namespace.init(":b").isSuccess
 
   test "should init with value":
-    let
-      ns = Namespace.init("", "b").tryGet()
+    let ns = Namespace.init("", "b").tryGet()
 
     check:
       ns.value == "b"
       ns.field == ""
 
   test "should init with field and value":
-    let
-      ns = Namespace.init("a", "b").tryGet()
+    let ns = Namespace.init("a", "b").tryGet()
 
     check:
       ns.value == "b"
       ns.field == "a"
 
   test "should init with value from id string":
-    let
-      ns = Namespace.init(":b").tryGet()
+    let ns = Namespace.init(":b").tryGet()
 
     check:
       ns.value == "b"
       ns.field == ""
 
   test "should init with field and value from id string":
-    let
-      ns = Namespace.init("a:b").tryGet()
+    let ns = Namespace.init("a:b").tryGet()
 
     check:
       ns.value == "b"
@@ -89,16 +85,14 @@ suite "Namespace":
       Namespace.init("a").tryGet() != Namespace.init("a:b").tryGet()
 
   test "should return id from value string":
-    let
-      ns = Namespace.init(":b").tryGet()
+    let ns = Namespace.init(":b").tryGet()
 
     check:
       ns.id == "b"
       $ns == ns.id
 
   test "should init id from field and value string":
-    let
-      ns = Namespace.init("a:b").tryGet()
+    let ns = Namespace.init("a:b").tryGet()
 
     check:
       ns.id == "a:b"
@@ -106,7 +100,6 @@ suite "Namespace":
 
 suite "Key":
   test "init failure":
-
     check:
       Key.init("::").isFailure
 
@@ -131,29 +124,28 @@ suite "Key":
       Key.init("///a:b///c///").isSuccess
 
   test "accessors":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
-      key.namespaces == @[
-        Namespace.init("a:b").tryGet(),
-        Namespace.init("c").tryGet(),
-        Namespace.init("d:e").tryGet()
-      ]
+      key.namespaces ==
+        @[
+          Namespace.init("a:b").tryGet(),
+          Namespace.init("c").tryGet(),
+          Namespace.init("d:e").tryGet(),
+        ]
 
       key.list == key.namespaces
 
   test "should equal":
     check:
-      Key.init(
-        Namespace.init("a:b").tryGet(),
-        Namespace.init("c").tryGet()).tryGet() == Key.init("a:b/c").tryGet()
+      Key.init(Namespace.init("a:b").tryGet(), Namespace.init("c").tryGet()).tryGet() ==
+        Key.init("a:b/c").tryGet()
 
       Key.init("a:b", "c").tryGet() == Key.init("a:b/c").tryGet()
       Key.init("a:b/c").tryGet() == Key.init("a:b/c").tryGet()
-      Key.init(
-        Namespace.init("a:b").tryGet(),
-        Namespace.init("c").tryGet()).tryGet() != Key.init("c:b/a").tryGet()
+
+      Key.init(Namespace.init("a:b").tryGet(), Namespace.init("c").tryGet()).tryGet() !=
+        Key.init("c:b/a").tryGet()
 
       Key.init("a:b/c").tryGet() == Key.init("/a:b/c/").tryGet()
       Key.init("a:b/c").tryGet() == Key.init("///a:b///c///").tryGet()
@@ -182,42 +174,41 @@ suite "Key":
       Key.init("a/b/c").tryGet() != Key.init("a:X/b:X/c:X").tryGet()
 
   test "random key":
-    check: Key.random.len == 24
+    check:
+      Key.random.len == 24
 
   test "key index":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
       key[1] == Namespace.init("c").tryGet()
-      key[1..^1] == @[Namespace.init("c").tryGet(), Namespace.init("d:e").tryGet()]
+      key[1 ..^ 1] == @[Namespace.init("c").tryGet(), Namespace.init("d:e").tryGet()]
       key[^1] == Namespace.init("d:e").tryGet()
       key.len == key.namespaces.len
 
   test "key iterator":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
-    var
-      nss = key.mapIt( it )
+    var nss = key.mapIt(it)
 
     check:
-      nss == @[
-        Namespace.init("a:b").tryGet(),
-        Namespace.init("c").tryGet(),
-        Namespace.init("d:e").tryGet()
-      ]
+      nss ==
+        @[
+          Namespace.init("a:b").tryGet(),
+          Namespace.init("c").tryGet(),
+          Namespace.init("d:e").tryGet(),
+        ]
 
   test "key reversed":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
-      key.reverse.namespaces == @[
-        Namespace.init("d:e").tryGet(),
-        Namespace.init("c").tryGet(),
-        Namespace.init("a:b").tryGet()
-      ]
+      key.reverse.namespaces ==
+        @[
+          Namespace.init("d:e").tryGet(),
+          Namespace.init("c").tryGet(),
+          Namespace.init("a:b").tryGet(),
+        ]
 
       key.reverse.namespaces == key.namespaces.reversed
 
@@ -231,45 +222,40 @@ suite "Key":
       not Key.init(":b/c").tryGet().root
 
   test "key parent":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
-      Key.init(":b").?parent.isFailure
-      Key.init(":b").?parent.isFailure
+      Key.init(":b") .? parent.isFailure
+      Key.init(":b") .? parent.isFailure
 
       !(key.parent) == !Key.init("a:b/c")
-      !(key.parent.?parent) == !Key.init("a:b")
-      key.parent.?parent.?parent.isFailure
+      !(key.parent .? parent) == !Key.init("a:b")
+      key.parent .? parent .? parent.isFailure
 
   test "key path":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
       !(key.path) == !Key.init("/a:b/c/d")
-      !(key.parent.?path) == !Key.init("a:b/c")
+      !(key.parent .? path) == !Key.init("a:b/c")
 
-      !(Key.init("a:b/c:d").?path) == !Key.init("a:b/c")
-      !(Key.init("a:b/c/d:e").?path) == !Key.init("a:b/c/d")
+      !(Key.init("a:b/c:d") .? path) == !Key.init("a:b/c")
+      !(Key.init("a:b/c/d:e") .? path) == !Key.init("a:b/c/d")
 
   test "key child":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
       key.child(Namespace.init("f:g").tryGet()) == Key.init("a:b/c/d:e/f:g").tryGet()
       key.child(newSeq[Namespace]()) == key
-      key.child(
-        Namespace.init("f:g").tryGet(),
-        Namespace.init("h:i").tryGet()) == Key.init("a:b/c/d:e/f:g/h:i").tryGet()
+      key.child(Namespace.init("f:g").tryGet(), Namespace.init("h:i").tryGet()) ==
+        Key.init("a:b/c/d:e/f:g/h:i").tryGet()
 
       key.child(Key.init("f:g").tryGet()) == Key.init("a:b/c/d:e/f:g").tryGet()
       key.child(newSeq[Key]()) == key
 
-      key.child(
-        Key.init("f:g").tryGet(),
-        Key.init("h:i").tryGet()) == Key.init("a:b/c/d:e/f:g/h:i").tryGet()
+      key.child(Key.init("f:g").tryGet(), Key.init("h:i").tryGet()) ==
+        Key.init("a:b/c/d:e/f:g/h:i").tryGet()
 
       key.child("f:g", ":::").isFailure
       key.child("f:g", "h:i").tryGet() == Key.init("a:b/c/d:e/f:g/h:i").tryGet()
@@ -277,8 +263,7 @@ suite "Key":
       key.child("", "", "").tryGet() == key
 
   test "key / operator":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
       key / Namespace.init("f:g").tryGet() == Key.init("a:b/c/d:e/f:g").tryGet()
@@ -286,16 +271,14 @@ suite "Key":
       (key / "f:g").tryGet() == Key.init("a:b/c/d:e/f:g").tryGet()
 
   test "key ancestor":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
       not key.ancestor(Key.init("f:g").tryGet())
       key.ancestor(key / Key.init("f:g").tryGet())
 
   test "key descendant":
-    let
-      key = Key.init("/a:b/c/d:e").tryGet()
+    let key = Key.init("/a:b/c/d:e").tryGet()
 
     check:
       key.descendant(key.parent.tryGet())

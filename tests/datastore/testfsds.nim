@@ -21,8 +21,7 @@ suite "Test Basic FSDatastore":
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
 
-  var
-    fsStore: FSDatastore
+  var fsStore: FSDatastore
 
   setupAll:
     removeDir(basePathAbs)
@@ -101,15 +100,15 @@ suite "Test Misc FSDatastore":
       (await fs.has(key)).isErr
 
   test "Test key cannot convert to invalid path":
-    let
-      fs = FSDatastore.new(root = basePathAbs).tryGet()
+    let fs = FSDatastore.new(root = basePathAbs).tryGet()
 
     for c in invalidFilenameChars:
-      if c == ':': continue
-      if c == '/': continue
+      if c == ':':
+        continue
+      if c == '/':
+        continue
 
-      let
-        key = Key.init("/" & c).tryGet()
+      let key = Key.init("/" & c).tryGet()
 
       check:
         (await fs.put(RawRecord.init(key, bytes))).isErr
@@ -123,8 +122,7 @@ suite "Test Query":
     basePath = "tests_data"
     basePathAbs = path.parentDir / basePath
 
-  var
-    ds: FSDatastore
+  var ds: FSDatastore
 
   setup:
     removeDir(basePathAbs)
@@ -134,7 +132,6 @@ suite "Test Query":
     ds = FSDatastore.new(root = basePathAbs, depth = 5).tryGet()
 
   teardown:
-
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
@@ -142,10 +139,7 @@ suite "Test Query":
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
-  queryTests(ds,
-    testLimitsAndOffsets = false,
-    testSortOrder = false
-  )
+  queryTests(ds, testLimitsAndOffsets = false, testSortOrder = false)
 
   test "Query should exclude siblings outside the namespace":
     let

@@ -27,31 +27,28 @@ proc encode(s: string): seq[byte] =
 proc decode(T: type string, bytes: seq[byte]): ?!T =
   success(string.fromBytes(bytes))
 
-proc typedDsTests*(
-  ds: Datastore,
-  key: Key) =
-
+proc typedDsTests*(ds: Datastore, key: Key) =
   var record: Record[int]
   test "should put a value":
     (await ds.put(key, 11)).tryGet()
-    record = (await ds.get[:int](key)).tryGet()
+    record = (await get[int](ds, key)).tryGet()
 
   test "should get the value":
-    record = ((await ds.get[:int](key)).tryGet())
+    record = ((await get[int](ds, key)).tryGet())
     check 11 == record.val
 
   test "put overwrites existing value":
     record.val = 34
     (await ds.put(record)).tryGet
-    record = (await ds.get[:int](key)).tryGet()
+    record = (await get[int](ds, key)).tryGet()
     check 34 == record.val
 
   test "delete removes value":
     (await ds.delete(record)).tryGet
     check not (await ds.has(key)).tryGet()
 
-  test "get reports missing" :
-    let missing = await ds.get[:int](key)
+  test "get reports missing":
+    let missing = await get[int](ds, key)
     check missing.isErr and missing.error of DatastoreKeyNotFound
 
 proc typedDsQueryTests*(ds: Datastore) =
@@ -59,25 +56,19 @@ proc typedDsQueryTests*(ds: Datastore) =
 
   test "should query values":
     let
-      source = {
-        "a": 11,
-        "b": 22,
-        "c": 33,
-        "d": 44
-      }.toTable
+      source = {"a": 11, "b": 22, "c": 33, "d": 44}.toTable
       Root = Key.init("/querytest").tryGet()
 
     for k, v in source:
       let key = (Root / k).tryGet()
       (await ds.put(key, v)).tryGet()
 
-    let iter = (await ds.query[:int](Query.init(Root))).tryGet()
+    let iter = (await query[int](ds, Query.init(Root))).tryGet()
 
     var results = initTable[string, int]()
 
     while not iter.finished:
-      let
-        item = (await iter.next()).tryGet()
+      let item = (await iter.next()).tryGet()
 
       without record =? item:
         continue

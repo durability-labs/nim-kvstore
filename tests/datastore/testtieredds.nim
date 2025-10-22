@@ -86,8 +86,7 @@ suite "TieredDatastore":
       TieredDatastore.new(@[ds1, ds2]).isOk
 
   test "accessors":
-    let
-      stores = @[ds1, ds2]
+    let stores = @[ds1, ds2]
 
     check:
       TieredDatastore.new(ds1, ds2).tryGet.stores == stores
@@ -103,8 +102,7 @@ suite "TieredDatastore":
       (await ds2.get(key)).tryGet().val == bytes
 
   test "delete":
-    let
-      ds = TieredDatastore.new(ds1, ds2).get
+    let ds = TieredDatastore.new(ds1, ds2).get
 
     (await ds.put(RawRecord.init(key, bytes))).tryGet()
     let stored = (await ds.get(key)).tryGet()
@@ -117,8 +115,7 @@ suite "TieredDatastore":
       discard (await ds2.get(key)).tryGet()
 
   test "contains":
-    let
-      ds = TieredDatastore.new(ds1, ds2).tryGet
+    let ds = TieredDatastore.new(ds1, ds2).tryGet
 
     check:
       not (await ds1.has(key)).tryGet
@@ -132,8 +129,7 @@ suite "TieredDatastore":
       (await ds2.has(key)).tryGet
 
   test "get":
-    var
-      ds = TieredDatastore.new(ds1, ds2).tryGet
+    var ds = TieredDatastore.new(ds1, ds2).tryGet
 
     check:
       not (await ds1.has(key)).tryGet

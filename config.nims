@@ -1,7 +1,11 @@
---threads:on
---tlsEmulation:off
---styleCheck:usages
---styleCheck:error
+--threads:
+  on
+--tlsEmulation:
+  off
+--styleCheck:
+  usages
+--styleCheck:
+  error
 
 when (NimMajor, NimMinor) == (1, 2):
   switch("hint", "Processing:off")

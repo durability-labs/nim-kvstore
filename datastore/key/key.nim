@@ -14,9 +14,8 @@ import ./namespace
 
 export hashes, namespace
 
-type
-  Key* = object
-    namespaces*: seq[Namespace]
+type Key* = object
+  namespaces*: seq[Namespace]
 
 func init*(T: type Key, namespaces: varargs[Namespace]): ?!T =
   success T(namespaces: @namespaces)
@@ -24,18 +23,14 @@ func init*(T: type Key, namespaces: varargs[Namespace]): ?!T =
 func init*(T: type Key, namespaces: varargs[string]): ?!T =
   var self = T()
   for s in namespaces:
-    self.namespaces &= s
-      .split( Separator )
-      .filterIt( it.len > 0 )
-      .mapIt( ?Namespace.init(it) )
+    self.namespaces &= s.split(Separator).filterIt(it.len > 0).mapIt(
+      ?Namespace.init(it)
+    )
 
   return success self
 
 func init*(T: type Key, keys: varargs[Key]): ?!T =
-  success T(
-    namespaces: keys
-    .mapIt(it.namespaces)
-    .concat)
+  success T(namespaces: keys.mapIt(it.namespaces).concat)
 
 func list*(self: Key): seq[Namespace] =
   self.namespaces
@@ -74,22 +69,19 @@ func parent*(self: Key): ?!Key =
   if self.root:
     failure "key has no parent"
   else:
-    success Key(namespaces: self.namespaces[0..^2])
+    success Key(namespaces: self.namespaces[0 ..^ 2])
 
 func path*(self: Key): ?!Key =
-  let
-    tail =
-      if self[^1].field.len > 0:
-        self[^1].field
-      else:
-        self[^1].value
+  let tail =
+    if self[^1].field.len > 0:
+      self[^1].field
+    else:
+      self[^1].value
 
   if self.root:
     return Key.init(tail)
 
-  return success Key(
-    namespaces: (?self.parent).namespaces &
-    @[Namespace(value: tail)])
+  return success Key(namespaces: (?self.parent).namespaces & @[Namespace(value: tail)])
 
 func child*(self: Key, namespaces: varargs[Namespace]): Key =
   Key(namespaces: self.namespaces & @namespaces)
@@ -104,7 +96,7 @@ func `/`*(self, key: Key): Key =
   self.child(key)
 
 func child*(self: Key, ids: varargs[string]): ?!Key =
-  success self.child(ids.filterIt(it != "").mapIt( ?Key.init(it) ))
+  success self.child(ids.filterIt(it != "").mapIt(?Key.init(it)))
 
 func `/`*(self: Key, id: string): ?!Key =
   self.child(id)
@@ -125,8 +117,10 @@ func relative*(self: Key, parent: Key): ?!Key =
   return success Key(namespaces: self.namespaces[parent.len ..< self.len])
 
 func ancestor*(self, other: Key): bool =
-  if other.len <= self.len: false
-  else: other.namespaces[0..<self.len] == self.namespaces
+  if other.len <= self.len:
+    false
+  else:
+    other.namespaces[0 ..< self.len] == self.namespaces
 
 func descendant*(self, other: Key): bool =
   other.ancestor(self)
