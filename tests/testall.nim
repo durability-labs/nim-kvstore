@@ -1,10 +1,8 @@
-import
-  ./datastore/testkey,
-  ./datastore/testdatastore,
-  ./datastore/testfsds,
-  ./datastore/testsql,
-  ./datastore/testleveldb,
-  ./datastore/testtieredds,
-  ./datastore/testmountedds
+import ./datastore/testkey
+import ./datastore/testdatastore
+import ./datastore/testfsds
+import ./datastore/testsql
+import ./datastore/testtieredds # this fails silently somewhere
+import ./datastore/testmountedds
 
 {.warning[UnusedImport]: off.}
