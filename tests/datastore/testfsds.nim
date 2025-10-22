@@ -11,6 +11,7 @@ import pkg/datastore
 
 import ./dscommontests
 import ./querycommontests
+import ./typeddscommontests
 
 suite "Test Basic FSDatastore":
   let
@@ -36,6 +37,7 @@ suite "Test Basic FSDatastore":
     require(not dirExists(basePathAbs))
 
   basicStoreTests(fsStore, key, bytes, otherBytes)
+  helperTests(fsStore, key)
 
 suite "Test Misc FSDatastore":
   let

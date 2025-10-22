@@ -28,10 +28,11 @@ proc decode(T: type string, bytes: seq[byte]): ?!T =
   success(string.fromBytes(bytes))
 
 proc typedDsTests*(ds: Datastore, key: Key) =
+
   var record: Record[int]
   test "should put a value":
     (await ds.put(key, 11)).tryGet()
-    record = (await get[int](ds, key)).tryGet()
+    record = (await ds.get[:int](key)).tryGet()
 
   test "should get the value":
     record = ((await get[int](ds, key)).tryGet())
