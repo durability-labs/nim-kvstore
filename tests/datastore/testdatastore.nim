@@ -13,23 +13,23 @@ suite "Datastore (base)":
   let record = Record.init(key, @[1.byte])
 
   test "put":
-    expect Defect:
+    expect AssertionDefect:
       (await ds.put(record)).tryGet
 
   test "delete":
-    expect Defect:
-      discard (await ds.delete(record))
+    expect AssertionDefect:
+      (await ds.delete(record)).tryGet
 
   test "contains":
-    expect Defect:
+    expect AssertionDefect:
       discard (await ds.has(key)).tryGet
 
   test "get":
-    expect Defect:
-      var rec: Record[seq[byte]] = (await get[seq[byte]](ds, key)).tryGet
+    expect AssertionDefect:
+      var rec = (await ds.get[:seq[byte]](key)).tryGet
 
   test "query":
-    expect Defect:
+    expect AssertionDefect:
       let iter = (await query[seq[byte]](ds, Query.init(key))).tryGet
       for n in iter:
         discard
