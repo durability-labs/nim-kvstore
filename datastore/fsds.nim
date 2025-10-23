@@ -118,21 +118,24 @@ proc writeVersioned*(
 
   var file: File
   defer:
-    file.close()
     ?catch(removeFile(tmp))
 
-  if not file.open(tmp, fmWrite):
-    return failure newBackendError("unable to open temporary file '" & tmp & "'")
+  try:
+    if not file.open(tmp, fmWrite):
+      return failure newBackendError("unable to open temporary file '" & tmp & "'")
 
-  let header = token.toBytesLE()
-  if ?catch(file.writeBuffer(addr header[0], TokenBytes)) != TokenBytes:
-    return failure newBackendError("Failed writing token")
+    let header = token.toBytesLE()
+    if ?catch(file.writeBuffer(addr header[0], TokenBytes)) != TokenBytes:
+      return failure newBackendError("Failed writing token")
 
-  if value.len > 0:
-    if ?catch (file.writeBytes(value, 0, value.len)) != value.len:
-      return failure newBackendError("Failed writing data")
+    if value.len > 0:
+      if ?catch (file.writeBytes(value, 0, value.len)) != value.len:
+        return failure newBackendError("Failed writing data")
 
-  file.flushFile()
+    file.flushFile()
+  finally:
+    file.close
+
   ?moveFile(tmp, path)
 
   return success()
