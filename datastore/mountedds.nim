@@ -7,7 +7,6 @@ import pkg/questionable
 import pkg/questionable/results
 
 import ./key
-import ./query
 import ./datastore
 
 type

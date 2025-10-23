@@ -177,8 +177,8 @@ proc helperTests*(ds: Datastore, key: Key) =
       Record[int].init(key3, 30, 1)   # Valid
     ]
 
-    let result = await ds.tryPut(updates, maxRetries = 1)
-    check result.isErr or result.get.len > 0  # Should have failures
+    let res = await ds.tryPut(updates, maxRetries = 1)
+    check res.isErr or res.get.len > 0  # Should have failures
 
   test "tryPut - middleware resolves conflicts":
     let middlewareKey = (key / "middleware").tryGet()
@@ -225,9 +225,9 @@ proc helperTests*(ds: Datastore, key: Key) =
 
     # Try to delete with stale token
     let stale = Record[int].init(delKey, current.val, current.token - 1)
-    let result = await ds.tryDelete(@[stale], maxRetries = 2)
+    let res = await ds.tryDelete(@[stale], maxRetries = 2)
 
-    check result.isErr  # Should fail with max retries
+    check res.isErr  # Should fail with max retries
     check (await ds.has(delKey)).tryGet()  # Record should still exist
 
   test "tryDelete - single record wrapper":
@@ -271,10 +271,10 @@ proc helperTests*(ds: Datastore, key: Key) =
       producerCalled = true
       success 999
 
-    let result = (await ds.getOrPut[:int](gopKey, producer)).tryGet()
+    let res = (await ds.getOrPut[:int](gopKey, producer)).tryGet()
 
     check not producerCalled  # Producer should not be called
-    check result.val == 123   # Should get existing value
+    check res.val == 123   # Should get existing value
 
   test "getOrPut - creates new record when missing":
     let gopKey = (key / "getorput2").tryGet()
@@ -285,10 +285,10 @@ proc helperTests*(ds: Datastore, key: Key) =
       producerCalled = true
       success 456
 
-    let result = (await ds.getOrPut[:int](gopKey, producer)).tryGet()
+    let res = (await ds.getOrPut[:int](gopKey, producer)).tryGet()
 
     check producerCalled      # Producer should be called
-    check result.val == 456   # Should get produced value
+    check res.val == 456   # Should get produced value
 
     # Verify it was actually stored
     let retrieved = (await ds.get[:int](gopKey)).tryGet()
@@ -304,7 +304,7 @@ proc helperTests*(ds: Datastore, key: Key) =
       inc producerCallCount
       success 789
 
-    let result = (await ds.getOrPut[:int](gopKey, producer, maxRetries = 3)).tryGet()
+    let res = (await ds.getOrPut[:int](gopKey, producer, maxRetries = 3)).tryGet()
 
     check producerCallCount > 0
-    check result.val == 789
+    check res.val == 789

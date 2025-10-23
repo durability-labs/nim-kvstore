@@ -1,7 +1,6 @@
 import std/tables
 
 import pkg/asynctest/chronos/unittest2
-import pkg/stew/byteutils
 import pkg/stew/endians2
 import pkg/questionable
 import pkg/questionable/results
