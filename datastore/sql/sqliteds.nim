@@ -80,14 +80,14 @@ method get*(
     value = dataCol(s, GetSingleStmtDataCol)()
     token = versionCol(s, GetSingleStmtVersionCol)()
 
+    if token < 0:
+      raiseAssert("Negative token detected")
+
   if err =? self.db.getSingleStmt.query((key.id), onRow).errorOption:
     return failure(err)
 
   if not rowFound:
     return failure(newException(DatastoreKeyNotFound, "Key doesn't exist"))
-
-  if token < 0:
-    return failure(newCorruptionError("Negative token stored for " & $key))
 
   return success RawRecord.init(key, value, token.uint64)
 
@@ -101,6 +101,9 @@ method get*(
       key = idCol(s, GetManyStmtIdCol)()
       value = dataCol(s, GetManyStmtDataCol)()
       token = versionCol(s, GetManyStmtVersionCol)()
+
+    if token < 0:
+      raiseAssert("Negative token detected")
 
     records.add(RawRecord.init(?Key.init(key), value, token.uint64))
 
