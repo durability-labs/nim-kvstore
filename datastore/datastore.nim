@@ -12,7 +12,6 @@ import ./query
 
 export types
 
-# Typed Record constructor
 proc init*(_: type RawRecord, key: Key, val: seq[byte], token = 0'u64): RawRecord =
   RawRecord(key: key, val: val, token: token)
 

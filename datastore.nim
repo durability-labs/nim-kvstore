@@ -84,7 +84,6 @@ proc put*[T](
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Insert or update a single record
   ##
-  ## The result contains the record that couldn't be inserted/updated
   ##
 
   rawds.put(self, record.toRaw)
@@ -173,14 +172,7 @@ proc tryPut*[T](
   let failedRaw = ?(await rawds.tryPut(self, rawRecords, maxRetries, rawMiddleware))
 
   # Convert failed records back to typed
-  var failedTyped: seq[Record[T]]
-  for raw in failedRaw:
-    let converted = toRecord[T](raw)
-    if converted.isErr:
-      return failure(converted.error)
-    failedTyped.add(converted.value)
-
-  return success(failedTyped)
+  return success(failedRaw.mapIt( ? toRecord[T](it) ))
 
 proc tryPut*[T](
     self: Datastore, record: Record[T], maxRetries = 3, middleware: Middleware[Record[T]] = nil
@@ -226,14 +218,7 @@ proc tryDelete*[T](
   let failedRaw = ?(await rawds.tryDelete(self, rawRecords, maxRetries, rawMiddleware))
 
   # Convert failed records back to typed
-  var failedTyped: seq[Record[T]]
-  for raw in failedRaw:
-    let converted = toRecord[T](raw)
-    if converted.isErr:
-      return failure(converted.error)
-    failedTyped.add(converted.value)
-
-  return success(failedTyped)
+  return success(failedRaw.mapIt( ? toRecord[T](it) ))
 
 proc tryDelete*[T](
     self: Datastore, record: Record[T], maxRetries = 3, middleware: Middleware[Record[T]] = nil
