@@ -72,7 +72,7 @@ suite "Test Basic Mounted Datastore":
     let fsRecord = fetched.filterIt(it.key == fsKeyB)[0]
 
     # using an outdated token must register a conflict for the sql record
-    let staleSql = sqlRecord.withToken(sqlRecord.token + 1)
+    let staleSql = RawRecord.init(sqlRecord.key, sqlRecord.val, sqlRecord.token + 1)
     let conflicts = (await mountedDs.put(@[staleSql])).tryGet
     check conflicts.len == 1
     check conflicts[0] == sqlKeyA
