@@ -12,8 +12,11 @@ import ./query
 
 export types
 
-proc init*(_: type RawRecord, key: Key, val: seq[byte], token = 0'u64): RawRecord =
-  RawRecord(key: key, val: val, token: token)
+proc init*[T](_: type Record[T], key: Key, val: T, token = 0'u64): Record[T] =
+  Record[T](key: key, val: val, token: token)
+
+proc init*[void](_: type Record[void], key: Key, token = 0'u64): Record[void] =
+  Record[void](key: key, token: token)
 
 proc newBackendError*(msg: string): ref DatastoreBackendError =
   newException(DatastoreBackendError, msg)
@@ -81,7 +84,7 @@ proc put*(
   return success()
 
 method delete*(
-    self: Datastore, records: seq[RawRecord]
+    self: Datastore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Delete a list of records
   ##
@@ -90,7 +93,7 @@ method delete*(
   raiseAssert("Not implemented!")
 
 proc delete*(
-    self: Datastore, record: RawRecord
+    self: Datastore, record: KeyRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Delete a single record
   ##
@@ -102,6 +105,20 @@ proc delete*(
     return
       failure newException(DatastoreError, "Unable to delete record due to conflict")
 
+  success()
+
+# RawRecord convenience overloads - just extract key+token, no conversion
+proc delete*(
+    self: Datastore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
+  self.delete(records.toKeyRecord)
+
+proc delete*(
+    self: Datastore, record: RawRecord
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  let skipped = ?(await self.delete(@[record]))
+  if skipped.len > 0:
+    return failure newException(DatastoreError, "Unable to delete record due to conflict")
   success()
 
 method close*(
@@ -169,10 +186,10 @@ proc tryPut*(
 
 proc tryDelete*(
     self: Datastore,
-    records: seq[RawRecord],
+    records: seq[KeyRecord],
     maxRetries = 3,
-    middleware: RawMiddleware = nil,
-): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+    middleware: KeyMiddleware = nil,
+): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
   ##
@@ -181,7 +198,7 @@ proc tryDelete*(
   ##
 
   if records.len == 0:
-    return success(newSeq[RawRecord]())
+    return success(newSeq[KeyRecord]())
 
   var
     remaining = maxRetries
@@ -209,7 +226,7 @@ proc tryDelete*(
   return success records
 
 proc tryDelete*(
-    self: Datastore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
+    self: Datastore, record: KeyRecord, maxRetries = 3, middleware: KeyMiddleware = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryDelete
   ##
@@ -219,6 +236,51 @@ proc tryDelete*(
     return
       failure newException(DatastoreError, "Unable to delete record due to conflict")
 
+  return success()
+
+# RawRecord tryDelete - middleware works with RawRecord, no conversion
+proc tryDelete*(
+    self: Datastore,
+    records: seq[RawRecord],
+    maxRetries = 3,
+    middleware: RawMiddleware = nil,
+): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  ## Bulk delete with retry - value passes through untouched (no encode/decode)
+  if records.len == 0:
+    return success(newSeq[RawRecord]())
+
+  var
+    remaining = maxRetries
+    records = records
+
+  while true:
+    if remaining == 0:
+      return failure newMaxRetriesError("tryDelete max retries reached")
+
+    # Convert to KeyRecord ONLY for the delete call
+    let keys = ?(await self.delete(records.toKeyRecord))
+    records = records.filterIt(it.key in keys)
+    if records.len == 0:
+      break
+
+    # Middleware receives RawRecords directly - no conversion
+    if not middleware.isNil:
+      records = ?(await middleware(records))
+
+    if records.len == 0:
+      break
+
+    dec remaining
+
+  return success records
+
+proc tryDelete*(
+    self: Datastore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Single-record tryDelete - value is ignored (no encode/decode)
+  let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
+  if results.len > 0:
+    return failure newException(DatastoreError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*(

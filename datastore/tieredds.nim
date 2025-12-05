@@ -114,7 +114,7 @@ method put*(
   return success allSkipped
 
 method delete*(
-    self: TieredDatastore, records: seq[RawRecord]
+    self: TieredDatastore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## Delete records from all tiers
   ## Returns keys that were skipped due to conflicts in ANY tier

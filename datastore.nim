@@ -46,10 +46,6 @@ export datastore, fsds, mountedds, tieredds, sql, types, query, key
 # Note: Converters work for single records, but not for seq[Record[T]] -> seq[RawRecord]
 # So we provide explicit typed wrappers
 
-# Typed Record constructor
-proc init*[T](_: type Record[T], key: Key, val: T, token = 0'u64): Record[T] =
-  Record[T](key: key, val: val, token: token)
-
 # Typed datastore API
 proc get*[T](
     self: Datastore, keys: seq[Key]
@@ -91,27 +87,19 @@ proc put*[T](
 proc put*[T](
     self: Datastore, key: Key, value: T
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
-  rawds.put(self, Record.init(key, value).toRaw)
+  rawds.put(self, Record[T].init(key = key, val = value).toRaw)
 
 proc delete*[T](
     self: Datastore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
-  ## Delete a list of records
-  ##
-  ## Returns a sequence of keys that were skipped due to conflicts.
-  ##
-
-  rawds.delete(self, records.mapIt(it.toRaw))
+  ## Delete records - extracts key+token only, value is ignored (no encode/decode)
+  rawds.delete(self, records.toKeyRecord)
 
 proc delete*[T](
     self: Datastore, record: Record[T]
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
-  ## Delete a single record
-  ##
-  ## Errors if conflict occurs
-  ##
-
-  rawds.delete(self, record.toRaw)
+  ## Delete single record - value is ignored (no encode/decode)
+  rawds.delete(self, record.toKeyRecord)
 
 proc contains*(
     self: Datastore, key: Key
@@ -161,21 +149,26 @@ proc tryPut*[T](
   # Create raw middleware wrapper if typed middleware provided
   var rawMiddleware: RawMiddleware = nil
   if not middleware.isNil:
-    rawMiddleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+    rawMiddleware = proc(
+        failed: seq[RawRecord]
+    ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
       # Call typed middleware
-      let resolved = ?(await middleware(failed.mapIt( ?toRecord[T](it) )))
+      let resolved = ?(await middleware(failed.mapIt(?toRecord[T](it))))
 
       # Convert back to raw
-      success resolved.mapIt(toRaw[T](it))
+      success resolved.mapIt(it.toRaw)
 
   # Call raw tryPut
   let failedRaw = ?(await rawds.tryPut(self, rawRecords, maxRetries, rawMiddleware))
 
   # Convert failed records back to typed
-  return success(failedRaw.mapIt( ? toRecord[T](it) ))
+  return success(failedRaw.mapIt(?toRecord[T](it)))
 
 proc tryPut*[T](
-    self: Datastore, record: Record[T], maxRetries = 3, middleware: Middleware[Record[T]] = nil
+    self: Datastore,
+    record: Record[T],
+    maxRetries = 3,
+    middleware: Middleware[Record[T]] = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryPut with typed records
   ##
@@ -197,7 +190,6 @@ proc tryDelete*[T](
   ##
   ## If middleware is provided, calls it with failed records to resolve conflicts
   ##
-
   if records.len == 0:
     return success(newSeq[Record[T]]())
 
@@ -207,29 +199,32 @@ proc tryDelete*[T](
   # Create raw middleware wrapper if typed middleware provided
   var rawMiddleware: RawMiddleware = nil
   if not middleware.isNil:
-    rawMiddleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+    rawMiddleware = proc(
+        failed: seq[RawRecord]
+    ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
       # Call typed middleware
-      let resolved = ?(await middleware(failed.mapIt( ?toRecord[T](it) )))
+      let resolved = ?(await middleware(failed.mapIt(?toRecord[T](it))))
 
       # Convert back to raw
-      success resolved.mapIt(toRaw[T](it))
+      success resolved.mapIt(it.toRaw)
 
   # Call raw tryDelete
   let failedRaw = ?(await rawds.tryDelete(self, rawRecords, maxRetries, rawMiddleware))
 
   # Convert failed records back to typed
-  return success(failedRaw.mapIt( ? toRecord[T](it) ))
+  return success(failedRaw.mapIt(?toRecord[T](it)))
 
 proc tryDelete*[T](
-    self: Datastore, record: Record[T], maxRetries = 3, middleware: Middleware[Record[T]] = nil
+    self: Datastore,
+    record: Record[T],
+    maxRetries = 3,
+    middleware: Middleware[Record[T]] = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
-  ## Single-record wrapper for tryDelete with typed records
-  ##
-
+  ## Single-record tryDelete
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(DatastoreError, "Unable to delete record due to conflict")
-
+    return
+      failure newException(DatastoreError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*[T](
@@ -241,7 +236,7 @@ proc getOrPut*[T](
   ##
 
   # Try to get first
-  let existing = await self.get[:T](key)
+  let existing = await get[T](self, key)
   if existing.isOk:
     return existing
 
