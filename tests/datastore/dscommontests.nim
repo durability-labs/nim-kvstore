@@ -318,3 +318,46 @@ proc helperTests*(ds: Datastore, key: Key) =
 
     check producerCallCount > 0
     check res.val == 789
+
+  test "getOrPut - propagates producer error":
+    let gopKey = (key / "getorput-error").tryGet()
+
+    let failingProducer = proc(): Future[?!int] {.async: (raises: [CancelledError]).} =
+      failure "producer failed intentionally"
+
+    let res = await getOrPut[int](ds, gopKey, failingProducer)
+    check res.isErr
+
+  test "newCorruptionError creates error with message":
+    let err = newCorruptionError("corruption detected")
+    check err.msg == "corruption detected"
+    check err of DatastoreCorruption
+
+  test "newMaxRetriesError creates error with default message":
+    let err = newMaxRetriesError()
+    check err.msg == "Max retries reached"
+    check err of DatastoreMaxRetriesError
+
+  test "newMaxRetriesError creates error with custom message":
+    let err = newMaxRetriesError("custom retry error")
+    check err.msg == "custom retry error"
+
+  test "single put - conflict returns error":
+    let conflictKey = (key / "single-put-conflict").tryGet()
+    (await ds.put(conflictKey, 42)).tryGet()
+    let current = (await get[int](ds, conflictKey)).tryGet()
+
+    # Try single put with stale token - should error
+    let stale = Record[int].init(conflictKey, 999, current.token - 1)
+    let res = await ds.put(stale)
+    check res.isErr
+
+  test "single delete - conflict returns error":
+    let delKey = (key / "single-del-conflict").tryGet()
+    (await ds.put(delKey, 77)).tryGet()
+    let current = (await get[int](ds, delKey)).tryGet()
+
+    # Try single delete with stale token - should error
+    let stale = KeyRecord.init(delKey, current.token - 1)
+    let res = await ds.delete(stale)
+    check res.isErr
