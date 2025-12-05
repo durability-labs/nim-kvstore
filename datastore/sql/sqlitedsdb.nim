@@ -84,13 +84,13 @@ const
 
   QueryStmtIdStr* =
     fmt"""
-    SELECT {IdColName} FROM {TableName}
+    SELECT {IdColName}, {VersionColName} FROM {TableName}
         WHERE {IdColName} GLOB ?
   """
 
   QueryStmtDataIdStr* =
     fmt"""
-    SELECT {IdColName}, {DataColName} FROM {TableName}
+    SELECT {IdColName}, {DataColName}, {VersionColName} FROM {TableName}
         WHERE {IdColName} GLOB ?
   """
 
@@ -194,6 +194,8 @@ const
 
   QueryStmtIdCol* = 0
   QueryStmtDataCol* = 1
+  QueryStmtVersionColNoData* = 1  # When value=false: id=0, version=1
+  QueryStmtVersionColWithData* = 2  # When value=true: id=0, data=1, version=2
 
 template makeGetManyStmStr*(ids: openArray[string]): ?!string =
   catch (GetManyStmtStr % ids.mapIt("\"" & it & "\"").join(", "))
