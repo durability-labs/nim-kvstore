@@ -1,9 +1,9 @@
 mode = ScriptMode.Verbose
 
 packageName = "datastore"
-version = "0.4.0"
+version = "0.5.0"
 author = "nim-datastore authors, Status Research & Development GmbH"
-description = "Simple, unified API for multiple data stores"
+description = "Simple, unified API for multiple data stores with optimistic concurrency control"
 license = "Apache License 2.0 or MIT"
 
 requires "nim >= 2.0.14",
@@ -45,9 +45,9 @@ task coverage, "generates code coverage report":
   exec("lcov --capture --directory nimcache --output-file coverage/coverage.info")
   exec("$(which bash) -c 'shopt -s globstar; ls $(pwd)/datastore/{*,**/*}.nim'")
   exec(
-    "$(which bash) -c 'shopt -s globstar; lcov --extract coverage/coverage.info  $(pwd)/datastore/{*,**/*}.nim --output-file coverage/coverage.f.info'"
+    "$(which bash) -c 'shopt -s globstar; lcov --ignore-errors unused --extract coverage/coverage.info  $(pwd)/datastore/{*,**/*}.nim --output-file coverage/coverage.f.info'"
   )
   echo "Generating HTML coverage report"
-  exec("genhtml coverage/coverage.f.info --output-directory coverage/report")
+  exec("genhtml --ignore-errors range coverage/coverage.f.info --output-directory coverage/report")
   echo "Opening HTML coverage report in browser..."
   exec("open coverage/report/index.html")
