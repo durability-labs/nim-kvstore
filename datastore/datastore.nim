@@ -29,14 +29,6 @@ proc newMaxRetriesError*(
 ): ref DatastoreMaxRetriesError =
   newException(DatastoreMaxRetriesError, msg)
 
-proc withValue*[T](record: Record[T], value: T): Record[T] =
-  ## Returns a copy of `record` with `value` replaced.
-  Record[T].init(record.key, value, record.token)
-
-proc withToken*[T](record: Record[T], token: uint64): Record[T] =
-  ## Returns a copy of `record` with `token` replaced.
-  Record[T].init(record.key, record.val, token)
-
 method has*(
     self: Datastore, key: Key
 ): Future[?!bool] {.base, gcsafe, async: (raises: [CancelledError]).} =
@@ -136,13 +128,12 @@ proc tryPut*(
     self: Datastore,
     records: seq[RawRecord],
     maxRetries = 3,
-    middleware: RawMiddleware = nil,
+    middleware: RawMiddleware,
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk put with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
   ##
-  ## If middleware is provided, calls it with failed records to resolve conflicts
-  ## If middleware is nil, uses default: refetch tokens and retry with same values
+  ## If middleware is provided, calls it with failed records to resolve conflicts.
   ##
 
   if records.len == 0:
@@ -189,13 +180,12 @@ proc tryDelete*(
     self: Datastore,
     records: seq[KeyRecord],
     maxRetries = 3,
-    middleware: KeyMiddleware = nil,
+    middleware: KeyMiddleware,
 ): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
   ##
-  ## If middleware is provided, calls it with failed records to resolve conflicts
-  ## If middleware is nil, uses default: refetch tokens and retry with same values
+  ## If middleware is provided, calls it with failed records to resolve conflicts.
   ##
 
   if records.len == 0:
@@ -244,7 +234,7 @@ proc tryDelete*(
     self: Datastore,
     records: seq[RawRecord],
     maxRetries = 3,
-    middleware: RawMiddleware = nil,
+    middleware: RawMiddleware,
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry - value passes through untouched (no encode/decode)
   if records.len == 0:
@@ -306,5 +296,5 @@ proc getOrPut*(
   let value = ?(await producer())
   ?(await self.tryPut(RawRecord.init(key, value), maxRetries))
 
-  # Successfully inserted, return the record
-  return success RawRecord.init(key, value)
+  # Fetch the record to get the actual token
+  return await self.get(key)
