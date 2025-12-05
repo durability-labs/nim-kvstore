@@ -194,8 +194,8 @@ const
 
   QueryStmtIdCol* = 0
   QueryStmtDataCol* = 1
-  QueryStmtVersionColNoData* = 1  # When value=false: id=0, version=1
-  QueryStmtVersionColWithData* = 2  # When value=true: id=0, data=1, version=2
+  QueryStmtVersionColNoData* = 1 # When value=false: id=0, version=1
+  QueryStmtVersionColWithData* = 2 # When value=true: id=0, data=1, version=2
 
 template makeGetManyStmStr*(ids: openArray[string]): ?!string =
   catch (GetManyStmtStr % ids.mapIt("\"" & it & "\"").join(", "))

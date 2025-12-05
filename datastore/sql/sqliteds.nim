@@ -268,10 +268,7 @@ method query*(
           else:
             @[]
         versionCol =
-          if query.value:
-            QueryStmtVersionColWithData
-          else:
-            QueryStmtVersionColNoData
+          if query.value: QueryStmtVersionColWithData else: QueryStmtVersionColNoData
         version = sqlite3_column_int64(s, versionCol.cint).uint64
 
       return success RawRecord.init(key, data, version).some

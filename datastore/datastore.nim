@@ -118,7 +118,8 @@ proc delete*(
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
-    return failure newException(DatastoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(DatastoreError, "Unable to delete record due to conflict")
   success()
 
 method close*(
@@ -280,7 +281,8 @@ proc tryDelete*(
   ## Single-record tryDelete - value is ignored (no encode/decode)
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(DatastoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(DatastoreError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*(
