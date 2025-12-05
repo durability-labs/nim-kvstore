@@ -249,5 +249,5 @@ proc getOrPut*[T](
   let record = Record[T].init(key, value)
   ?(await self.tryPut(record, maxRetries))
 
-  # Successfully inserted, return the record
-  return success(record)
+  # Fetch the record to get the actual token
+  return await get[T](self, key)
