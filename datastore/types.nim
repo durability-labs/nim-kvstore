@@ -17,7 +17,8 @@ type
     when T is not type void:
       val*: T
 
-  Middleware*[T] = proc(failed: seq[T]): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
+  Middleware*[T] =
+    proc(failed: seq[T]): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
   ValueProducer*[T] = proc(): Future[?!T] {.gcsafe, async: (raises: [CancelledError]).}
 
   RawRecord* = Record[seq[byte]]
@@ -35,13 +36,14 @@ type
 
 # Encoder/decoder requirements
 template requireDecoder*(T: typedesc): untyped =
-  when not (compiles do:
-    let _: ?!T = T.decode(newSeq[byte]())):
-    {.error: "provide a decoder: `proc decode(T: type " & $T & ", bytes: seq[byte]): ?!T`".}
+  when not (compiles (let _: ?!T = T.decode(newSeq[byte]()))):
+    {.
+      error:
+        "provide a decoder: `proc decode(T: type " & $T & ", bytes: seq[byte]): ?!T`"
+    .}
 
 template requireEncoder*(T: typedesc): untyped =
-  when not (compiles do:
-    let _: seq[byte] = encode(default(T))):
+  when not (compiles (let _: seq[byte] = encode(default(T)))):
     {.error: "provide an encoder: `proc encode(a: " & $T & "): seq[byte]`".}
 
 proc toRaw*[T](record: Record[T]): RawRecord =
