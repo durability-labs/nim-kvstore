@@ -154,9 +154,8 @@ method close*(
     self: MountedDatastore
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   for s in self.stores.values:
-    discard await s.store.close()
-
-  # TODO: how to handle failed close?
+    if err =? (await s.store.close()).errorOption:
+      return failure err
   return success()
 
 func new*(
