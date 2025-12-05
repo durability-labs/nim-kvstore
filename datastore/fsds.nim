@@ -24,6 +24,11 @@ const
 export datastore
 
 type FSDatastore* = ref object of Datastore
+  ## Filesystem-backed datastore that stores records as files.
+  ##
+  ## Tokens are stored as uint64 in little-endian format. Unlike SQLiteDatastore
+  ## which is limited to int64 range due to SQLite INTEGER type, FSDatastore
+  ## supports the full uint64 range.
   root*: string
   ignoreProtected: bool
   depth: int
@@ -50,20 +55,20 @@ proc path*(self: FSDatastore, key: Key): ?!string =
   ##
 
   if not self.validDepth(key):
-    return failure "Path has invalid depth!"
+    return failure newBackendError("Path has invalid depth!")
 
   var segments: seq[string]
   for ns in key:
     let basename = ns.value.extractFilename
     if basename == "" or not basename.isValidFilename:
-      return failure "Filename contains invalid chars!"
+      return failure newBackendError("Filename contains invalid chars!")
 
     if ns.field == "":
       segments.add(ns.value)
     else:
       let basename = ns.field.extractFilename
       if basename == "" or not basename.isValidFilename:
-        return failure "Filename contains invalid chars!"
+        return failure newBackendError("Filename contains invalid chars!")
 
       # `:` are replaced with `/`
       segments.add(ns.field / ns.value)
@@ -72,7 +77,7 @@ proc path*(self: FSDatastore, key: Key): ?!string =
   let fullname = absolute.addFileExt(FileExt)
 
   if not self.isRootSubdir(fullname):
-    return failure "Path is outside of `root` directory!"
+    return failure newBackendError("Path is outside of `root` directory!")
 
   return success fullname
 
@@ -85,7 +90,7 @@ proc readVersioned*(
     file.close
 
   if not file.open(path):
-    return failure "unable to open file!"
+    return failure newBackendError("unable to open file: " & path)
 
   let size = ?catch (file.getFileSize)
   if size < TokenBytes:
@@ -93,7 +98,7 @@ proc readVersioned*(
 
   var header: array[TokenBytes, byte]
   if ?catch (file.readBuffer(addr header[0], TokenBytes)) != TokenBytes:
-    return failure "unable to read token header"
+    return failure newBackendError("unable to read token header")
 
   let token = uint64.fromBytesLE(header)
   let payloadLen = size - TokenBytes
@@ -102,7 +107,7 @@ proc readVersioned*(
     if data:
       var value = newSeq[byte](payloadLen)
       if payloadLen > 0 and ?catch (file.readBytes(value, 0, payloadLen)) != payloadLen:
-        return failure "unable to read payload"
+        return failure newBackendError("unable to read payload")
       value
     else:
       EmptyBytes
@@ -298,7 +303,10 @@ method query*(
   proc finished(): bool =
     walker.finished
 
-  return success QueryIter.new(next, finished)
+  proc dispose() =
+    discard # No resources to cleanup for directory walker
+
+  return success QueryIter.new(next, finished, dispose)
 
 proc new*(
     T: type FSDatastore,
