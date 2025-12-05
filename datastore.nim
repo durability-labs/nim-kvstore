@@ -9,11 +9,10 @@ import ./datastore/datastore as rawds
 import ./datastore/fsds
 import ./datastore/sql
 import ./datastore/mountedds
-import ./datastore/tieredds
 import ./datastore/types
 import ./datastore/query
 
-export datastore, fsds, mountedds, tieredds, sql, types, query, key
+export datastore, fsds, mountedds, sql, types, query, key
 
 ## Typed Datastore Support
 ##
