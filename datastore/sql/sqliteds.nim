@@ -146,7 +146,7 @@ method put*(
   return success skipped
 
 method delete*(
-    self: SQLiteDatastore, records: seq[RawRecord]
+    self: SQLiteDatastore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ?self.ensureWritable()
 
@@ -267,8 +267,14 @@ method query*(
             @(toOpenArray(cast[ptr UncheckedArray[byte]](blob), 0, dataLen - 1))
           else:
             @[]
+        versionCol =
+          if query.value:
+            QueryStmtVersionColWithData
+          else:
+            QueryStmtVersionColNoData
+        version = sqlite3_column_int64(s, versionCol.cint).uint64
 
-      return success RawRecord.init(key, data).some
+      return success RawRecord.init(key, data, version).some
     of SQLITE_DONE:
       finished = true
       return success RawRecord.none
