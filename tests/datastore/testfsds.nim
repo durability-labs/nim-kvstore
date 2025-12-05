@@ -73,7 +73,7 @@ suite "Test Misc FSDatastore":
     check:
       (await fs.put(RawRecord.init(key, bytes))).isErr
       (await fs.get(key)).isErr
-      (await fs.delete(RawRecord.init(key, EmptyBytes))).isErr
+      (await fs.delete(KeyRecord.init(key))).isErr
       (await fs.has(key)).isErr
 
   test "Test valid key (path) depth":

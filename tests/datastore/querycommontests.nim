@@ -8,10 +8,10 @@ import pkg/questionable/results
 import pkg/datastore
 
 # Encoder/decoder for int type (needed for typed query tests)
-proc encode(i: int): seq[byte] =
+proc encode*(i: int): seq[byte] =
   @(cast[uint64](i).toBytesBE)
 
-proc decode(T: type int, bytes: seq[byte]): ?!T =
+proc decode*(T: type int, bytes: seq[byte]): ?!T =
   if bytes.len >= sizeof(uint64):
     success(cast[int](uint64.fromBytesBE(bytes)))
   else:
@@ -270,7 +270,7 @@ template queryTests*(
   ## Tests for typed query operations using query[T]
   test "query with typed int results":
     let
-      source = { "a": 11, "b": 22, "c": 33, "d": 44 }.toTable()
+      source = {"a": 11, "b": 22, "c": 33, "d": 44}.toTable()
       Root = Key.init("/typed-querytest").tryGet()
 
     # Insert typed data

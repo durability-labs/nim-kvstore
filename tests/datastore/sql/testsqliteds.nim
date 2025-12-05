@@ -7,6 +7,7 @@ import std/tables
 import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
+import pkg/questionable
 
 import pkg/datastore
 
@@ -17,7 +18,6 @@ suite "Test Basic SQLiteDatastore":
 
   let
     ds = SQLiteDatastore.new(Memory).tryGet()
-    # ds = SQLiteDatastore.new(dbPathAbs).tryGet()
     key = Key.init("a:b/c/d:e").tryGet()
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
@@ -93,3 +93,35 @@ suite "Test Query":
 
   queryTests(ds, testLimitsAndOffsets = true, testSortOrder = true)
 
+  test "Query should return records with tokens":
+    let key = Key.init("/test/query/token").tryGet()
+    (await ds.put(key, @[1'u8, 2, 3])).tryGet()
+
+    let q = Query.init(Key.init("/test/query").tryGet())
+    let iter = (await ds.query(q)).tryGet()
+
+    defer:
+      iter.dispose()
+
+    for item in iter:
+      let maybeRecord = (await item).tryGet()
+      if record =? maybeRecord:
+        check record.token > 0  # Token should be non-zero after put
+
+  test "Query with value=true should return records with tokens":
+    let key = Key.init("/test/query/token/value").tryGet()
+    let data = @[4'u8, 5, 6]
+    (await ds.put(key, data)).tryGet()
+
+    let q = Query.init(Key.init("/test/query/token").tryGet(), value = true)
+    let iter = (await ds.query(q)).tryGet()
+
+    defer:
+      iter.dispose()
+
+    for item in iter:
+      let maybeRecord = (await item).tryGet()
+      if record =? maybeRecord:
+        check:
+          record.token > 0  # Token should be non-zero after put
+          record.val == data  # Value should be returned

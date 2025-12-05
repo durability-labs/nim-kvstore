@@ -18,7 +18,7 @@ suite "Datastore (base)":
 
   test "delete":
     expect AssertionDefect:
-      (await ds.delete(record)).tryGet
+      (await ds.delete(KeyRecord.init(key, record.token))).tryGet
 
   test "contains":
     expect AssertionDefect:
@@ -26,7 +26,7 @@ suite "Datastore (base)":
 
   test "get":
     expect AssertionDefect:
-      var rec = (await ds.get[:seq[byte]](key)).tryGet
+      var rec = (await get[seq[byte]](ds, key)).tryGet
 
   test "query":
     expect AssertionDefect:
