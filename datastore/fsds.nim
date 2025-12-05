@@ -224,7 +224,7 @@ method put*(
   return success conflicts
 
 method delete*(
-    self: FSDatastore, records: seq[RawRecord]
+    self: FSDatastore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   var skipped: seq[Key]
 

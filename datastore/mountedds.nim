@@ -126,11 +126,11 @@ method put*(
   return success conflicts
 
 method delete*(
-    self: MountedDatastore, records: seq[RawRecord]
+    self: MountedDatastore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   type DeleteBatch = object
     store: MountedStore
-    records: seq[RawRecord]
+    records: seq[KeyRecord]
 
   var batches = initTable[Key, DeleteBatch]()
 
@@ -139,7 +139,7 @@ method delete*(
     var batch = batches.mgetOrPut(
       dispatched.store.key, DeleteBatch(store: dispatched.store, records: @[])
     )
-    batch.records.add(RawRecord.init(dispatched.relative, record.val, record.token))
+    batch.records.add(KeyRecord.init(dispatched.relative, record.token))
     batches[dispatched.store.key] = batch
 
   var skipped: seq[Key]
