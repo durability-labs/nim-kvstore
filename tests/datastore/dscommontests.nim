@@ -42,7 +42,7 @@ proc basicStoreTests*(
       record.token == 2
 
   test "delete":
-    (await ds.delete(record)).tryGet()
+    (await ds.delete(KeyRecord.init(key, record.token))).tryGet()
 
   test "contains":
     check:
@@ -74,7 +74,8 @@ proc basicStoreTests*(
     records = fetched
 
   test "delete records":
-    let skipped = (await ds.delete(records)).tryGet
+    let skipped =
+      (await ds.delete(records.mapIt(KeyRecord.init(it.key, it.token)))).tryGet
     check skipped.len == 0 # all deletions should succeed
 
     for k in records:
@@ -110,12 +111,13 @@ proc basicStoreTests*(
     (await ds.put(RawRecord.init(deleteKey, "value".toBytes))).tryGet()
     let current = (await get[seq[byte]](ds, deleteKey)).tryGet()
 
-    let staleDelete = RawRecord.init(deleteKey, current.val, current.token - 1)
+    let staleDelete = KeyRecord.init(deleteKey, current.token - 1)
     let skippedStale = (await ds.delete(@[staleDelete])).tryGet
     check skippedStale.len == 1 # stale token should be skipped
     check skippedStale[0] == deleteKey
 
-    let skippedCurrent = (await ds.delete(@[current])).tryGet
+    let skippedCurrent =
+      (await ds.delete(@[KeyRecord.init(current.key, current.token)])).tryGet
     check skippedCurrent.len == 0 # current token should succeed
     check not (await ds.has(deleteKey)).tryGet()
 
@@ -125,9 +127,9 @@ proc helperTests*(ds: Datastore, key: Key) =
   test "tryPut - successful insertion without conflicts":
     let record = Record[int].init(key, 42)
     let failed = (await ds.tryPut(@[record])).tryGet()
-    check failed.len == 0  # No failures
+    check failed.len == 0 # No failures
 
-    let retrieved = (await ds.get[:int](key)).tryGet()
+    let retrieved = (await get[int](ds, key)).tryGet()
     check retrieved.val == 42
     check retrieved.token == 1
 
@@ -138,14 +140,15 @@ proc helperTests*(ds: Datastore, key: Key) =
     (await ds.tryPut(initial)).tryGet()
 
     # Get current version
-    let current = (await ds.get[:int](conflictKey)).tryGet()
+    let current = (await get[int](ds, conflictKey)).tryGet()
 
     # Try to insert with stale token - should fail after retries
-    let stale = Record[int].init(key = conflictKey, val = 200, token = current.token - 1)
+    let stale =
+      Record[int].init(key = conflictKey, val = 200, token = current.token - 1)
     check (await ds.tryPut(@[stale], maxRetries = 2)).isErr
 
     # Original value should be unchanged
-    let unchanged = (await ds.get[:int](conflictKey)).tryGet()
+    let unchanged = (await get[int](ds, conflictKey)).tryGet()
     check unchanged.val == 100
 
   test "tryPut - single record wrapper":
@@ -153,7 +156,7 @@ proc helperTests*(ds: Datastore, key: Key) =
     let record = Record[int].init(key2, 999)
     (await ds.tryPut(record)).tryGet()
 
-    let retrieved = (await ds.get[:int](key2)).tryGet()
+    let retrieved = (await get[int](ds, key2)).tryGet()
     check retrieved.val == 999
 
   test "tryPut - bulk operation with partial conflicts":
@@ -162,23 +165,21 @@ proc helperTests*(ds: Datastore, key: Key) =
     let key3 = (key / "bulk3").tryGet()
 
     # Insert initial records
-    let records = @[
-      Record[int].init(key1, 1),
-      Record[int].init(key2, 2),
-      Record[int].init(key3, 3)
-    ]
+    let records =
+      @[Record[int].init(key1, 1), Record[int].init(key2, 2), Record[int].init(key3, 3)]
     discard (await ds.tryPut(records)).tryGet()
 
     # Update with one stale token
-    let current2 = (await ds.get[:int](key2)).tryGet()
-    let updates = @[
-      Record[int].init(key1, 10, 1),  # Valid
-      Record[int].init(key2, 20, current2.token - 1),  # Stale - will conflict
-      Record[int].init(key3, 30, 1)   # Valid
-    ]
+    let current2 = (await get[int](ds, key2)).tryGet()
+    let updates =
+      @[
+        Record[int].init(key1, 10, 1), # Valid
+        Record[int].init(key2, 20, current2.token - 1), # Stale - will conflict
+        Record[int].init(key3, 30, 1), # Valid
+      ]
 
     let res = await ds.tryPut(updates, maxRetries = 1)
-    check res.isErr or res.get.len > 0  # Should have failures
+    check res.isErr or res.get.len > 0 # Should have failures
 
   test "tryPut - middleware resolves conflicts":
     let middlewareKey = (key / "middleware").tryGet()
@@ -188,31 +189,35 @@ proc helperTests*(ds: Datastore, key: Key) =
 
     # Middleware that refetches tokens
     var middlewareCalled = false
-    let middleware = proc(failed: seq[Record[int]]): Future[?!seq[Record[int]]] {.async: (raises: [CancelledError]).} =
+    let middleware = proc(
+        failed: seq[Record[int]]
+    ): Future[?!seq[Record[int]]] {.async: (raises: [CancelledError]).} =
       middlewareCalled = true
-      let fresh = ?(await ds.get[:int](failed.mapIt( it.key )))
+      let fresh = ?(await get[int](ds, failed.mapIt(it.key)))
       success zip(failed, fresh).mapIt(
         Record[int].init(it[0].key, it[0].val, it[1].token)
       )
 
     # Try to update with stale token
-    let stale = Record[int].init(middlewareKey, 15, 0)  # Wrong token
-    let failed = (await ds.tryPut[:int](@[stale], maxRetries = 3, middleware = middleware)).tryGet()
+    let stale = Record[int].init(middlewareKey, 15, 0) # Wrong token
+    let failed = (
+      await tryPut[int](ds, @[stale], maxRetries = 3, middleware = middleware)
+    ).tryGet()
 
-    check middlewareCalled  # Middleware should have been invoked
-    check failed.len == 0   # Should eventually succeed
+    check middlewareCalled # Middleware should have been invoked
+    check failed.len == 0 # Should eventually succeed
 
-    let final = (await ds.get[:int](middlewareKey)).tryGet()
-    check final.val == 15  # Value should be updated
+    let final = (await get[int](ds, middlewareKey)).tryGet()
+    check final.val == 15 # Value should be updated
 
   test "tryDelete - successful deletion":
     let delKey = (key / "delete1").tryGet()
 
     # Insert and then delete
     (await ds.tryPut(Record[int].init(delKey, 77))).tryGet()
-    let current = (await ds.get[:int](delKey)).tryGet()
+    let current = (await get[int](ds, delKey)).tryGet()
 
-    let failed = (await ds.tryDelete(@[current])).tryGet()
+    let failed = (await ds.tryDelete(@[KeyRecord.init(delKey, current.token)])).tryGet()
     check failed.len == 0
     check not (await ds.has(delKey)).tryGet()
 
@@ -221,22 +226,22 @@ proc helperTests*(ds: Datastore, key: Key) =
 
     # Insert record
     (await ds.tryPut(Record[int].init(delKey, 88))).tryGet()
-    let current = (await ds.get[:int](delKey)).tryGet()
+    let current = (await get[int](ds, delKey)).tryGet()
 
     # Try to delete with stale token
-    let stale = Record[int].init(delKey, current.val, current.token - 1)
+    let stale = KeyRecord.init(delKey, current.token - 1)
     let res = await ds.tryDelete(@[stale], maxRetries = 2)
 
-    check res.isErr  # Should fail with max retries
-    check (await ds.has(delKey)).tryGet()  # Record should still exist
+    check res.isErr # Should fail with max retries
+    check (await ds.has(delKey)).tryGet() # Record should still exist
 
   test "tryDelete - single record wrapper":
     let delKey = (key / "delete3").tryGet()
 
     (await ds.tryPut(Record[int].init(delKey, 99))).tryGet()
-    let current = (await ds.get[:int](delKey)).tryGet()
+    let current = (await get[int](ds, delKey)).tryGet()
 
-    (await ds.tryDelete(current)).tryGet()
+    (await ds.tryDelete(KeyRecord.init(delKey, current.token))).tryGet()
     check not (await ds.has(delKey)).tryGet()
 
   test "tryDelete - middleware resolves conflicts":
@@ -247,13 +252,18 @@ proc helperTests*(ds: Datastore, key: Key) =
 
     # Middleware that refetches tokens
     var middlewareCalled = false
-    let middleware = proc(failed: seq[Record[int]]): Future[?!seq[Record[int]]] {.async: (raw: true, raises: [CancelledError]).} =
+    let middleware = proc(
+        failed: seq[KeyRecord]
+    ): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
       middlewareCalled = true
-      ds.get[:int](failed.mapIt( it.key ))
+      success (?(await get[int](ds, failed.mapIt(it.key)))).mapIt(
+        KeyRecord.init(it.key, it.token)
+      )
 
     # Try to delete with stale token
-    let stale = Record[int].init(delKey, 111, 0)
-    let failed = (await ds.tryDelete(@[stale], maxRetries = 3, middleware = middleware)).tryGet()
+    let stale = KeyRecord.init(delKey, 0)
+    let failed =
+      (await ds.tryDelete(@[stale], maxRetries = 3, middleware = middleware)).tryGet()
 
     check middlewareCalled
     check failed.len == 0
@@ -271,10 +281,10 @@ proc helperTests*(ds: Datastore, key: Key) =
       producerCalled = true
       success 999
 
-    let res = (await ds.getOrPut[:int](gopKey, producer)).tryGet()
+    let res = (await getOrPut[int](ds, gopKey, producer)).tryGet()
 
-    check not producerCalled  # Producer should not be called
-    check res.val == 123   # Should get existing value
+    check not producerCalled # Producer should not be called
+    check res.val == 123 # Should get existing value
 
   test "getOrPut - creates new record when missing":
     let gopKey = (key / "getorput2").tryGet()
@@ -285,13 +295,13 @@ proc helperTests*(ds: Datastore, key: Key) =
       producerCalled = true
       success 456
 
-    let res = (await ds.getOrPut[:int](gopKey, producer)).tryGet()
+    let res = (await getOrPut[int](ds, gopKey, producer)).tryGet()
 
-    check producerCalled      # Producer should be called
-    check res.val == 456   # Should get produced value
+    check producerCalled # Producer should be called
+    check res.val == 456 # Should get produced value
 
     # Verify it was actually stored
-    let retrieved = (await ds.get[:int](gopKey)).tryGet()
+    let retrieved = (await get[int](ds, gopKey)).tryGet()
     check retrieved.val == 456
 
   test "getOrPut - handles concurrent insert race":
@@ -304,7 +314,7 @@ proc helperTests*(ds: Datastore, key: Key) =
       inc producerCallCount
       success 789
 
-    let res = (await ds.getOrPut[:int](gopKey, producer, maxRetries = 3)).tryGet()
+    let res = (await getOrPut[int](ds, gopKey, producer, maxRetries = 3)).tryGet()
 
     check producerCallCount > 0
     check res.val == 789
