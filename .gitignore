@@ -6,7 +6,7 @@
 .idea
 .vscode
 coverage
-datastore.nims
+kvstore.nims
 nimcache
 TODO
 nimble.develop

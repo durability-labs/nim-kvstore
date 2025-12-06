@@ -44,7 +44,7 @@ proc main() {.async.} =
   let updated = RawRecord.init(key, "Updated!".toBytes(), record.token)
   (await ds.put(updated)).tryGet()
 
-  # Close the datastore
+  # Close the store
   (await ds.close()).tryGet()
 
 waitFor main()
