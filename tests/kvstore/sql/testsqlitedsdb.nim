@@ -6,10 +6,10 @@ import pkg/asynctest/chronos/unittest2
 import pkg/stew/byteutils
 
 import pkg/sqlite3_abi
-import pkg/datastore/key
-import pkg/datastore/sql/sqlitedsdb
-import pkg/datastore/sql/sqliteutils
-import pkg/datastore/sql/sqliteds
+import pkg/kvstore/key
+import pkg/kvstore/sql/sqlitedsdb
+import pkg/kvstore/sql/sqliteutils
+import pkg/kvstore/sql/sqliteds
 
 suite "Test Open SQLite Datastore DB":
   let

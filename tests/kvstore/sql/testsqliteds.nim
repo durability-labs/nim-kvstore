@@ -9,15 +9,15 @@ import pkg/chronos
 import pkg/stew/byteutils
 import pkg/questionable
 
-import pkg/datastore
+import pkg/kvstore
 
-import ../dscommontests
+import ../kvcommontests
 import ../querycommontests
 
-suite "Test Basic SQLiteDatastore":
+suite "Test Basic SQLiteKVStore":
 
   let
-    ds = SQLiteDatastore.new(Memory).tryGet()
+    ds = SQLiteKVStore.new(Memory).tryGet()
     key = Key.init("a:b/c/d:e").tryGet()
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
@@ -28,7 +28,7 @@ suite "Test Basic SQLiteDatastore":
   basicStoreTests(ds, key, bytes, otherBytes)
   helperTests(ds, key)
 
-suite "Test Read Only SQLiteDatastore":
+suite "Test Read Only SQLiteKVStore":
   let
     path = currentSourcePath() # get this file's name
     basePath = "tests_data"
@@ -39,16 +39,16 @@ suite "Test Read Only SQLiteDatastore":
     bytes = "some bytes".toBytes
 
   var
-    dsDb: SQLiteDatastore
-    readOnlyDb: SQLiteDatastore
+    dsDb: SQLiteKVStore
+    readOnlyDb: SQLiteKVStore
 
   setupAll:
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    dsDb = SQLiteDatastore.new(path = dbPathAbs).tryGet()
-    readOnlyDb = SQLiteDatastore.new(path = dbPathAbs, readOnly = true).tryGet()
+    dsDb = SQLiteKVStore.new(path = dbPathAbs).tryGet()
+    readOnlyDb = SQLiteKVStore.new(path = dbPathAbs, readOnly = true).tryGet()
 
   teardownAll:
     (await dsDb.close()).tryGet()
@@ -83,10 +83,10 @@ suite "Test Read Only SQLiteDatastore":
       not (await dsDb.has(key)).tryGet()
 
 suite "Test Query":
-  var ds: SQLiteDatastore
+  var ds: SQLiteKVStore
 
   setup:
-    ds = SQLiteDatastore.new(Memory).tryGet()
+    ds = SQLiteKVStore.new(Memory).tryGet()
 
   teardown:
     (await ds.close()).tryGet

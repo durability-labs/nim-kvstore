@@ -8,7 +8,7 @@ import pkg/questionable/results
 import ./key
 
 type
-  Datastore* = ref object of RootObj
+  KVStore* = ref object of RootObj
 
   # Core types
   Record*[T] = object
@@ -28,11 +28,11 @@ type
   RawValueProducer* = ValueProducer[seq[byte]]
 
   # Error types
-  DatastoreError* = object of CatchableError
-  DatastoreMaxRetriesError* = object of DatastoreError
-  DatastoreBackendError* = object of DatastoreError
-  DatastoreKeyNotFound* = object of DatastoreBackendError
-  DatastoreCorruption* = object of DatastoreBackendError
+  KVStoreError* = object of CatchableError
+  KVStoreMaxRetriesError* = object of KVStoreError
+  KVStoreBackendError* = object of KVStoreError
+  KVStoreKeyNotFound* = object of KVStoreBackendError
+  KVStoreCorruption* = object of KVStoreBackendError
 
 # Encoder/decoder requirements
 template requireDecoder*(T: typedesc): untyped =

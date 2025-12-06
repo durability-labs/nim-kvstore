@@ -6,7 +6,7 @@ import pkg/stew/byteutils
 import pkg/stew/endians2
 import pkg/questionable/results
 
-import pkg/datastore
+import pkg/kvstore
 
 # Encoder/decoder for int type (needed for typed helper tests)
 proc encode(i: int): seq[byte] =
@@ -19,7 +19,7 @@ proc decode(T: type int, bytes: seq[byte]): ?!T =
     failure("not enough bytes to decode int")
 
 proc basicStoreTests*(
-    ds: Datastore, key: Key, bytes: seq[byte], otherBytes: seq[byte]
+    ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[byte]
 ) =
   var record: RawRecord
   test "put":
@@ -121,7 +121,7 @@ proc basicStoreTests*(
     check skippedCurrent.len == 0 # current token should succeed
     check not (await ds.has(deleteKey)).tryGet()
 
-proc helperTests*(ds: Datastore, key: Key) =
+proc helperTests*(ds: KVStore, key: Key) =
   # Tests for helper functions: tryPut, tryDelete, getOrPut
 
   test "tryPut - successful insertion without conflicts":
@@ -331,12 +331,12 @@ proc helperTests*(ds: Datastore, key: Key) =
   test "newCorruptionError creates error with message":
     let err = newCorruptionError("corruption detected")
     check err.msg == "corruption detected"
-    check err of DatastoreCorruption
+    check err of KVStoreCorruption
 
   test "newMaxRetriesError creates error with default message":
     let err = newMaxRetriesError()
     check err.msg == "Max retries reached"
-    check err of DatastoreMaxRetriesError
+    check err of KVStoreMaxRetriesError
 
   test "newMaxRetriesError creates error with custom message":
     let err = newMaxRetriesError("custom retry error")

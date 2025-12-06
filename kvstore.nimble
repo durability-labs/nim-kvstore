@@ -1,8 +1,8 @@
 mode = ScriptMode.Verbose
 
-packageName = "datastore"
+packageName = "kvstore"
 version = "0.5.0"
-author = "nim-datastore authors, Status Research & Development GmbH"
+author = "nim-kvstore authors, Status Research & Development GmbH"
 description = "Simple, unified API for multiple data stores with optimistic concurrency control"
 license = "Apache License 2.0 or MIT"
 
@@ -43,9 +43,9 @@ task coverage, "generates code coverage report":
   exec("cd nimcache; rm *.c; cd ..")
   mkDir("coverage")
   exec("lcov --capture --directory nimcache --output-file coverage/coverage.info")
-  exec("$(which bash) -c 'shopt -s globstar; ls $(pwd)/datastore/{*,**/*}.nim'")
+  exec("$(which bash) -c 'shopt -s globstar; ls $(pwd)/kvstore/{*,**/*}.nim'")
   exec(
-    "$(which bash) -c 'shopt -s globstar; lcov --ignore-errors unused --extract coverage/coverage.info  $(pwd)/datastore/{*,**/*}.nim --output-file coverage/coverage.f.info'"
+    "$(which bash) -c 'shopt -s globstar; lcov --ignore-errors unused --extract coverage/coverage.info  $(pwd)/kvstore/{*,**/*}.nim --output-file coverage/coverage.f.info'"
   )
   echo "Generating HTML coverage report"
   exec("genhtml --ignore-errors range coverage/coverage.f.info --output-directory coverage/report")

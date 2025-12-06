@@ -5,7 +5,7 @@ import pkg/stew/endians2
 import pkg/questionable
 import pkg/questionable/results
 
-import pkg/datastore
+import pkg/kvstore
 
 # Encoder/decoder for int type (needed for typed query tests)
 proc encode*(i: int): seq[byte] =
@@ -18,7 +18,7 @@ proc decode*(T: type int, bytes: seq[byte]): ?!T =
     failure("not enough bytes to decode int")
 
 template queryTests*(
-    ds: Datastore, testLimitsAndOffsets = true, testSortOrder = true
+    ds: KVStore, testLimitsAndOffsets = true, testSortOrder = true
 ) {.dirty.} =
   var
     key1: Key

@@ -3,12 +3,12 @@ import std/options
 import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 
-import pkg/datastore
+import pkg/kvstore
 
-suite "Datastore (base)":
+suite "KVStore (base)":
   let
     key = Key.init("a").get
-    ds = Datastore()
+    ds = KVStore()
 
   let record = Record.init(key, @[1.byte])
 

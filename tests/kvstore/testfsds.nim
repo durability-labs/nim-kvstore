@@ -8,12 +8,12 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
 
-import pkg/datastore
+import pkg/kvstore
 
-import ./dscommontests
+import ./kvcommontests
 import ./querycommontests
 
-suite "Test Basic FSDatastore":
+suite "Test Basic FSKVStore":
   let
     path = currentSourcePath() # get this file's name
     basePath = "tests_data"
@@ -22,14 +22,14 @@ suite "Test Basic FSDatastore":
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
 
-  var fsStore: FSDatastore
+  var fsStore: FSKVStore
 
   setupAll:
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    fsStore = FSDatastore.new(root = basePathAbs, depth = 16).tryGet()
+    fsStore = FSKVStore.new(root = basePathAbs, depth = 16).tryGet()
 
   teardownAll:
     require((await fsStore.close()).isOk)
@@ -39,7 +39,7 @@ suite "Test Basic FSDatastore":
   basicStoreTests(fsStore, key, bytes, otherBytes)
   helperTests(fsStore, key)
 
-suite "Test Misc FSDatastore":
+suite "Test Misc FSKVStore":
   let
     path = currentSourcePath() # get this file's name
     basePath = "tests_data"
@@ -57,7 +57,7 @@ suite "Test Misc FSDatastore":
 
   test "Test validDepth()":
     let
-      fs = FSDatastore.new(root = "/", depth = 3).tryGet()
+      fs = FSKVStore.new(root = "/", depth = 3).tryGet()
       invalid = Key.init("/a/b/c/d").tryGet()
       valid = Key.init("/a/b/c").tryGet()
 
@@ -67,7 +67,7 @@ suite "Test Misc FSDatastore":
 
   test "Test invalid key (path) depth":
     let
-      fs = FSDatastore.new(root = basePathAbs, depth = 3).tryGet()
+      fs = FSKVStore.new(root = basePathAbs, depth = 3).tryGet()
       key = Key.init("/a/b/c/d").tryGet()
 
     check:
@@ -78,7 +78,7 @@ suite "Test Misc FSDatastore":
 
   test "Test valid key (path) depth":
     let
-      fs = FSDatastore.new(root = basePathAbs, depth = 3).tryGet()
+      fs = FSKVStore.new(root = basePathAbs, depth = 3).tryGet()
       key = Key.init("/a/b/c").tryGet()
 
     require (await fs.put(key, bytes)).isOk
@@ -92,7 +92,7 @@ suite "Test Misc FSDatastore":
 
   test "Test key cannot write outside of root":
     let
-      fs = FSDatastore.new(root = basePathAbs, depth = 3).tryGet()
+      fs = FSKVStore.new(root = basePathAbs, depth = 3).tryGet()
       key = Key.init("/a/../../c").tryGet()
 
     check:
@@ -102,7 +102,7 @@ suite "Test Misc FSDatastore":
       (await fs.has(key)).isErr
 
   test "Test key cannot convert to invalid path":
-    let fs = FSDatastore.new(root = basePathAbs).tryGet()
+    let fs = FSKVStore.new(root = basePathAbs).tryGet()
 
     for c in invalidFilenameChars:
       if c == ':':
@@ -124,14 +124,14 @@ suite "Test Query":
     basePath = "tests_data"
     basePathAbs = path.parentDir / basePath
 
-  var ds: FSDatastore
+  var ds: FSKVStore
 
   setup:
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    ds = FSDatastore.new(root = basePathAbs, depth = 5).tryGet()
+    ds = FSKVStore.new(root = basePathAbs, depth = 5).tryGet()
 
   teardown:
     removeDir(basePathAbs)

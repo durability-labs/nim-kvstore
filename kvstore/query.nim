@@ -8,7 +8,7 @@ import ./types
 import ./key
 
 type
-  QueryEndedError* = object of DatastoreError
+  QueryEndedError* = object of KVStoreError
 
   SortOrder* {.pure.} = enum
     Assending

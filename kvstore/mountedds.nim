@@ -7,18 +7,18 @@ import pkg/questionable
 import pkg/questionable/results
 
 import ./key
-import ./datastore
+import ./kvstore
 
 type
   MountedStore* = object
-    store*: Datastore
+    store*: KVStore
     key*: Key
 
-  MountedDatastore* = ref object of Datastore
+  MountedKVStore* = ref object of KVStore
     stores*: Table[Key, MountedStore]
 
 method mount*(
-    self: MountedDatastore, key: Key, store: Datastore
+    self: MountedKVStore, key: Key, store: KVStore
 ): ?!void {.base, gcsafe.} =
   ## Mount a store on a namespace - namespaces are only `/`
   ##
@@ -30,7 +30,7 @@ method mount*(
 
   return success()
 
-func findStore*(self: MountedDatastore, key: Key): ?!MountedStore =
+func findStore*(self: MountedKVStore, key: Key): ?!MountedStore =
   ## Find a store mounted under a particular key
   ##
 
@@ -46,10 +46,10 @@ func findStore*(self: MountedDatastore, key: Key): ?!MountedStore =
 
       mounted = mounted.parent.get
 
-  failure newException(DatastoreKeyNotFound, "No datastore found for key")
+  failure newException(KVStoreKeyNotFound, "No datastore found for key")
 
 proc dispatch(
-    self: MountedDatastore, key: Key
+    self: MountedKVStore, key: Key
 ): ?!tuple[store: MountedStore, relative: Key] =
   ## Helper to retrieve the store and corresponding relative key
   ##
@@ -59,14 +59,14 @@ proc dispatch(
   return success (store: mounted, relative: ?key.relative(mounted.key))
 
 method has*(
-    self: MountedDatastore, key: Key
+    self: MountedKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
   let mounted = ?self.dispatch(key)
 
   return (await mounted.store.store.has(mounted.relative))
 
 method get*(
-    self: MountedDatastore, key: Key
+    self: MountedKVStore, key: Key
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
   let mounted = ?self.dispatch(key)
   let child = ?(await mounted.store.store.get(mounted.relative))
@@ -75,7 +75,7 @@ method get*(
   return success RawRecord.init(globalKey, child.val, child.token)
 
 method get*(
-    self: MountedDatastore, keys: seq[Key]
+    self: MountedKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   type GetBatch = object
     store: MountedStore
@@ -101,7 +101,7 @@ method get*(
   return success collected
 
 method put*(
-    self: MountedDatastore, records: seq[RawRecord]
+    self: MountedKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   type PutBatch = object
     store: MountedStore
@@ -126,7 +126,7 @@ method put*(
   return success conflicts
 
 method delete*(
-    self: MountedDatastore, records: seq[KeyRecord]
+    self: MountedKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   type DeleteBatch = object
     store: MountedStore
@@ -151,7 +151,7 @@ method delete*(
   return success skipped
 
 method close*(
-    self: MountedDatastore
+    self: MountedKVStore
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   for s in self.stores.values:
     if err =? (await s.store.close()).errorOption:
@@ -159,8 +159,8 @@ method close*(
   return success()
 
 func new*(
-    T: type MountedDatastore,
-    stores: Table[Key, Datastore] = initTable[Key, Datastore](),
+    T: type MountedKVStore,
+    stores: Table[Key, KVStore] = initTable[Key, KVStore](),
 ): ?!T =
   var self = T()
   for (k, v) in stores.pairs:

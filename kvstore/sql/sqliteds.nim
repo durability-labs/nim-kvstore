@@ -12,21 +12,21 @@ import pkg/sqlite3_abi
 
 import ../key
 import ../query
-import ../datastore
+import ../kvstore
 import ./sqlitedsdb
 import ./sqliteutils
 
 export sqlitedsdb
 
-type SQLiteDatastore* = ref object of Datastore
+type SQLiteKVStore* = ref object of KVStore
   readOnly: bool
   db: SQLiteDsDb
 
-proc path*(self: SQLiteDatastore): string =
+proc path*(self: SQLiteKVStore): string =
   self.db.dbPath
 
 proc `readOnly=`*(
-  self: SQLiteDatastore
+  self: SQLiteKVStore
 ): bool {.error: "readOnly should not be assigned".}
 
 proc timestamp*(t = epochTime()): int64 =
@@ -45,7 +45,7 @@ proc newRollbackError(
 ): ref RollbackError =
   newRollbackError(rbErr, opErr.msg)
 
-proc ensureWritable(self: SQLiteDatastore): ?!void =
+proc ensureWritable(self: SQLiteKVStore): ?!void =
   if self.readOnly:
     return failure(newBackendError("SQLite datastore opened read-only"))
   success()
@@ -56,7 +56,7 @@ proc boundedToken(token: uint64): ?!int64 =
   success token.int64
 
 method has*(
-    self: SQLiteDatastore, key: Key
+    self: SQLiteKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
   var exists = false
   proc onRow(s: RawStmtPtr) =
@@ -68,7 +68,7 @@ method has*(
   return success exists
 
 method get*(
-    self: SQLiteDatastore, key: Key
+    self: SQLiteKVStore, key: Key
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
   var
     rowFound = false
@@ -87,12 +87,12 @@ method get*(
     return failure(err)
 
   if not rowFound:
-    return failure(newException(DatastoreKeyNotFound, "Key doesn't exist"))
+    return failure(newException(KVStoreKeyNotFound, "Key doesn't exist"))
 
   return success RawRecord.init(key, value, token.uint64)
 
 method get*(
-    self: SQLiteDatastore, keys: seq[Key]
+    self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   var records: seq[RawRecord]
 
@@ -114,7 +114,7 @@ method get*(
   return success records
 
 method put*(
-    self: SQLiteDatastore, records: seq[RawRecord]
+    self: SQLiteKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   if err =? self.ensureWritable().errorOption:
     return failure(err)
@@ -146,7 +146,7 @@ method put*(
   return success skipped
 
 method delete*(
-    self: SQLiteDatastore, records: seq[KeyRecord]
+    self: SQLiteKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ?self.ensureWritable()
 
@@ -180,13 +180,13 @@ method delete*(
   return success skipped
 
 method close*(
-    self: SQLiteDatastore
+    self: SQLiteKVStore
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   self.db.close()
   return success()
 
 method query*(
-    self: SQLiteDatastore, query: Query
+    self: SQLiteKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
   var queryStr = if query.value: QueryStmtDataIdStr else: QueryStmtIdStr
 
@@ -211,19 +211,19 @@ method query*(
   )
 
   if v != SQLITE_OK:
-    return failure newException(DatastoreError, $sqlite3_errstr(v))
+    return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   if query.limit != 0:
     v = sqlite3_bind_int(s, 2.cint, query.limit.cint)
 
     if v != SQLITE_OK:
-      return failure newException(DatastoreError, $sqlite3_errstr(v))
+      return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   if query.offset != 0:
     v = sqlite3_bind_int(s, 3.cint, query.offset.cint)
 
     if v != SQLITE_OK:
-      return failure newException(DatastoreError, $sqlite3_errstr(v))
+      return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   var finished = false
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
@@ -258,7 +258,7 @@ method query*(
 
         if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
           finished = true
-          return failure newException(DatastoreError, $sqlite3_errstr(v))
+          return failure newException(KVStoreError, $sqlite3_errstr(v))
 
       let
         dataLen = sqlite3_column_bytes(s, QueryStmtDataCol)
@@ -277,7 +277,7 @@ method query*(
       return success RawRecord.none
     else:
       finished = true
-      return failure newException(DatastoreError, $sqlite3_errstr(v))
+      return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   proc isFinished(): bool =
     finished
@@ -288,7 +288,7 @@ method query*(
 
   return success QueryIter.new(next, isFinished, dispose)
 
-proc new*(T: type SQLiteDatastore, path: string, readOnly = false): ?!T =
+proc new*(T: type SQLiteKVStore, path: string, readOnly = false): ?!T =
   let flags =
     if readOnly:
       SQLITE_OPEN_READONLY
@@ -297,5 +297,5 @@ proc new*(T: type SQLiteDatastore, path: string, readOnly = false): ?!T =
 
   success T(db: ?SQLiteDsDb.open(path, flags), readOnly: readOnly)
 
-proc new*(T: type SQLiteDatastore, db: SQLiteDsDb): ?!T =
+proc new*(T: type SQLiteKVStore, db: SQLiteDsDb): ?!T =
   success T(db: db, readOnly: db.readOnly)
