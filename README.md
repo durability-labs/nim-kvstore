@@ -1,6 +1,6 @@
-# nim-datastore
+# nim-kvstore
 
-Simple, unified API for multiple data stores with optimistic concurrency control.
+Simple, unified API for multiple key-value stores with optimistic concurrency control.
 
 Inspired by the Python library [datastore](https://github.com/datastore/datastore).
 
@@ -10,24 +10,24 @@ Inspired by the Python library [datastore](https://github.com/datastore/datastor
 - **Optimistic Concurrency Control** - Token-based CAS (Compare-And-Swap) semantics prevent lost updates
 - **Typed Records** - Automatic serialization/deserialization with custom encoder/decoder procs
 - **Async/Await** - Built on Chronos for async operations
-- **Multiple Backends** - SQLite (in-memory or file), filesystem, and mounted datastores
+- **Multiple Backends** - SQLite (in-memory or file), filesystem, and mounted kvstores
 
 ## Installation
 
 ```bash
-nimble install datastore
+nimble install kvstore
 ```
 
 ## Quick Start
 
 ```nim
 import pkg/chronos
-import pkg/datastore
+import pkg/kvstore
 import pkg/stew/byteutils
 
 proc main() {.async.} =
-  # Create an in-memory SQLite datastore
-  let ds = SQLiteDatastore.new(Memory).tryGet()
+  # Create an in-memory SQLite kvstore
+  let ds = SQLiteKVStore.new(Memory).tryGet()
 
   # Create a key
   let key = Key.init("/users/alice").tryGet()
@@ -54,7 +54,7 @@ waitFor main()
 
 ### Records and Tokens
 
-Every record in nim-datastore has three components:
+Every record in nim-kvstore has three components:
 
 ```nim
 type Record*[T] = object
@@ -71,7 +71,7 @@ The **token** is central to the CAS semantics:
 
 ### Optimistic Concurrency Control
 
-nim-datastore uses optimistic concurrency to prevent lost updates in concurrent environments:
+nim-kvstore uses optimistic concurrency to prevent lost updates in concurrent environments:
 
 ```nim
 # Two clients read the same record
@@ -153,7 +153,7 @@ let result = await ds.tryPut(records, maxRetries = 3, middleware = middleware)
 
 ## Typed Records
 
-nim-datastore supports automatic type conversion with custom encoder/decoder procs:
+nim-kvstore supports automatic type conversion with custom encoder/decoder procs:
 
 ```nim
 import pkg/stew/byteutils
@@ -187,47 +187,47 @@ echo record.val.age   # 30
 
 ## Storage Backends
 
-### SQLiteDatastore
+### SQLiteKVStore
 
 SQLite-backed storage supporting both in-memory and file-based databases.
 
 ```nim
 # In-memory database
-let memDs = SQLiteDatastore.new(Memory).tryGet()
+let memDs = SQLiteKVStore.new(Memory).tryGet()
 
 # File-based database
-let fileDs = SQLiteDatastore.new("/path/to/db.sqlite").tryGet()
+let fileDs = SQLiteKVStore.new("/path/to/db.sqlite").tryGet()
 
 # Read-only mode
-let readOnlyDs = SQLiteDatastore.new("/path/to/db.sqlite", readOnly = true).tryGet()
+let readOnlyDs = SQLiteKVStore.new("/path/to/db.sqlite", readOnly = true).tryGet()
 ```
 
 **Note:** SQLite uses `int64` for tokens, limiting the range to `0..high(int64)`.
 
-### FSDatastore
+### FSKVStore
 
 Filesystem-backed storage where each record is a file.
 
 ```nim
-let fsDs = FSDatastore.new(
+let fsDs = FSKVStore.new(
   root = "/path/to/data",
   depth = 5  # Maximum key depth
 ).tryGet()
 ```
 
-**Note:** FSDatastore uses `uint64` for tokens, supporting the full range.
+**Note:** FSKVStore uses `uint64` for tokens, supporting the full range.
 
-### MountedDatastore
+### MountedKVStore
 
-Combines multiple datastores under different key prefixes:
+Combines multiple kvstores under different key prefixes:
 
 ```nim
-let sqlDs = SQLiteDatastore.new(Memory).tryGet()
-let fsDs = FSDatastore.new("/data").tryGet()
+let sqlDs = SQLiteKVStore.new(Memory).tryGet()
+let fsDs = FSKVStore.new("/data").tryGet()
 
-let mounted = MountedDatastore.new({
-  Key.init("/cache").tryGet(): Datastore(sqlDs),
-  Key.init("/files").tryGet(): Datastore(fsDs),
+let mounted = MountedKVStore.new({
+  Key.init("/cache").tryGet(): KVStore(sqlDs),
+  Key.init("/files").tryGet(): KVStore(fsDs),
 }.toTable).tryGet()
 
 # Keys are routed to appropriate backend
@@ -238,11 +238,11 @@ await mounted.put(Key.init("/files/doc").tryGet(), data)   # Goes to filesystem
 ## Error Types
 
 ```nim
-DatastoreError              # Base error type
-├── DatastoreMaxRetriesError  # tryPut/tryDelete exhausted retries
-└── DatastoreBackendError     # Backend-specific errors
-    ├── DatastoreKeyNotFound  # Key doesn't exist
-    └── DatastoreCorruption   # Data corruption detected
+KVStoreError              # Base error type
+├── KVStoreMaxRetriesError  # tryPut/tryDelete exhausted retries
+└── KVStoreBackendError     # Backend-specific errors
+    ├── KVStoreKeyNotFound  # Key doesn't exist
+    └── KVStoreCorruption   # Data corruption detected
 ```
 
 ## Query API
@@ -270,7 +270,7 @@ iter.dispose()
 
 ## Stability
 
-nim-datastore is currently marked as experimental and may be subject to breaking changes across any version bump until it is marked as stable.
+nim-kvstore is currently marked as experimental and may be subject to breaking changes across any version bump until it is marked as stable.
 
 ## Future Work
 
@@ -278,7 +278,7 @@ nim-datastore is currently marked as experimental and may be subject to breaking
 
 ## License
 
-nim-datastore is licensed and distributed under either of:
+nim-kvstore is licensed and distributed under either of:
 
 * Apache License, Version 2.0: [LICENSE-APACHEv2](LICENSE-APACHEv2) or https://opensource.org/licenses/Apache-2.0
 * MIT license: [LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT
