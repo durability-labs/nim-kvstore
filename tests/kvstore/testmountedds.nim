@@ -6,14 +6,14 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
 
-import pkg/datastore
-import pkg/datastore/mountedds
-import pkg/datastore/sql
-import pkg/datastore/fsds
+import pkg/kvstore
+import pkg/kvstore/mountedds
+import pkg/kvstore/sql
+import pkg/kvstore/fsds
 
-import ./dscommontests
+import ./kvcommontests
 
-suite "Test Basic Mounted Datastore":
+suite "Test Basic Mounted KVStore":
   let
     root = "tests" / "test_data"
     path = currentSourcePath() # get this file's name
@@ -27,19 +27,19 @@ suite "Test Basic Mounted Datastore":
     otherBytes = "some other bytes".toBytes
 
   var
-    sql: SQLiteDatastore
-    fs: FSDatastore
-    mountedDs: MountedDatastore
+    sql: SQLiteKVStore
+    fs: FSKVStore
+    mountedDs: MountedKVStore
 
   setupAll:
     removeDir(rootAbs)
     require(not dirExists(rootAbs))
     createDir(rootAbs)
 
-    sql = SQLiteDatastore.new(Memory).tryGet
-    fs = FSDatastore.new(rootAbs, depth = 10).tryGet
-    mountedDs = MountedDatastore.new(
-      {sqlKey: Datastore(sql), fsKey: Datastore(fs)}.toTable
+    sql = SQLiteKVStore.new(Memory).tryGet
+    fs = FSKVStore.new(rootAbs, depth = 10).tryGet
+    mountedDs = MountedKVStore.new(
+      {sqlKey: KVStore(sql), fsKey: KVStore(fs)}.toTable
     ).tryGet
 
   teardownAll:
@@ -80,11 +80,11 @@ suite "Test Basic Mounted Datastore":
     let skipped = (await mountedDs.delete(@[sqlRecord, fsRecord])).tryGet
     check skipped.len == 0 # both should be deleted successfully
 
-suite "Test Mounted Datastore":
+suite "Test Mounted KVStore":
   test "Should mount datastore":
     let
-      ds = SQLiteDatastore.new(Memory).tryGet
-      mounted = MountedDatastore.new().tryGet
+      ds = SQLiteKVStore.new(Memory).tryGet
+      mounted = MountedKVStore.new().tryGet
       key = Key.init("/sql").tryGet
 
     mounted.mount(key, ds).tryGet
@@ -96,9 +96,9 @@ suite "Test Mounted Datastore":
 
   test "Should find with exact key":
     let
-      ds = SQLiteDatastore.new(Memory).tryGet
+      ds = SQLiteKVStore.new(Memory).tryGet
       key = Key.init("/sql").tryGet
-      mounted = MountedDatastore.new({key: Datastore(ds)}.toTable).tryGet
+      mounted = MountedKVStore.new({key: KVStore(ds)}.toTable).tryGet
       store = mounted.findStore(key).tryGet
 
     check store.key == key
@@ -106,10 +106,10 @@ suite "Test Mounted Datastore":
 
   test "Should find with child key":
     let
-      ds = SQLiteDatastore.new(Memory).tryGet
+      ds = SQLiteKVStore.new(Memory).tryGet
       key = Key.init("/sql").tryGet
       childKey = Key.init("/sql/child/key").tryGet
-      mounted = MountedDatastore.new({key: Datastore(ds)}.toTable).tryGet
+      mounted = MountedKVStore.new({key: KVStore(ds)}.toTable).tryGet
       store = mounted.findStore(childKey).tryGet
 
     check store.key == key
@@ -117,26 +117,26 @@ suite "Test Mounted Datastore":
 
   test "Should error on missing key":
     let
-      ds = SQLiteDatastore.new(Memory).tryGet
+      ds = SQLiteKVStore.new(Memory).tryGet
       key = Key.init("/sql").tryGet
       childKey = Key.init("/nomatchkey/child/key").tryGet
-      mounted = MountedDatastore.new({key: Datastore(ds)}.toTable).tryGet
+      mounted = MountedKVStore.new({key: KVStore(ds)}.toTable).tryGet
 
-    expect DatastoreKeyNotFound:
+    expect KVStoreKeyNotFound:
       discard mounted.findStore(childKey).tryGet
 
   test "Should find nested stores":
     let
-      ds1 = SQLiteDatastore.new(Memory).tryGet
-      ds2 = SQLiteDatastore.new(Memory).tryGet
+      ds1 = SQLiteKVStore.new(Memory).tryGet
+      ds2 = SQLiteKVStore.new(Memory).tryGet
       key1 = Key.init("/sql").tryGet
       key2 = Key.init("/sql/nested").tryGet
 
       nestedKey1 = Key.init("/sql/anotherkey").tryGet
       nestedKey2 = Key.init("/sql/nested/key").tryGet
 
-      mounted = MountedDatastore.new(
-        {key1: Datastore(ds1), key2: Datastore(ds2)}.toTable
+      mounted = MountedKVStore.new(
+        {key1: KVStore(ds1), key2: KVStore(ds2)}.toTable
       ).tryGet
 
       store1 = mounted.findStore(nestedKey1).tryGet
@@ -150,11 +150,11 @@ suite "Test Mounted Datastore":
 
   test "Should find with field:value key":
     let
-      ds = SQLiteDatastore.new(Memory).tryGet
+      ds = SQLiteKVStore.new(Memory).tryGet
       key = Key.init("/sql").tryGet
       findKey1 = Key.init("/sql:name1").tryGet
       findKey2 = Key.init("/sql:name2").tryGet
-      mounted = MountedDatastore.new({key: Datastore(ds)}.toTable).tryGet
+      mounted = MountedKVStore.new({key: KVStore(ds)}.toTable).tryGet
 
     for k in @[findKey1, findKey2]:
       let store = mounted.findStore(k).tryGet

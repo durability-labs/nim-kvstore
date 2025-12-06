@@ -4,17 +4,17 @@ import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
 
-import ./datastore/key
-import ./datastore/datastore as rawds
-import ./datastore/fsds
-import ./datastore/sql
-import ./datastore/mountedds
-import ./datastore/types
-import ./datastore/query
+import ./kvstore/key
+import ./kvstore/kvstore as rawds
+import ./kvstore/fsds
+import ./kvstore/sql
+import ./kvstore/mountedds
+import ./kvstore/types
+import ./kvstore/query
 
-export datastore, fsds, mountedds, sql, types, query, key
+export kvstore, fsds, mountedds, sql, types, query, key
 
-## Typed Datastore Support
+## Typed KVStore Support
 ##
 ## Provides automatic conversion between user-defined types and seq[byte]
 ## using encoder/decoder procs.
@@ -47,7 +47,7 @@ export datastore, fsds, mountedds, sql, types, query, key
 
 # Typed datastore API
 proc get*[T](
-    self: Datastore, keys: seq[Key]
+    self: KVStore, keys: seq[Key]
 ): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
   ## Get a list of records specified by the keys
   ##
@@ -56,7 +56,7 @@ proc get*[T](
   success raw.mapIt(?toRecord[T](it))
 
 proc get*[T](
-    self: Datastore, key: Key
+    self: KVStore, key: Key
 ): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
   ## Get a single record
   ##
@@ -64,7 +64,7 @@ proc get*[T](
   toRecord[T]((?(await rawds.get(self, key))))
 
 proc put*[T](
-    self: Datastore, records: seq[Record[T]]
+    self: KVStore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
   ## Insert or update a group of records
   ##
@@ -75,7 +75,7 @@ proc put*[T](
   rawds.put(self, records.mapIt(it.toRaw))
 
 proc put*[T](
-    self: Datastore, record: Record[T]
+    self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Insert or update a single record
   ##
@@ -84,29 +84,29 @@ proc put*[T](
   rawds.put(self, record.toRaw)
 
 proc put*[T](
-    self: Datastore, key: Key, value: T
+    self: KVStore, key: Key, value: T
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   rawds.put(self, Record[T].init(key = key, val = value).toRaw)
 
 proc delete*[T](
-    self: Datastore, records: seq[Record[T]]
+    self: KVStore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
   ## Delete records - extracts key+token only, value is ignored (no encode/decode)
   rawds.delete(self, records.toKeyRecord)
 
 proc delete*[T](
-    self: Datastore, record: Record[T]
+    self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Delete single record - value is ignored (no encode/decode)
   rawds.delete(self, record.toKeyRecord)
 
 proc contains*(
-    self: Datastore, key: Key
+    self: KVStore, key: Key
 ): Future[bool] {.async: (raises: [CancelledError]).} =
   return (await rawds.has(self, key)) |? false
 
 proc query*[T](
-    self: Datastore, q: Query
+    self: KVStore, q: Query
 ): Future[?!QueryIter[T]] {.async: (raises: [CancelledError]).} =
   let dsIter = ?(await rawds.query(self, q))
 
@@ -128,7 +128,7 @@ proc query*[T](
 
 # Typed helper functions
 proc tryPut*[T](
-    self: Datastore,
+    self: KVStore,
     records: seq[Record[T]],
     maxRetries = 3,
     middleware: Middleware[Record[T]] = nil,
@@ -164,7 +164,7 @@ proc tryPut*[T](
   return success(failedRaw.mapIt(?toRecord[T](it)))
 
 proc tryPut*[T](
-    self: Datastore,
+    self: KVStore,
     record: Record[T],
     maxRetries = 3,
     middleware: Middleware[Record[T]] = nil,
@@ -174,12 +174,12 @@ proc tryPut*[T](
 
   let results = ?(await self.tryPut(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(DatastoreError, "Unable to put record due to conflict")
+    return failure newException(KVStoreError, "Unable to put record due to conflict")
 
   return success()
 
 proc tryDelete*[T](
-    self: Datastore,
+    self: KVStore,
     records: seq[Record[T]],
     maxRetries = 3,
     middleware: Middleware[Record[T]] = nil,
@@ -214,7 +214,7 @@ proc tryDelete*[T](
   return success(failedRaw.mapIt(?toRecord[T](it)))
 
 proc tryDelete*[T](
-    self: Datastore,
+    self: KVStore,
     record: Record[T],
     maxRetries = 3,
     middleware: Middleware[Record[T]] = nil,
@@ -223,11 +223,11 @@ proc tryDelete*[T](
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
     return
-      failure newException(DatastoreError, "Unable to delete record due to conflict")
+      failure newException(KVStoreError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*[T](
-    self: Datastore, key: Key, producer: ValueProducer[T], maxRetries = 3
+    self: KVStore, key: Key, producer: ValueProducer[T], maxRetries = 3
 ): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
   ## Get existing typed record or lazily insert using producer
   ## Producer is only called if key is missing
@@ -240,7 +240,7 @@ proc getOrPut*[T](
     return existing
 
   let err = existing.error
-  if not (err of DatastoreKeyNotFound):
+  if not (err of KVStoreKeyNotFound):
     return failure(err)
 
   # Key doesn't exist - produce value and try to insert

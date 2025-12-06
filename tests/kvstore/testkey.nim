@@ -6,7 +6,7 @@ import pkg/unittest2
 import pkg/questionable
 import pkg/questionable/results
 
-import ../../datastore/key
+import ../../kvstore/key
 
 suite "Namespace":
   test "should fail init":

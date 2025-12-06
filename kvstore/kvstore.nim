@@ -18,24 +18,24 @@ proc init*[T](_: type Record[T], key: Key, val: T, token = 0'u64): Record[T] =
 proc init*[void](_: type Record[void], key: Key, token = 0'u64): Record[void] =
   Record[void](key: key, token: token)
 
-proc newBackendError*(msg: string): ref DatastoreBackendError =
-  newException(DatastoreBackendError, msg)
+proc newBackendError*(msg: string): ref KVStoreBackendError =
+  newException(KVStoreBackendError, msg)
 
-proc newCorruptionError*(msg: string): ref DatastoreCorruption =
-  newException(DatastoreCorruption, msg)
+proc newCorruptionError*(msg: string): ref KVStoreCorruption =
+  newException(KVStoreCorruption, msg)
 
 proc newMaxRetriesError*(
     msg: string = "Max retries reached"
-): ref DatastoreMaxRetriesError =
-  newException(DatastoreMaxRetriesError, msg)
+): ref KVStoreMaxRetriesError =
+  newException(KVStoreMaxRetriesError, msg)
 
 method has*(
-    self: Datastore, key: Key
+    self: KVStore, key: Key
 ): Future[?!bool] {.base, gcsafe, async: (raises: [CancelledError]).} =
   raiseAssert("Not implemented!")
 
 method get*(
-    self: Datastore, keys: seq[Key]
+    self: KVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Get a list of records specified by the keys
   ##
@@ -43,7 +43,7 @@ method get*(
   raiseAssert("Not implemented!")
 
 method get*(
-    self: Datastore, key: Key
+    self: KVStore, key: Key
 ): Future[?!RawRecord] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Get a single record
   ##
@@ -51,7 +51,7 @@ method get*(
   raiseAssert("Not implemented!")
 
 method put*(
-    self: Datastore, records: seq[RawRecord]
+    self: KVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Insert or update a group of records
   ##
@@ -62,7 +62,7 @@ method put*(
   raiseAssert("Not implemented!")
 
 proc put*(
-    self: Datastore, record: RawRecord
+    self: KVStore, record: RawRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Insert or update a single record
   ##
@@ -71,12 +71,12 @@ proc put*(
 
   let res = ?(await self.put(@[record]))
   if res.len > 0:
-    return failure newException(DatastoreError, "Unable to put record due to conflict")
+    return failure newException(KVStoreError, "Unable to put record due to conflict")
 
   return success()
 
 method delete*(
-    self: Datastore, records: seq[KeyRecord]
+    self: KVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Delete a list of records
   ##
@@ -85,7 +85,7 @@ method delete*(
   raiseAssert("Not implemented!")
 
 proc delete*(
-    self: Datastore, record: KeyRecord
+    self: KVStore, record: KeyRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Delete a single record
   ##
@@ -95,37 +95,37 @@ proc delete*(
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
     return
-      failure newException(DatastoreError, "Unable to delete record due to conflict")
+      failure newException(KVStoreError, "Unable to delete record due to conflict")
 
   success()
 
 # RawRecord convenience overloads - just extract key+token, no conversion
 proc delete*(
-    self: Datastore, records: seq[RawRecord]
+    self: KVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
   self.delete(records.toKeyRecord)
 
 proc delete*(
-    self: Datastore, record: RawRecord
+    self: KVStore, record: RawRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
     return
-      failure newException(DatastoreError, "Unable to delete record due to conflict")
+      failure newException(KVStoreError, "Unable to delete record due to conflict")
   success()
 
 method close*(
-    self: Datastore
+    self: KVStore
 ): Future[?!void] {.base, async: (raises: [CancelledError]).} =
   raiseAssert("Not implemented!")
 
 method query*(
-    self: Datastore, query: Query
+    self: KVStore, query: Query
 ): Future[?!QueryIterRaw] {.base, gcsafe, async: (raises: [CancelledError]).} =
   raiseAssert("Not implemented!")
 
 proc tryPut*(
-    self: Datastore,
+    self: KVStore,
     records: seq[RawRecord],
     maxRetries = 3,
     middleware: RawMiddleware,
@@ -165,19 +165,19 @@ proc tryPut*(
   return success records
 
 proc tryPut*(
-    self: Datastore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
+    self: KVStore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryPut
   ##
 
   let results = ?(await self.tryPut(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(DatastoreError, "Unable to put record due to conflict")
+    return failure newException(KVStoreError, "Unable to put record due to conflict")
 
   return success()
 
 proc tryDelete*(
-    self: Datastore,
+    self: KVStore,
     records: seq[KeyRecord],
     maxRetries = 3,
     middleware: KeyMiddleware,
@@ -217,7 +217,7 @@ proc tryDelete*(
   return success records
 
 proc tryDelete*(
-    self: Datastore, record: KeyRecord, maxRetries = 3, middleware: KeyMiddleware = nil
+    self: KVStore, record: KeyRecord, maxRetries = 3, middleware: KeyMiddleware = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryDelete
   ##
@@ -225,13 +225,13 @@ proc tryDelete*(
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
     return
-      failure newException(DatastoreError, "Unable to delete record due to conflict")
+      failure newException(KVStoreError, "Unable to delete record due to conflict")
 
   return success()
 
 # RawRecord tryDelete - middleware works with RawRecord, no conversion
 proc tryDelete*(
-    self: Datastore,
+    self: KVStore,
     records: seq[RawRecord],
     maxRetries = 3,
     middleware: RawMiddleware,
@@ -266,17 +266,17 @@ proc tryDelete*(
   return success records
 
 proc tryDelete*(
-    self: Datastore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
+    self: KVStore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record tryDelete - value is ignored (no encode/decode)
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
     return
-      failure newException(DatastoreError, "Unable to delete record due to conflict")
+      failure newException(KVStoreError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*(
-    self: Datastore, key: Key, producer: RawValueProducer, maxRetries = 3
+    self: KVStore, key: Key, producer: RawValueProducer, maxRetries = 3
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
   ## Get existing record or lazily insert using producer
   ## Producer is only called if key is missing
@@ -289,7 +289,7 @@ proc getOrPut*(
     return existing
 
   let err = existing.error
-  if not (err of DatastoreKeyNotFound):
+  if not (err of KVStoreKeyNotFound):
     return failure(err)
 
   # Key doesn't exist - produce value and try to insert

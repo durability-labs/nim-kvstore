@@ -14,20 +14,20 @@ import pkg/stew/endians2
 
 import ./key
 import ./query
-import ./datastore
+import ./kvstore
 
 const
   TokenBytes = sizeof(uint64)
   FileExt* = "dsobj"
   EmptyBytes* = newSeq[byte](0)
 
-export datastore
+export kvstore
 
-type FSDatastore* = ref object of Datastore
-  ## Filesystem-backed datastore that stores records as files.
+type FSKVStore* = ref object of KVStore
+  ## Filesystem-backed kvstore that stores records as files.
   ##
-  ## Tokens are stored as uint64 in little-endian format. Unlike SQLiteDatastore
-  ## which is limited to int64 range due to SQLite INTEGER type, FSDatastore
+  ## Tokens are stored as uint64 in little-endian format. Unlike SQLiteKVStore
+  ## which is limited to int64 range due to SQLite INTEGER type, FSKVStore
   ## supports the full uint64 range.
   root*: string
   ignoreProtected: bool
@@ -43,13 +43,13 @@ proc moveFile(src, dst: string): ?!void {.raises: [].} =
   except Exception as exc:
     failure newBackendError("unable to move '" & src & "' to '" & dst & "': " & exc.msg)
 
-proc validDepth*(self: FSDatastore, key: Key): bool =
+proc validDepth*(self: FSKVStore, key: Key): bool =
   key.len <= self.depth
 
-proc isRootSubdir*(self: FSDatastore, path: string): bool =
+proc isRootSubdir*(self: FSKVStore, path: string): bool =
   path.startsWith(self.root)
 
-proc path*(self: FSDatastore, key: Key): ?!string =
+proc path*(self: FSKVStore, key: Key): ?!string =
   ## Return filename corresponding to the key
   ## or failure if the key doesn't correspond to a valid filename
   ##
@@ -82,7 +82,7 @@ proc path*(self: FSDatastore, key: Key): ?!string =
   return success fullname
 
 proc readVersioned*(
-    self: FSDatastore, path: string, key: Key, data = true
+    self: FSKVStore, path: string, key: Key, data = true
 ): ?!RawRecord =
   var file: File
 
@@ -115,7 +115,7 @@ proc readVersioned*(
   return success RawRecord.init(key, value, token)
 
 proc writeVersioned*(
-    self: FSDatastore, path: string, token: uint64, value: seq[byte]
+    self: FSKVStore, path: string, token: uint64, value: seq[byte]
 ): ?!void =
   ?catch(createDir(parentDir(path)))
 
@@ -146,18 +146,18 @@ proc writeVersioned*(
   return success()
 
 method has*(
-    self: FSDatastore, key: Key
+    self: FSKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
   return self.path(key) .? fileExists()
 
 proc acquire*(
-    self: FSDatastore, key: Key
+    self: FSKVStore, key: Key
 ): Future[AsyncLock] {.async: (raises: [CancelledError]).} =
   var lock = self.locks.mgetOrPut(key, newAsyncLock())
   await lock.acquire()
   lock
 
-proc release*(self: FSDatastore, key: Key, lock: AsyncLock) {.raises: [].} =
+proc release*(self: FSKVStore, key: Key, lock: AsyncLock) {.raises: [].} =
   if lock.locked:
     try:
       lock.release()
@@ -167,7 +167,7 @@ proc release*(self: FSDatastore, key: Key, lock: AsyncLock) {.raises: [].} =
       if not lock.locked:
         self.locks.del(key)
 
-template withLock(self: FSDatastore, key: Key, body: untyped) =
+template withLock(self: FSKVStore, key: Key, body: untyped) =
   let lock = await self.acquire(key)
   try:
     body
@@ -175,17 +175,17 @@ template withLock(self: FSDatastore, key: Key, body: untyped) =
     self.release(key, lock)
 
 method get*(
-    self: FSDatastore, key: Key
+    self: FSKVStore, key: Key
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
   let path = ?self.path(key)
 
   if not path.fileExists():
-    return failure newException(DatastoreKeyNotFound, "Key doesn't exist")
+    return failure newException(KVStoreKeyNotFound, "Key doesn't exist")
 
   return self.readVersioned(path, key)
 
 method get*(
-    self: FSDatastore, keys: seq[Key]
+    self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   var records: seq[RawRecord]
   for key in keys:
@@ -201,7 +201,7 @@ method get*(
   return success records
 
 method put*(
-    self: FSDatastore, records: seq[RawRecord]
+    self: FSKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   var conflicts: seq[Key]
 
@@ -229,7 +229,7 @@ method put*(
   return success conflicts
 
 method delete*(
-    self: FSDatastore, records: seq[KeyRecord]
+    self: FSKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   var skipped: seq[Key]
 
@@ -260,11 +260,11 @@ proc dirWalker(path: string): (iterator (): string {.raises: [Defect], gcsafe.})
       except CatchableError as exc:
         raise newException(Defect, exc.msg)
 
-method close*(self: FSDatastore): Future[?!void] {.async: (raises: [CancelledError]).} =
+method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError]).} =
   return success()
 
 method query*(
-    self: FSDatastore, query: Query
+    self: FSKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
   let path = ?self.path(query.key)
 
@@ -309,7 +309,7 @@ method query*(
   return success QueryIter.new(next, finished, dispose)
 
 proc new*(
-    T: type FSDatastore,
+    T: type FSKVStore,
     root: string,
     depth = 2,
     caseSensitive = true,

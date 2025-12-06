@@ -1,7 +1,7 @@
-import ./datastore/testkey
-import ./datastore/testdatastore
-import ./datastore/testfsds
-import ./datastore/testsql
-import ./datastore/testmountedds
+import ./kvstore/testkey
+import ./kvstore/testkvstore
+import ./kvstore/testfsds
+import ./kvstore/testsql
+import ./kvstore/testmountedds
 
 {.warning[UnusedImport]: off.}
