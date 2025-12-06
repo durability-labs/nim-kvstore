@@ -28,7 +28,7 @@ suite "Test Open SQLite Datastore DB":
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
-  test "Should create and open datastore DB":
+  test "Should create and open store DB":
     var dsDb = SQLiteDsDb
       .open(path = dbPathAbs, flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE)
       .tryGet()

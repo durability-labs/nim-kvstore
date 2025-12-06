@@ -81,7 +81,7 @@ suite "Test Basic Mounted KVStore":
     check skipped.len == 0 # both should be deleted successfully
 
 suite "Test Mounted KVStore":
-  test "Should mount datastore":
+  test "Should mount store":
     let
       ds = SQLiteKVStore.new(Memory).tryGet
       mounted = MountedKVStore.new().tryGet

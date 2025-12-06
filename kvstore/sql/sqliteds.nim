@@ -47,7 +47,7 @@ proc newRollbackError(
 
 proc ensureWritable(self: SQLiteKVStore): ?!void =
   if self.readOnly:
-    return failure(newBackendError("SQLite datastore opened read-only"))
+    return failure(newBackendError("SQLite store opened read-only"))
   success()
 
 proc boundedToken(token: uint64): ?!int64 =

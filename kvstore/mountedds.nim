@@ -46,7 +46,7 @@ func findStore*(self: MountedKVStore, key: Key): ?!MountedStore =
 
       mounted = mounted.parent.get
 
-  failure newException(KVStoreKeyNotFound, "No datastore found for key")
+  failure newException(KVStoreKeyNotFound, "No store found for key")
 
 proc dispatch(
     self: MountedKVStore, key: Key
