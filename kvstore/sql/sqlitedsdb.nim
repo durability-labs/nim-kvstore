@@ -56,7 +56,8 @@ const
   VersionColType = "INTEGER"
   TimestampColType = "INTEGER"
 
-  Memory* = ":memory:"
+  SqliteMemory* = ":memory:"
+  Memory* {.deprecated: "use SqliteMemory".} = SqliteMemory
 
   # https://stackoverflow.com/a/9756276
   # EXISTS returns a boolean value represented by an integer:
@@ -329,7 +330,7 @@ proc close*(self: var SQLiteDsDb) =
     self.getChangesStmt.dispose
 
 proc open*(
-    _: type SQLiteDsDb, path = Memory, flags = SQLITE_OPEN_READONLY
+    _: type SQLiteDsDb, path = SqliteMemory, flags = SQLITE_OPEN_READONLY
 ): ?!SQLiteDsDb =
   # make it optional to enable WAL with it enabled being the default?
 
@@ -343,10 +344,10 @@ proc open*(
     disposeIfUnreleased(env)
 
   let
-    isMemory = path == Memory
+    isMemory = path == SqliteMemory
     absPath =
       if isMemory:
-        Memory
+        SqliteMemory
       else:
         ?path.getDBFilePath
     readOnly = (SQLITE_OPEN_READONLY and flags).bool
