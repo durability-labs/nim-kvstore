@@ -5,14 +5,14 @@ import pkg/questionable
 import pkg/questionable/results
 
 import ./kvstore/key
-import ./kvstore/kvstore as rawds
+import ./kvstore/rawkvstore as rawds
 import ./kvstore/fsds
 import ./kvstore/sql
 import ./kvstore/mountedds
 import ./kvstore/types
 import ./kvstore/query
 
-export kvstore, fsds, mountedds, sql, types, query, key
+export rawds, fsds, mountedds, sql, types, query, key
 
 ## Typed KVStore Support
 ##
