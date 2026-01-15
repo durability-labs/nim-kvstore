@@ -52,6 +52,132 @@ waitFor main()
 
 ## Core Concepts
 
+### Keys and Namespaces
+
+Keys are hierarchical paths used to identify records. A `Key` is composed of one or more `Namespace` segments.
+
+#### Namespace
+
+A `Namespace` is a single segment of a key, consisting of an optional `field` and a `value`:
+
+```nim
+type Namespace* = object
+  field*: string   # Optional field/type identifier
+  value*: string   # The namespace value
+```
+
+**Constants:**
+- `Delimiter = ":"` - Separates field from value within a namespace
+- `Separator = "/"` - Separates namespaces within a key
+
+**Constructors:**
+
+| Signature | Description |
+|-----------|-------------|
+| `Namespace.init(field, value: string): ?!Namespace` | Create from separate field and value |
+| `Namespace.init(id: string): ?!Namespace` | Parse from string like `"field:value"` or `"value"` |
+
+**Validation Rules:**
+- Neither field nor value may contain `":"` or `"/"`
+- An id string may contain at most one `":"`
+- Whitespace is stripped from field and value
+
+**Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `id(ns): string` | Returns `"field:value"` if field exists, else `"value"` |
+| `hash(ns): Hash` | Hash based on `id` |
+| `$(ns): string` | Same as `id` |
+
+#### Key
+
+A `Key` is a hierarchical path composed of `Namespace` segments:
+
+```nim
+type Key* = object
+  namespaces*: seq[Namespace]
+```
+
+**Constructors:**
+
+| Signature | Description |
+|-----------|-------------|
+| `Key.init(namespaces: varargs[Namespace]): ?!Key` | Create from Namespace objects |
+| `Key.init(namespaces: varargs[string]): ?!Key` | Parse from path strings like `"/a:b/c/d"` |
+| `Key.init(keys: varargs[Key]): ?!Key` | Concatenate multiple keys |
+
+**Parsing Behavior:**
+- Strings are split by `"/"` separator
+- Empty segments (e.g., `"///a///b///"`) are filtered out
+- Each segment is parsed as a `Namespace`
+
+**Accessors:**
+
+| Function | Description |
+|----------|-------------|
+| `list(key): seq[Namespace]` | Returns all namespaces |
+| `key[x]` | Index into namespaces (supports slices) |
+| `len(key): int` | Number of namespaces |
+| `value(key): string` | Value of the last namespace |
+| `field(key): string` | Field of the last namespace |
+| `id(key): string` | Full path string, e.g., `"/a:b/c/d:e"` |
+
+**Navigation:**
+
+| Function | Description |
+|----------|-------------|
+| `root(key): bool` | True if key has only one namespace |
+| `parent(key): ?!Key` | Key without last namespace (fails if root) |
+| `path(key): ?!Key` | Parent with last namespace's field/value stripped |
+| `reverse(key): Key` | Key with namespaces in reverse order |
+
+**Building Keys:**
+
+| Function | Description |
+|----------|-------------|
+| `child(key, namespaces: varargs[Namespace]): Key` | Append namespaces |
+| `child(key, keys: varargs[Key]): Key` | Append keys |
+| `child(key, ids: varargs[string]): ?!Key` | Append parsed strings |
+| `key / ns` | Operator alias for child (Namespace) |
+| `key / other` | Operator alias for child (Key) |
+| `key / id` | Operator alias for child (string) |
+| `Key.random(): string` | Generate random 24-char OID string |
+
+**Relationships:**
+
+| Function | Description |
+|----------|-------------|
+| `relative(key, parent): ?!Key` | Get key relative to parent |
+| `ancestor(key, other): bool` | True if `other` is a descendant of `key` |
+| `descendant(key, other): bool` | True if `key` is a descendant of `other` |
+
+**Example Usage:**
+
+```nim
+# Create namespaces
+let ns = Namespace.init("type", "user").tryGet()  # field="type", value="user"
+let ns2 = Namespace.init("user").tryGet()          # field="", value="user"
+let ns3 = Namespace.init("type:user").tryGet()     # field="type", value="user"
+
+# Create keys
+let key = Key.init("/users/alice/profile").tryGet()
+let key2 = Key.init("users", "alice", "profile").tryGet()  # equivalent
+
+# Navigate keys
+let parent = key.parent.tryGet()        # /users/alice
+let isRoot = parent.root                # false
+let lastValue = key.value               # "profile"
+
+# Build keys
+let child = (key / "settings").tryGet()  # /users/alice/profile/settings
+let combined = key / Key.init("a/b").tryGet()
+
+# Check relationships
+let isAncestor = Key.init("/users").tryGet().ancestor(key)  # true
+let relative = key.relative(Key.init("/users").tryGet()).tryGet()  # alice/profile
+```
+
 ### Records and Tokens
 
 Every record in nim-kvstore has three components:
