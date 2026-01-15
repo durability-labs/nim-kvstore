@@ -387,12 +387,14 @@ let query = Query.init(
 
 let iter = (await ds.query(query)).tryGet()
 
+defer:
+  iter.dispose()
+
 while not iter.finished:
   let recordOpt = (await iter.next()).tryGet()
   if record =? recordOpt:
     echo record.key, ": ", record.val
 
-iter.dispose()
 ```
 
 ## Stability
