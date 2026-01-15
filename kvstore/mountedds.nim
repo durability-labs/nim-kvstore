@@ -7,7 +7,7 @@ import pkg/questionable
 import pkg/questionable/results
 
 import ./key
-import ./kvstore
+import ./rawkvstore
 
 type
   MountedStore* = object

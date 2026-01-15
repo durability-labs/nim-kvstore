@@ -12,7 +12,7 @@ import pkg/sqlite3_abi
 
 import ../key
 import ../query
-import ../kvstore
+import ../rawkvstore
 import ./sqlitedsdb
 import ./sqliteutils
 

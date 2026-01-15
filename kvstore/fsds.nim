@@ -14,14 +14,14 @@ import pkg/stew/endians2
 
 import ./key
 import ./query
-import ./kvstore
+import ./rawkvstore
 
 const
   TokenBytes = sizeof(uint64)
   FileExt* = "dsobj"
   EmptyBytes* = newSeq[byte](0)
 
-export kvstore
+export rawkvstore
 
 type FSKVStore* = ref object of KVStore
   ## Filesystem-backed kvstore that stores records as files.
