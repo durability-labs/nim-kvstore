@@ -27,7 +27,7 @@ import pkg/stew/byteutils
 
 proc main() {.async.} =
   # Create an in-memory SQLite kvstore
-  let ds = SQLiteKVStore.new(Memory).tryGet()
+  let ds = SQLiteKVStore.new(SqliteMemory).tryGet()
 
   # Create a key
   let key = Key.init("/users/alice").tryGet()
@@ -64,6 +64,7 @@ type Record*[T] = object
 ```
 
 The **token** is central to the CAS semantics:
+
 - Token `0` means "insert only if key doesn't exist"
 - Any other token means "update only if current token matches"
 
@@ -108,7 +109,7 @@ let skipped = (await ds.put(records)).tryGet()
 ### Core Operations
 
 | Method | Description |
-|--------|-------------|
+| ------ | ----------- |
 | `has(key)` | Check if key exists |
 | `get(key)` | Get single record |
 | `get(keys)` | Get multiple records |
@@ -117,12 +118,12 @@ let skipped = (await ds.put(records)).tryGet()
 | `delete(record)` | Delete single record (errors on conflict) |
 | `delete(records)` | Delete multiple records (returns skipped keys) |
 | `query(query)` | Query records by key prefix |
-| `close()` | Close the datastore |
+| `close()` | Close the store |
 
 ### Helper Operations
 
 | Method | Description |
-|--------|-------------|
+| ------ | ----------- |
 | `tryPut(records, maxRetries, middleware)` | Bulk put with retry on conflicts |
 | `tryDelete(records, maxRetries, middleware)` | Bulk delete with retry on conflicts |
 | `getOrPut(key, producer, maxRetries)` | Get existing or lazily create |
@@ -193,7 +194,7 @@ SQLite-backed storage supporting both in-memory and file-based databases.
 
 ```nim
 # In-memory database
-let memDs = SQLiteKVStore.new(Memory).tryGet()
+let memDs = SQLiteKVStore.new(SqliteMemory).tryGet()
 
 # File-based database
 let fileDs = SQLiteKVStore.new("/path/to/db.sqlite").tryGet()
@@ -222,7 +223,7 @@ let fsDs = FSKVStore.new(
 Combines multiple kvstores under different key prefixes:
 
 ```nim
-let sqlDs = SQLiteKVStore.new(Memory).tryGet()
+let sqlDs = SQLiteKVStore.new(SqliteMemory).tryGet()
 let fsDs = FSKVStore.new("/data").tryGet()
 
 let mounted = MountedKVStore.new({
@@ -280,7 +281,7 @@ nim-kvstore is currently marked as experimental and may be subject to breaking c
 
 nim-kvstore is licensed and distributed under either of:
 
-* Apache License, Version 2.0: [LICENSE-APACHEv2](LICENSE-APACHEv2) or https://opensource.org/licenses/Apache-2.0
-* MIT license: [LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT
+- Apache License, Version 2.0: [LICENSE-APACHEv2](LICENSE-APACHEv2) or <https://opensource.org/licenses/Apache-2.0>
+- MIT license: [LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>
 
 at your option. The contents of this repository may not be copied, modified, or distributed except according to those terms.
