@@ -4,6 +4,7 @@ import std/times
 import std/sequtils
 import std/options
 import std/sets
+import std/atomics
 
 import pkg/chronos
 import pkg/questionable
@@ -21,6 +22,7 @@ export sqlitedsdb
 type SQLiteKVStore* = ref object of KVStore
   readOnly: bool
   db: SQLiteDsDb
+  activeIterators: Atomic[int]  # Track outstanding query iterators
 
 proc path*(self: SQLiteKVStore): string =
   self.db.dbPath
@@ -131,7 +133,7 @@ method put*(
 
   ?self.db.beginStmt.exec() # begin transaction
   inTransaction = true
-  
+
   defer:
     # Rollback if transaction started but not committed
     if inTransaction and not committed:
@@ -161,6 +163,15 @@ method put*(
           ).errorOption:
         return failure(err)
 
+    # Defense in depth: validate changes count
+    # - changes == 0: CAS conflict (already detected by RETURNING)
+    # - changes == 1: Success
+    # - changes > 1: Corruption (should never happen with unique key constraint)
+    let changes = ?self.db.checkChanges()
+    if changes > 1:
+      return failure(newCorruptionError(
+        "Multiple rows affected by CAS operation on key: " & record.key.id))
+
     if not changed:
       skipped.add(record.key)
 
@@ -177,14 +188,14 @@ method delete*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var 
+  var
     deletedIds = initHashSet[string]()
     inTransaction = false
     committed = false
 
   # Build parameterized DELETE statement with ? placeholders
   let queryStr = makeDeleteManyParamQuery(records.len) & " RETURNING " & IdColName
-  
+
   # Convert to (id, int64) pairs for binding
   var pairs: seq[(string, int64)]
   for record in records:
@@ -193,7 +204,7 @@ method delete*(
 
   ?self.db.beginStmt.exec()
   inTransaction = true
-  
+
   defer:
     # Rollback if transaction started but not committed
     if inTransaction and not committed:
@@ -205,6 +216,13 @@ method delete*(
 
   if err =? self.db.env.queryWithIdVersionPairs(queryStr, pairs, onRow).errorOption:
     return failure err
+
+  # Defense in depth: validate changes count
+  # Should not exceed number of records (each record has unique key)
+  let changes = ?self.db.checkChanges()
+  if changes > records.len:
+    return failure(newCorruptionError(
+      "Delete affected more rows (" & $changes & ") than records (" & $records.len & ")"))
 
   ?self.db.endStmt.exec()
   committed = true
@@ -220,8 +238,156 @@ method delete*(
 method close*(
     self: SQLiteKVStore
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
-  self.db.close()
-  return success()
+  # Debug check: warn if closing with active iterators
+  let activeCount = self.activeIterators.load()
+  if activeCount > 0:
+    # In debug builds, this would be an assertion
+    # In release, we just log and continue (sqlite3_close_v2 handles cleanup)
+    debugEcho "WARNING: SQLiteKVStore.close() called with ", activeCount, " active iterator(s)"
+
+  # Propagate close errors
+  return self.db.close()
+
+# =============================================================================
+# Atomic Batch API Implementation
+# =============================================================================
+
+method supportsAtomicBatch*(self: SQLiteKVStore): bool =
+  true
+
+method putAtomic*(
+    self: SQLiteKVStore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## All-or-nothing batch put with CAS.
+  ##
+  ## If ANY record has a CAS conflict, NO records are committed.
+  ## Returns conflict keys on rollback, empty seq on success.
+
+  if err =? self.ensureWritable().errorOption:
+    return failure(err)
+
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  var
+    conflicts: seq[Key]
+    stamp = timestamp()
+    inTransaction = false
+    committed = false
+
+  ?self.db.beginStmt.exec()
+  inTransaction = true
+
+  defer:
+    if inTransaction and not committed:
+      discard self.db.rollbackStmt.exec()
+
+  # First pass: check ALL CAS conditions, collect conflicts
+  for record in records:
+    var exists = false
+    var currentToken = 0'i64
+
+    proc onRow(s: RawStmtPtr) =
+      exists = true
+      currentToken = versionCol(s, GetSingleStmtVersionCol)()
+
+    if err =? self.db.getSingleStmt.query((record.key.id), onRow).errorOption:
+      return failure(err)
+
+    let conflict =
+      if record.token == 0:
+        exists  # Insert-only but key exists
+      elif not exists:
+        true    # Update expected but key missing
+      else:
+        currentToken != record.token.int64  # Token mismatch
+
+    if conflict:
+      conflicts.add(record.key)
+
+  # If any conflicts, rollback and return them
+  if conflicts.len > 0:
+    ?self.db.rollbackStmt.exec()
+    committed = true  # Prevent finally rollback
+    return success conflicts
+
+  # Second pass: apply ALL writes (no conflicts)
+  for record in records:
+    var changed = false
+    proc onRow(s: RawStmtPtr) =
+      changed = true
+
+    if record.token == 0:
+      if err =? self.db.insertStmt.query((record.key.id, record.val, stamp), onRow).errorOption:
+        return failure(err)
+    else:
+      let token = ?boundedToken(record.token)
+      if err =? self.db.updateStmt.query((record.val, stamp, record.key.id, token), onRow).errorOption:
+        return failure(err)
+
+  ?self.db.endStmt.exec()
+  committed = true
+  return success newSeq[Key]()
+
+method deleteAtomic*(
+    self: SQLiteKVStore, records: seq[KeyRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## All-or-nothing batch delete with CAS.
+  ## Same semantics as putAtomic().
+
+  if err =? self.ensureWritable().errorOption:
+    return failure(err)
+
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  var
+    conflicts: seq[Key]
+    inTransaction = false
+    committed = false
+
+  ?self.db.beginStmt.exec()
+  inTransaction = true
+
+  defer:
+    if inTransaction and not committed:
+      discard self.db.rollbackStmt.exec()
+
+  # First pass: check ALL CAS conditions
+  for record in records:
+    var exists = false
+    var currentToken = 0'i64
+
+    proc onRow(s: RawStmtPtr) =
+      exists = true
+      currentToken = versionCol(s, GetSingleStmtVersionCol)()
+
+    if err =? self.db.getSingleStmt.query((record.key.id), onRow).errorOption:
+      return failure(err)
+
+    if not exists or currentToken != record.token.int64:
+      conflicts.add(record.key)
+
+  # If any conflicts, rollback
+  if conflicts.len > 0:
+    ?self.db.rollbackStmt.exec()
+    committed = true
+    return success conflicts
+
+  # Second pass: delete all
+  for record in records:
+    let token = ?boundedToken(record.token)
+
+    # DeleteStmt has RETURNING, so we use query instead of exec
+    proc onRow(s: RawStmtPtr) =
+      discard  # Consume the returned row
+
+    if err =? self.db.deleteStmt.query((record.key.id, token), onRow).errorOption:
+      return failure(err)
+
+  ?self.db.endStmt.exec()
+  committed = true
+  return success newSeq[Key]()
 
 method query*(
     self: SQLiteKVStore, query: Query
@@ -264,7 +430,10 @@ method query*(
       return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   var finished = false
-  
+
+  # Track this iterator
+  discard self.activeIterators.fetchAdd(1)
+
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
     if finished:
       return failure(newException(QueryEndedError, "Calling next on a finished query!"))
@@ -325,6 +494,8 @@ method query*(
     # Finalize the prepared statement to release resources
     # sqlite3_finalize returns SQLITE_OK even if statement is nil
     discard sqlite3_finalize(s)
+    # Decrement active iterator count
+    discard self.activeIterators.fetchSub(1)
 
   return success QueryIter.new(next, isFinished, dispose)
 

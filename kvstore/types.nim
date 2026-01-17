@@ -20,11 +20,20 @@ type
   Middleware*[T] =
     proc(failed: seq[T]): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
   ValueProducer*[T] = proc(): Future[?!T] {.gcsafe, async: (raises: [CancelledError]).}
+  
+  # Atomic batch middleware receives ALL records + conflict keys
+  # This allows it to refresh tokens for the entire batch, not just failed records
+  AtomicMiddleware*[T] = proc(
+    allRecords: seq[T],
+    conflicts: seq[Key]
+  ): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
 
   RawRecord* = Record[seq[byte]]
   KeyRecord* = Record[void]
   KeyMiddleware* = Middleware[KeyRecord]
   RawMiddleware* = Middleware[RawRecord]
+  RawAtomicMiddleware* = AtomicMiddleware[RawRecord]
+  KeyAtomicMiddleware* = AtomicMiddleware[KeyRecord]
   RawValueProducer* = ValueProducer[seq[byte]]
 
   # Error types

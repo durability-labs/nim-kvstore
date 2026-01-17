@@ -33,7 +33,7 @@ suite "Test Open SQLite Datastore DB":
       .open(path = dbPathAbs, flags = SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE)
       .tryGet()
     defer:
-      dsDb.close()
+      discard dsDb.close()
 
     check:
       fileExists(dbPathAbs)
@@ -44,7 +44,7 @@ suite "Test Open SQLite Datastore DB":
       .tryGet()
 
     defer:
-      dsDb.close()
+      discard dsDb.close()
 
       check:
         fileExists(dbPathAbs)
@@ -56,7 +56,7 @@ suite "Test Open SQLite Datastore DB":
     var dsDb = SQLiteDsDb.open(path = dbPathAbs, flags = SQLITE_OPEN_READONLY).tryGet()
 
     defer:
-      dsDb.close()
+      discard dsDb.close()
 
   test "Should fail open non existent DB in read only mode":
     removeDir(basePathAbs)
@@ -94,8 +94,8 @@ suite "Test SQLite Datastore DB operations":
       SQLiteDsDb.open(path = dbPathAbs, flags = SQLITE_OPEN_READONLY).tryGet()
 
   teardownAll:
-    dsDb.close()
-    readOnlyDb.close()
+    discard dsDb.close()
+    discard readOnlyDb.close()
 
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))

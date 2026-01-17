@@ -83,7 +83,7 @@ const
     CREATE TABLE IF NOT EXISTS {TableName} (
       {IdColName} {IdColType} NOT NULL PRIMARY KEY,
       {DataColName} {DataColType},
-      {VersionColName} {VersionColType} NOT NULL,
+      {VersionColName} {VersionColType} NOT NULL CHECK({VersionColName} >= 1),
       {TimestampColName} {TimestampColType} NOT NULL
     ) WITHOUT ROWID;
   """
@@ -363,19 +363,18 @@ proc checkChanges*(self: SQLiteDsDb): ?!int =
 
   return success changes
 
-proc close*(self: var SQLiteDsDb) =
+proc close*(self: var SQLiteDsDb): ?!void =
+  ## Close the database and all prepared statements.
+  ## Returns failure if the database cannot be closed properly.
+  
   # Idempotent: skip if already closed
   if self.env.isNil:
-    return
+    return success()
 
-  var env: AutoDisposed[SQLite]
+  let env = self.env
+  self.env = nil  # Mark as closed immediately to prevent double-close
 
-  defer:
-    disposeIfUnreleased(env)
-
-  env.val = self.env
-  self.env = nil  # Mark as closed
-
+  # Finalize all prepared statements first
   if not RawStmtPtr(self.containsStmt).isNil:
     self.containsStmt.dispose
 
@@ -402,6 +401,9 @@ proc close*(self: var SQLiteDsDb) =
 
   if not RawStmtPtr(self.getChangesStmt).isNil:
     self.getChangesStmt.dispose
+
+  # Now close the database connection
+  return closeDb(env)
 
 proc open*(
     _: type SQLiteDsDb, path = SqliteMemory, flags = SQLITE_OPEN_READONLY
@@ -437,6 +439,9 @@ proc open*(
   var pragmaStmt = journalModePragmaStmt(env.val)
 
   checkExec(pragmaStmt)
+  
+  # Set production pragmas for durability and performance
+  ?setProductionPragmas(env.val)
 
   var
     containsStmt: ContainsStmt

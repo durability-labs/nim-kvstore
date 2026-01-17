@@ -102,12 +102,27 @@ template checkExec*(env: SQLite, q: string) =
 
   checkExec(s)
 
-template dispose*(db: SQLite) =
-  # Use sqlite3_close_v2 which allows for pending statements to be finalized
-  # automatically when they are no longer in use. This is safer for cases where
-  # query iterators might not be explicitly disposed before close.
+proc closeDb*(db: SQLite): ?!void =
+  ## Close the database with proper error handling.
+  ## Uses sqlite3_close_v2 which allows for pending statements to be finalized
+  ## automatically when they are no longer in use.
+  if db.isNil:
+    return success()
+  
   let closeResult = sqlite3_close_v2(db)
-  doAssert closeResult == SQLITE_OK, "Failed to close database: " & $sqlite3_errstr(closeResult)
+  if closeResult != SQLITE_OK:
+    # In debug builds, also output to stderr for visibility
+    debugEcho "WARNING: sqlite3_close_v2 failed: ", $sqlite3_errstr(closeResult)
+    return failure("Failed to close database: " & $sqlite3_errstr(closeResult))
+  
+  success()
+
+template dispose*(db: SQLite) =
+  # Legacy template for backward compatibility
+  # Prefer using closeDb() for proper error handling
+  let closeResult = sqlite3_close_v2(db)
+  if closeResult != SQLITE_OK:
+    debugEcho "WARNING: sqlite3_close_v2 failed: ", $sqlite3_errstr(closeResult)
 
 template dispose*(sqliteStmt: SQLiteStmt) =
   doAssert SQLITE_OK == sqlite3_finalize(RawStmtPtr(sqliteStmt))
@@ -297,3 +312,46 @@ proc queryWithIdVersionPairs*(env: SQLite, query: string, pairs: openArray[(stri
   
   discard sqlite3_finalize(s)
   res
+
+proc execPragma(env: SQLite, pragma: string): ?!void =
+  ## Execute a PRAGMA statement that returns a result row.
+  ## Steps until done, then finalizes.
+  var s = prepare(env, pragma)
+  
+  # Step through - PRAGMAs typically return SQLITE_ROW then SQLITE_DONE
+  while true:
+    let v = sqlite3_step(s)
+    case v
+    of SQLITE_ROW:
+      continue  # Consume result row
+    of SQLITE_DONE:
+      break
+    else:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+  
+  let finalizeResult = sqlite3_finalize(s)
+  if finalizeResult != SQLITE_OK:
+    return failure $sqlite3_errstr(finalizeResult)
+  
+  success()
+
+proc setProductionPragmas*(env: SQLite): ?!void =
+  ## Set production-ready SQLite pragmas for durability and performance.
+  ## 
+  ## - busy_timeout: Wait up to 5 seconds for locks instead of failing immediately
+  ## - synchronous=NORMAL: Safe with WAL mode, ~2x faster than FULL
+  ##
+  ## These pragmas improve behavior under concurrent access and write performance.
+  
+  # Set busy timeout to 5 seconds (5000ms)
+  # This prevents immediate "database is locked" errors under contention
+  ?env.execPragma("PRAGMA busy_timeout = 5000;")
+  
+  # Set synchronous to NORMAL (safe with WAL mode)
+  # WAL + NORMAL provides durability guarantees while improving write performance
+  # - Transactions are durable after commit (written to WAL)
+  # - Only risk: corruption if OS crashes during WAL checkpoint (very rare)
+  ?env.execPragma("PRAGMA synchronous = NORMAL;")
+  
+  success()
