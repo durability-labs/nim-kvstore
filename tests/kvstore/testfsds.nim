@@ -9,6 +9,7 @@ import pkg/chronos
 import pkg/stew/byteutils
 
 import pkg/kvstore
+import pkg/kvstore/typedkv
 
 import ./kvcommontests
 import ./querycommontests
