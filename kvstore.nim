@@ -5,7 +5,7 @@ import pkg/questionable
 import pkg/questionable/results
 
 import ./kvstore/key
-import ./kvstore/rawkvstore as rawds
+import ./kvstore/helpers as rawds
 import ./kvstore/fsds
 import ./kvstore/sql
 import ./kvstore/types
