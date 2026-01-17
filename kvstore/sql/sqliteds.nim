@@ -1,11 +1,15 @@
 {.push raises: [].}
 
+when not compileOption("threads"):
+  {.error: "SQLiteKVStore requires --threads:on".}
+
 import std/times
 import std/sequtils
 import std/options
 import std/sets
 import std/atomics
 import std/locks
+import std/os
 
 import pkg/chronos
 import pkg/chronos/threadsync
@@ -26,7 +30,6 @@ type
   SQLiteKVStore* = ref object of KVStore
     readOnly: bool
     db: SQLiteDsDb
-    activeIterators: Atomic[int]  # Track outstanding query iterators
     lock: Lock                    # Serializes access to shared prepared statements
     tp: Taskpool                  # Injected threadpool for async operations
 
@@ -35,6 +38,19 @@ type
     lock*: ptr Lock            # Store-level lock (shared across tasks)
     signal*: ThreadSignalPtr   # Completion notification (per-task)
     result*: T                 # Output value (per-task)
+
+  # Per-iterator state for query operations
+  # Each iterator has its own lock (not the store-wide lock) since each
+  # has a private prepared statement. The lock only protects against
+  # concurrent next() calls on the same iterator instance.
+  QueryIterState* = ref object
+    stmt*: RawStmtPtr
+    lock*: Lock
+    finished*: Atomic[bool]    # Atomic for thread-safe access without lock
+    isDisposed*: Atomic[bool]  # Prevent double-dispose
+    inFlight*: Atomic[int]     # Track in-flight next() workers (non-blocking)
+    tp*: Taskpool              # For spawning next() workers
+    queryValue*: bool          # Whether to include value in results
 
 proc path*(self: SQLiteKVStore): string =
   self.db.dbPath
@@ -388,6 +404,95 @@ proc runDeleteAtomicTask(ctx: ptr TaskCtx[?!seq[Key]], db: ptr SQLiteDsDb,
   withLock(lock[]):
     ctx[].result = deleteAtomicSync(db[], records, readOnly)
 
+proc runNextTask(ctx: ptr TaskCtx[?!(?RawRecord)],
+                 stmt: ptr RawStmtPtr,
+                 lock: ptr Lock,
+                 finished: ptr Atomic[bool],
+                 inFlight: ptr Atomic[int],
+                 queryValue: bool) {.gcsafe.} =
+  ## Task worker for query iterator next() operation.
+  ## Uses per-iterator lock, not store-wide lock.
+  defer:
+    discard inFlight[].fetchSub(1)
+    discard ctx[].signal.fireSync()
+
+  # Type alias for cleaner Result construction
+  type R = typeof(ctx[].result)
+
+  # Check finished atomically before acquiring lock
+  # Return none instead of error - it's valid to call next() after finishing
+  if finished[].load():
+    ctx[].result = R.ok(RawRecord.none)
+    return
+
+  withLock(lock[]):
+    # Double-check after acquiring lock
+    if finished[].load():
+      ctx[].result = R.ok(RawRecord.none)
+      return
+
+    let v = sqlite3_step(stmt[])
+
+    case v
+    of SQLITE_ROW:
+      let keyStr = $sqlite3_column_text_not_null(stmt[], QueryStmtIdCol)
+      let key = Key.init(keyStr).valueOr:
+        finished[].store(true)
+        ctx[].result = R.err(newException(KVStoreError, "Invalid key in database: " & keyStr))
+        return
+
+      let blob: pointer =
+        if queryValue:
+          sqlite3_column_blob(stmt[], QueryStmtDataCol)
+        else:
+          nil
+
+      # detect out-of-memory error
+      if blob.isNil:
+        let errCode = sqlite3_errcode(sqlite3_db_handle(stmt[]))
+        if not (errCode in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
+          finished[].store(true)
+          ctx[].result = R.err(newException(KVStoreError, $sqlite3_errstr(errCode)))
+          return
+
+      let
+        dataLen = sqlite3_column_bytes(stmt[], QueryStmtDataCol)
+        data =
+          if not blob.isNil:
+            @(toOpenArray(cast[ptr UncheckedArray[byte]](blob), 0, dataLen - 1))
+          else:
+            @[]
+        versionCol =
+          if queryValue: QueryStmtVersionColWithData else: QueryStmtVersionColNoData
+        version = sqlite3_column_int64(stmt[], versionCol.cint).uint64
+
+      ctx[].result = R.ok(RawRecord.init(key, data, version).some)
+    of SQLITE_DONE:
+      finished[].store(true)
+      ctx[].result = R.ok(RawRecord.none)
+    else:
+      finished[].store(true)
+      ctx[].result = R.err(newException(KVStoreError, $sqlite3_errstr(v)))
+
+proc runDisposeTask(ctx: ptr TaskCtx[?!void],
+                    inFlight: ptr Atomic[int],
+                    lock: ptr Lock,
+                    stmt: ptr RawStmtPtr) {.gcsafe.} =
+  ## Task worker for query iterator dispose() operation.
+  ## Waits for all next() workers to complete, then cleans up.
+  defer: discard ctx[].signal.fireSync()
+
+  # Spin-wait for all in-flight next() workers (blocking OK in threadpool)
+  while inFlight[].load() > 0:
+    sleep(1)  # 1ms sleep to avoid busy-waiting
+
+  # Now safe - no workers can be using the lock
+  withLock(lock[]):
+    discard sqlite3_finalize(stmt[])
+  deinitLock(lock[])
+
+  ctx[].result = success()
+
 # =============================================================================
 # Async Helper for Cancellation-Safe Wait
 # =============================================================================
@@ -415,12 +520,6 @@ proc awaitSignal(signal: ThreadSignalPtr): Future[?!void] {.async: (raises: [Can
 method has*(
     self: SQLiteKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
-  if self.tp.isNil:
-    # No taskpool - run synchronously (legacy behavior)
-    withLock(self.lock):
-      return hasSync(self.db, key.id)
-
-  # Use taskpool for true async
   var ctx = TaskCtx[?!bool](
     lock: addr self.lock,
     signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
@@ -434,12 +533,6 @@ method has*(
 method get*(
     self: SQLiteKVStore, key: Key
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
-  if self.tp.isNil:
-    # No taskpool - run synchronously (legacy behavior)
-    withLock(self.lock):
-      return getSync(self.db, key)
-
-  # Use taskpool for true async
   var ctx = TaskCtx[?!RawRecord](
     lock: addr self.lock,
     signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
@@ -456,12 +549,6 @@ method get*(
   if keys.len == 0:
     return success(newSeq[RawRecord]())
 
-  if self.tp.isNil:
-    # No taskpool - run synchronously (legacy behavior)
-    withLock(self.lock):
-      return getManySync(self.db, keys)
-
-  # Use taskpool for true async
   var ctx = TaskCtx[?!seq[RawRecord]](
     lock: addr self.lock,
     signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
@@ -475,12 +562,6 @@ method get*(
 method put*(
     self: SQLiteKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  if self.tp.isNil:
-    # No taskpool - run synchronously (legacy behavior)
-    withLock(self.lock):
-      return putSync(self.db, records, self.readOnly)
-
-  # Use taskpool for true async
   var ctx = TaskCtx[?!seq[Key]](
     lock: addr self.lock,
     signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
@@ -497,12 +578,6 @@ method delete*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  if self.tp.isNil:
-    # No taskpool - run synchronously (legacy behavior)
-    withLock(self.lock):
-      return deleteSync(self.db, records, self.readOnly)
-
-  # Use taskpool for true async
   var ctx = TaskCtx[?!seq[Key]](
     lock: addr self.lock,
     signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
@@ -516,17 +591,7 @@ method delete*(
 method close*(
     self: SQLiteKVStore
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
-  # Debug check: warn if closing with active iterators
-  let activeCount = self.activeIterators.load()
-  if activeCount > 0:
-    # In debug builds, this would be an assertion
-    # In release, we just log and continue (sqlite3_close_v2 handles cleanup)
-    debugEcho "WARNING: SQLiteKVStore.close() called with ", activeCount, " active iterator(s)"
-
-  # Deinitialize the lock
   deinitLock(self.lock)
-
-  # Propagate close errors
   return self.db.close()
 
 # =============================================================================
@@ -547,12 +612,6 @@ method putAtomic*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  if self.tp.isNil:
-    # No taskpool - run synchronously (legacy behavior)
-    withLock(self.lock):
-      return putAtomicSync(self.db, records, self.readOnly)
-
-  # Use taskpool for true async
   var ctx = TaskCtx[?!seq[Key]](
     lock: addr self.lock,
     signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
@@ -572,12 +631,6 @@ method deleteAtomic*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  if self.tp.isNil:
-    # No taskpool - run synchronously (legacy behavior)
-    withLock(self.lock):
-      return deleteAtomicSync(self.db, records, self.readOnly)
-
-  # Use taskpool for true async
   var ctx = TaskCtx[?!seq[Key]](
     lock: addr self.lock,
     signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
@@ -628,96 +681,96 @@ method query*(
     if v != SQLITE_OK:
       return failure newException(KVStoreError, $sqlite3_errstr(v))
 
-  # Per-iterator state with its own lock (not the store-wide lock)
-  # Each iterator has a private statement - only need to protect from
-  # concurrent next() calls on the same iterator
-  type QueryIterState = ref object
-    stmt: RawStmtPtr
-    lock: Lock
-    finished: bool
-    store: SQLiteKVStore  # For activeIterators tracking
-
-  var state = QueryIterState(stmt: s, finished: false, store: self)
+  # Create per-iterator state using module-level type
+  var state = QueryIterState(
+    stmt: s,
+    tp: self.tp,
+    queryValue: query.value
+  )
+  state.finished.store(false)
+  state.isDisposed.store(false)
+  state.inFlight.store(0)
   initLock(state.lock)
 
-  # Track this iterator
-  discard self.activeIterators.fetchAdd(1)
-
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
-    if state.finished:
-      return failure(newException(QueryEndedError, "Calling next on a finished query!"))
+    # Early check with atomic load (fast path for finished iterator)
+    if state.finished.load():
+      return success(RawRecord.none)
 
-    # Protect sqlite3_step with per-iterator lock
-    withLock(state.lock):
-      let v = sqlite3_step(state.stmt)
+    let signal = ThreadSignalPtr.new().valueOr:
+      return failure(newException(KVStoreError, error))
+    var ctx = TaskCtx[?!(?RawRecord)](
+      lock: addr state.lock,
+      signal: signal
+    )
+    defer: discard ctx.signal.close()
 
-      case v
-      of SQLITE_ROW:
-        let
-          key = Key.init($sqlite3_column_text_not_null(state.stmt, QueryStmtIdCol)).expect(
-              "Key should should not fail"
-            )
+    # Increment in-flight counter BEFORE spawn (non-blocking atomic op)
+    discard state.inFlight.fetchAdd(1)
+    state.tp.spawn runNextTask(addr ctx, addr state.stmt, addr state.lock,
+                               addr state.finished, addr state.inFlight, state.queryValue)
 
-          blob: pointer =
-            if query.value:
-              sqlite3_column_blob(state.stmt, QueryStmtDataCol)
-            else:
-              nil
+    # Wait for result - on cancellation, mark finished first then wait for worker
+    let taskFut = ctx.signal.wait()
+    if err =? catch(await taskFut.join()).errorOption:
+      # Mark finished to stop further iteration, then wait for worker to complete
+      state.finished.store(true)
+      ?catch(await noCancel taskFut)
+      if err of CancelledError:
+        raise (ref CancelledError)(err)
+      return failure(err)
 
-        # detect out-of-memory error
-        # see the conversion table and final paragraph of:
-        # https://www.sqlite.org/c3ref/column_blob.html
-        # see also https://www.sqlite.org/rescode.html
-
-        # the "data" column can be NULL so in order to detect an out-of-memory
-        # error it is necessary to check that the result is a null pointer and
-        # that the result code is an error code
-        if blob.isNil:
-          let v = sqlite3_errcode(sqlite3_db_handle(state.stmt))
-
-          if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
-            state.finished = true
-            return failure newException(KVStoreError, $sqlite3_errstr(v))
-
-        let
-          dataLen = sqlite3_column_bytes(state.stmt, QueryStmtDataCol)
-          data =
-            if not blob.isNil:
-              @(toOpenArray(cast[ptr UncheckedArray[byte]](blob), 0, dataLen - 1))
-            else:
-              @[]
-          versionCol =
-            if query.value: QueryStmtVersionColWithData else: QueryStmtVersionColNoData
-          version = sqlite3_column_int64(state.stmt, versionCol.cint).uint64
-
-        return success RawRecord.init(key, data, version).some
-      of SQLITE_DONE:
-        state.finished = true
-        return success RawRecord.none
-      else:
-        state.finished = true
-        return failure newException(KVStoreError, $sqlite3_errstr(v))
+    return ctx.result
 
   proc isFinished(): bool =
-    state.finished
+    state.finished.load()
 
   proc dispose() =
-    # Protect sqlite3_finalize with per-iterator lock
-    withLock(state.lock):
-      discard sqlite3_finalize(state.stmt)
-    deinitLock(state.lock)
-    # Decrement active iterator count (atomic, no lock needed)
-    discard state.store.activeIterators.fetchSub(1)
+    # Sync dispose - used by destructor as fallback
+    # Marks as finished but can't safely wait for workers
+    if state.isDisposed.exchange(true):
+      return  # Already disposed
+    state.finished.store(true)
 
-  return success QueryIter.new(next, isFinished, dispose)
+  proc disposeAsync(): Future[?!void] {.async: (raises: [CancelledError]).} =
+    # Atomic check-and-set to prevent double-dispose
+    if state.isDisposed.exchange(true):
+      return success()
 
-proc new*(T: type SQLiteKVStore, path: string, readOnly = false, tp: Taskpool = nil): ?!T =
+    # Signal workers to stop accepting new work
+    state.finished.store(true)
+
+    let signal = ThreadSignalPtr.new().valueOr:
+      return failure(newException(KVStoreError, error))
+    var ctx = TaskCtx[?!void](
+      lock: addr state.lock,
+      signal: signal
+    )
+    defer: discard ctx.signal.close()
+
+    state.tp.spawn runDisposeTask(addr ctx, addr state.inFlight,
+                                   addr state.lock, addr state.stmt)
+
+    # Cancellation-safe wait for cleanup worker
+    let taskFut = ctx.signal.wait()
+    if err =? catch(await taskFut.join()).errorOption:
+      # Must wait for cleanup worker to finish
+      ?catch(await noCancel taskFut)
+      if err of CancelledError:
+        raise (ref CancelledError)(err)
+      return failure(err)
+
+    return ctx.result
+
+  return success QueryIter.new(next, isFinished, dispose, disposeAsync)
+
+proc new*(T: type SQLiteKVStore, path: string, tp: Taskpool, readOnly = false): ?!T =
   ## Create a new SQLiteKVStore.
   ##
   ## Parameters:
   ##   - path: Database file path, or SqliteMemory for in-memory
+  ##   - tp: Taskpool for async operations (required)
   ##   - readOnly: Open in read-only mode
-  ##   - tp: Optional taskpool for true async (nil = legacy sync behavior)
   let flags =
     if readOnly:
       SQLITE_OPEN_READONLY
@@ -728,12 +781,12 @@ proc new*(T: type SQLiteKVStore, path: string, readOnly = false, tp: Taskpool = 
   initLock(store.lock)
   success store
 
-proc new*(T: type SQLiteKVStore, db: SQLiteDsDb, tp: Taskpool = nil): ?!T =
+proc new*(T: type SQLiteKVStore, db: SQLiteDsDb, tp: Taskpool): ?!T =
   ## Create a new SQLiteKVStore from an existing database handle.
   ##
   ## Parameters:
   ##   - db: Pre-opened SQLiteDsDb
-  ##   - tp: Optional taskpool for true async (nil = legacy sync behavior)
+  ##   - tp: Taskpool for async operations (required)
   var store = T(db: db, readOnly: db.readOnly, tp: tp)
   initLock(store.lock)
   success store
