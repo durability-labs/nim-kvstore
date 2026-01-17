@@ -8,6 +8,7 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
 import pkg/questionable
+import pkg/taskpools
 
 import pkg/kvstore
 
@@ -15,15 +16,22 @@ import ../kvcommontests
 import ../querycommontests
 
 suite "Test Basic SQLiteKVStore":
+  var
+    tp: Taskpool
+    ds: SQLiteKVStore
 
   let
-    ds = SQLiteKVStore.new(Memory).tryGet()
     key = Key.init("a:b/c/d:e").tryGet()
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
 
+  setupAll:
+    tp = Taskpool.new(num_threads = 4)
+    ds = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
+
   teardownAll:
     (await ds.close()).tryGet()
+    tp.shutdown()
 
   basicStoreTests(ds, key, bytes, otherBytes)
   helperTests(ds, key)
@@ -40,6 +48,7 @@ suite "Test Read Only SQLiteKVStore":
     bytes = "some bytes".toBytes
 
   var
+    tp: Taskpool
     dsDb: SQLiteKVStore
     readOnlyDb: SQLiteKVStore
 
@@ -48,12 +57,14 @@ suite "Test Read Only SQLiteKVStore":
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    dsDb = SQLiteKVStore.new(path = dbPathAbs).tryGet()
-    readOnlyDb = SQLiteKVStore.new(path = dbPathAbs, readOnly = true).tryGet()
+    tp = Taskpool.new(num_threads = 4)
+    dsDb = SQLiteKVStore.new(path = dbPathAbs, tp = tp).tryGet()
+    readOnlyDb = SQLiteKVStore.new(path = dbPathAbs, tp = tp, readOnly = true).tryGet()
 
   teardownAll:
     (await dsDb.close()).tryGet()
     (await readOnlyDb.close()).tryGet()
+    tp.shutdown()
 
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
@@ -84,13 +95,17 @@ suite "Test Read Only SQLiteKVStore":
       not (await dsDb.has(key)).tryGet()
 
 suite "Test Query":
-  var ds: SQLiteKVStore
+  var
+    tp: Taskpool
+    ds: SQLiteKVStore
 
   setup:
-    ds = SQLiteKVStore.new(Memory).tryGet()
+    tp = Taskpool.new(num_threads = 4)
+    ds = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
 
   teardown:
-    (await ds.close()).tryGet
+    (await ds.close()).tryGet()
+    tp.shutdown()
 
   queryTests(ds, testLimitsAndOffsets = true, testSortOrder = true)
 
@@ -128,7 +143,9 @@ suite "Test Query":
           record.val == data  # Value should be returned
 
 suite "Test Atomic Batch Operations":
-  var ds: SQLiteKVStore
+  var
+    tp: Taskpool
+    ds: SQLiteKVStore
 
   let
     key1 = Key.init("/atomic/key1").tryGet()
@@ -136,10 +153,12 @@ suite "Test Atomic Batch Operations":
     key3 = Key.init("/atomic/key3").tryGet()
 
   setup:
-    ds = SQLiteKVStore.new(SqliteMemory).tryGet()
+    tp = Taskpool.new(num_threads = 4)
+    ds = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
 
   teardown:
-    (await ds.close()).tryGet
+    (await ds.close()).tryGet()
+    tp.shutdown()
 
   test "supportsAtomicBatch returns true for SQLiteKVStore":
     check ds.supportsAtomicBatch() == true

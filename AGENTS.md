@@ -2,6 +2,14 @@
 
 Guidelines for AI agents working on the nim-kvstore codebase.
 
+## Implementation Plan
+
+**IMPORTANT**: Before writing code, always read and reference the implementation plan:
+- Location: `/Users/dryajov/personal/notes/Projects/Archivist/Technical/nim-kvstore SQLite Implementation Plan.md`
+- The plan contains design rationale, patterns, and specific implementation details
+- Understand the "why" before implementing the "what"
+- Follow the patterns defined in the plan (e.g., TaskCtx pattern, awaitSignal, per-iterator locks)
+
 ## Build & Test Commands
 
 ```bash

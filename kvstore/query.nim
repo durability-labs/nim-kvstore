@@ -11,7 +11,7 @@ type
   QueryEndedError* = object of KVStoreError
 
   SortOrder* {.pure.} = enum
-    Assending
+    Ascending
     Descending
 
   Query* = object
@@ -23,6 +23,9 @@ type
 
   IterFinished* = proc(): bool {.gcsafe, closure, raises: [].}
   IterDispose* = proc() {.gcsafe, closure, raises: [].}
+  IterDisposeAsync* = proc(): Future[?!void] {.
+    async: (raises: [CancelledError]), gcsafe, closure
+  .}
   GetNext*[T] = proc(): Future[?!(?Record[T])] {.
     async: (raises: [CancelledError]), gcsafe, closure
   .}
@@ -31,6 +34,7 @@ type
     nextImpl: GetNext[T]
     finishedImpl: IterFinished
     disposeImpl: IterDispose
+    disposeAsyncImpl: IterDisposeAsync
     disposed: bool
 
   QueryIter*[T] = ref QueryIterObj[T]
@@ -53,9 +57,27 @@ proc next*[T](
   await iter.nextImpl()
 
 proc dispose*[T](iter: QueryIter[T]) =
+  ## Sync dispose - for backwards compatibility and destructor use.
+  ## Prefer disposeAsync() when possible.
   if not iter.disposed:
     iter.disposeImpl()
     iter.disposed = true
+
+proc disposeAsync*[T](
+    iter: QueryIter[T]
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Async dispose - properly waits for in-flight workers to complete.
+  ## Should be preferred over sync dispose() when in async context.
+  if not iter.disposed:
+    if iter.disposeAsyncImpl != nil:
+      let res = await iter.disposeAsyncImpl()
+      iter.disposed = true
+      return res
+    else:
+      # Fallback to sync dispose if no async impl
+      iter.disposeImpl()
+      iter.disposed = true
+  return success()
 
 iterator items*[T](q: QueryIter[T]): Future[?!(?Record[T])] =
   while not q.finished:
@@ -64,19 +86,28 @@ iterator items*[T](q: QueryIter[T]): Future[?!(?Record[T])] =
 proc defaultDispose() =
   discard
 
+proc defaultDisposeAsync(): Future[?!void] {.async: (raises: [CancelledError]).} =
+  return success()
+
 proc new*[T](
     _: type QueryIter[T],
     next: GetNext[T],
     finished: IterFinished,
     dispose: IterDispose = defaultDispose,
+    disposeAsync: IterDisposeAsync = nil,
 ): QueryIter[T] =
-  QueryIter[T](nextImpl: next, finishedImpl: finished, disposeImpl: dispose)
+  QueryIter[T](
+    nextImpl: next, 
+    finishedImpl: finished, 
+    disposeImpl: dispose,
+    disposeAsyncImpl: disposeAsync
+  )
 
 proc init*(
     _: type Query,
     key: Key,
     value = true,
-    sort = SortOrder.Assending,
+    sort = SortOrder.Ascending,
     offset = 0,
     limit = -1,
 ): Query =
