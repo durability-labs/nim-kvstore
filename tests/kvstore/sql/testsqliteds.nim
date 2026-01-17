@@ -37,6 +37,7 @@ suite "Test Basic SQLiteKVStore":
   basicStoreTests(ds, key, bytes, otherBytes)
   typedHelperTests(ds, key)
   atomicBatchTests(ds, key, supportsAtomic = true)
+  atomicRetryHelperTests(ds, key)
 
 suite "Test Read Only SQLiteKVStore":
   let

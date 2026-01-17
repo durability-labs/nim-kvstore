@@ -303,8 +303,8 @@ proc tryPutAtomic*(
     self: KVStore,
     records: seq[RawRecord],
     maxRetries = 3,
-    middleware: RawAtomicMiddleware,
-): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+    middleware: RawAtomicMiddleware = nil,
+): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Atomic batch put with retry on conflicts.
   ##
   ## Unlike tryPut (partial commit), this uses all-or-nothing semantics:
@@ -312,10 +312,10 @@ proc tryPutAtomic*(
   ## - On conflict, NOTHING is committed
   ## - Middleware receives full batch + conflict keys to update tokens
   ##
-  ## Returns empty seq on success, or remaining records after max retries.
+  ## Returns success() if all records committed, failure otherwise.
 
   if records.len == 0:
-    return success(newSeq[RawRecord]())
+    return success()
 
   if not self.supportsAtomicBatch():
     return failure newBackendError("Atomic batch not supported by this backend")
@@ -324,49 +324,41 @@ proc tryPutAtomic*(
     remaining = maxRetries
     current = records
 
-  while true:
-    if remaining == 0:
-      return failure newMaxRetriesError("tryPutAtomic max retries reached")
-
+  while remaining > 0:
     let conflicts = ?(await self.putAtomic(current))
     if conflicts.len == 0:
-      return success newSeq[RawRecord]()
+      return success()
 
     # Prepare next attempt using middleware
-    if not middleware.isNil:
-      current = ?(await middleware(current, conflicts))
-    else:
-      # No middleware - can't resolve conflicts
-      return success current
+    if middleware.isNil:
+      return failure newException(KVStoreError,
+        "Atomic put failed: conflicts on " & $conflicts.len & " keys, no middleware to resolve")
 
+    current = ?(await middleware(current, conflicts))
     if current.len == 0:
-      # Middleware gave up
-      break
+      return failure newException(KVStoreError, "Middleware returned empty batch")
 
     dec remaining
 
-  return success current
+  return failure newMaxRetriesError("tryPutAtomic max retries reached")
 
 proc tryPutAtomic*(
     self: KVStore, record: RawRecord, maxRetries = 3, middleware: RawAtomicMiddleware = nil
-): Future[?!void] {.async: (raises: [CancelledError]).} =
+): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Single-record wrapper for tryPutAtomic
-  let results = ?(await self.tryPutAtomic(@[record], maxRetries, middleware))
-  if results.len > 0:
-    return failure newException(KVStoreError, "Unable to put record due to conflict")
-  return success()
+  self.tryPutAtomic(@[record], maxRetries, middleware)
 
 proc tryDeleteAtomic*(
     self: KVStore,
     records: seq[KeyRecord],
     maxRetries = 3,
-    middleware: KeyAtomicMiddleware,
-): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
+    middleware: KeyAtomicMiddleware = nil,
+): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Atomic batch delete with retry on conflicts.
   ## Same semantics as tryPutAtomic().
 
   if records.len == 0:
-    return success(newSeq[KeyRecord]())
+    return success()
 
   if not self.supportsAtomicBatch():
     return failure newBackendError("Atomic batch not supported by this backend")
@@ -375,35 +367,29 @@ proc tryDeleteAtomic*(
     remaining = maxRetries
     current = records
 
-  while true:
-    if remaining == 0:
-      return failure newMaxRetriesError("tryDeleteAtomic max retries reached")
-
+  while remaining > 0:
     let conflicts = ?(await self.deleteAtomic(current))
     if conflicts.len == 0:
-      return success newSeq[KeyRecord]()
+      return success()
 
     # Prepare next attempt using middleware
-    if not middleware.isNil:
-      current = ?(await middleware(current, conflicts))
-    else:
-      return success current
+    if middleware.isNil:
+      return failure newException(KVStoreError,
+        "Atomic delete failed: conflicts on " & $conflicts.len & " keys, no middleware to resolve")
 
+    current = ?(await middleware(current, conflicts))
     if current.len == 0:
-      break
+      return failure newException(KVStoreError, "Middleware returned empty batch")
 
     dec remaining
 
-  return success current
+  return failure newMaxRetriesError("tryDeleteAtomic max retries reached")
 
 proc tryDeleteAtomic*(
     self: KVStore, record: KeyRecord, maxRetries = 3, middleware: KeyAtomicMiddleware = nil
-): Future[?!void] {.async: (raises: [CancelledError]).} =
+): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Single-record wrapper for tryDeleteAtomic
-  let results = ?(await self.tryDeleteAtomic(@[record], maxRetries, middleware))
-  if results.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
-  return success()
+  self.tryDeleteAtomic(@[record], maxRetries, middleware)
 
 # =============================================================================
 # Query Iterator Helpers

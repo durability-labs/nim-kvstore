@@ -185,3 +185,154 @@ proc atomicBatchTests*(ds: KVStore, key: Key, supportsAtomic: bool) =
       let k1 = (key / "atomic" / "unsupported").tryGet()
       let result = await ds.deleteAtomic(@[KeyRecord.init(k1, 1)])
       check result.isErr
+
+proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
+  ## Tests for atomic retry helpers (tryPutAtomic, tryDeleteAtomic).
+  ## Only run on backends that support atomic batch.
+  
+  if not ds.supportsAtomicBatch():
+    return
+  
+  test "tryPutAtomic - succeeds when no conflicts":
+    let k1 = (key / "tryatomic" / "put1").tryGet()
+    let k2 = (key / "tryatomic" / "put2").tryGet()
+    
+    let result = await ds.tryPutAtomic(@[
+      RawRecord.init(k1, "v1".toBytes, 0),
+      RawRecord.init(k2, "v2".toBytes, 0),
+    ])
+    check result.isOk
+    check (await ds.has(k1)).tryGet()
+    check (await ds.has(k2)).tryGet()
+  
+  test "tryPutAtomic - fails without middleware on conflict":
+    let k1 = (key / "tryatomic" / "noMw1").tryGet()
+    let k2 = (key / "tryatomic" / "noMw2").tryGet()
+    
+    # Insert k1 first
+    (await ds.put(RawRecord.init(k1, "existing".toBytes, 0))).tryGet()
+    
+    let result = await ds.tryPutAtomic(@[
+      RawRecord.init(k1, "v1".toBytes, 0),  # Conflict
+      RawRecord.init(k2, "v2".toBytes, 0),  # Would succeed alone
+    ], middleware = nil)
+    
+    check result.isErr
+    # k2 should NOT be committed (all-or-nothing)
+    check (await ds.get(k2)).isErr
+  
+  test "tryPutAtomic - middleware resolves conflicts":
+    let k1 = (key / "tryatomic" / "mw1").tryGet()
+    let k2 = (key / "tryatomic" / "mw2").tryGet()
+    
+    # Insert k1 first
+    (await ds.put(RawRecord.init(k1, "existing".toBytes, 0))).tryGet()
+    
+    var middlewareCalled = false
+    let middleware = proc(
+        all: seq[RawRecord], conflicts: seq[Key]
+    ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      middlewareCalled = true
+      let fresh = ?(await ds.get(conflicts))
+      var updated: seq[RawRecord]
+      for rec in all:
+        if rec.key in conflicts:
+          for f in fresh:
+            if f.key == rec.key:
+              updated.add(RawRecord.init(rec.key, rec.val, f.token))
+              break
+        else:
+          updated.add(rec)
+      success(updated)
+    
+    let result = await ds.tryPutAtomic(@[
+      RawRecord.init(k1, "updated".toBytes, 0),
+      RawRecord.init(k2, "v2".toBytes, 0),
+    ], middleware = middleware)
+    
+    check result.isOk
+    check middlewareCalled
+    let rec1 = (await ds.get(k1)).tryGet()
+    let rec2 = (await ds.get(k2)).tryGet()
+    check rec1.val == "updated".toBytes
+    check rec2.val == "v2".toBytes
+  
+  test "tryPutAtomic - fails after max retries":
+    let k1 = (key / "tryatomic" / "maxRetry").tryGet()
+    
+    (await ds.put(RawRecord.init(k1, "existing".toBytes, 0))).tryGet()
+    
+    let badMiddleware = proc(
+        all: seq[RawRecord], conflicts: seq[Key]
+    ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      success(all)  # No fix
+    
+    let result = await ds.tryPutAtomic(
+      @[RawRecord.init(k1, "v1".toBytes, 0)],
+      maxRetries = 2,
+      middleware = badMiddleware)
+    
+    check result.isErr
+    check result.error of KVStoreMaxRetriesError
+  
+  test "tryPutAtomic - single record succeeds":
+    let k1 = (key / "tryatomic" / "single").tryGet()
+    let result = await ds.tryPutAtomic(RawRecord.init(k1, "v1".toBytes, 0))
+    check result.isOk
+  
+  test "tryPutAtomic - empty batch succeeds":
+    let result = await ds.tryPutAtomic(newSeq[RawRecord]())
+    check result.isOk
+  
+  test "tryDeleteAtomic - succeeds when tokens match":
+    let k1 = (key / "tryatomic" / "del1").tryGet()
+    let k2 = (key / "tryatomic" / "del2").tryGet()
+    
+    discard (await ds.put(@[
+      RawRecord.init(k1, "v1".toBytes, 0),
+      RawRecord.init(k2, "v2".toBytes, 0),
+    ])).tryGet()
+    
+    let r1 = (await ds.get(k1)).tryGet()
+    let r2 = (await ds.get(k2)).tryGet()
+    
+    let result = await ds.tryDeleteAtomic(@[
+      KeyRecord.init(k1, r1.token),
+      KeyRecord.init(k2, r2.token),
+    ])
+    
+    check result.isOk
+    check (await ds.get(k1)).isErr
+    check (await ds.get(k2)).isErr
+  
+  test "tryDeleteAtomic - fails without middleware on conflict":
+    let k1 = (key / "tryatomic" / "delNoMw1").tryGet()
+    let k2 = (key / "tryatomic" / "delNoMw2").tryGet()
+    
+    discard (await ds.put(@[
+      RawRecord.init(k1, "v1".toBytes, 0),
+      RawRecord.init(k2, "v2".toBytes, 0),
+    ])).tryGet()
+    
+    let r1 = (await ds.get(k1)).tryGet()
+    
+    let result = await ds.tryDeleteAtomic(@[
+      KeyRecord.init(k1, r1.token),
+      KeyRecord.init(k2, 999'u64),  # Wrong token
+    ], middleware = nil)
+    
+    check result.isErr
+    # k1 should NOT be deleted (all-or-nothing)
+    check (await ds.get(k1)).isOk
+  
+  test "tryDeleteAtomic - single record succeeds":
+    let k1 = (key / "tryatomic" / "delSingle").tryGet()
+    (await ds.put(RawRecord.init(k1, "v1".toBytes, 0))).tryGet()
+    let rec = (await ds.get(k1)).tryGet()
+    
+    let result = await ds.tryDeleteAtomic(KeyRecord.init(k1, rec.token))
+    check result.isOk
+  
+  test "tryDeleteAtomic - empty batch succeeds":
+    let result = await ds.tryDeleteAtomic(newSeq[KeyRecord]())
+    check result.isOk
