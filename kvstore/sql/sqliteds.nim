@@ -94,6 +94,9 @@ method get*(
 method get*(
     self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  if keys.len == 0:
+    return success(newSeq[RawRecord]())
+
   var records: seq[RawRecord]
 
   proc onRow(s: RawStmtPtr) =
@@ -107,8 +110,9 @@ method get*(
 
     records.add(RawRecord.init(?Key.init(key), value, token.uint64))
 
-  let queryStr = ?makeGetManyStmStr(keys.mapIt(it.id))
-  if err =? self.db.env.query(queryStr, onRow).errorOption:
+  let queryStr = makeGetManyParamQuery(keys.len)
+  let keyIds = keys.mapIt(it.id)
+  if err =? self.db.env.queryWithStrings(queryStr, keyIds, onRow).errorOption:
     return failure err
 
   return success records
@@ -122,26 +126,46 @@ method put*(
   var
     skipped: seq[Key]
     stamp = timestamp()
+    inTransaction = false
+    committed = false
 
   ?self.db.beginStmt.exec() # begin transaction
+  inTransaction = true
+  
+  defer:
+    # Rollback if transaction started but not committed
+    if inTransaction and not committed:
+      discard self.db.rollbackStmt.exec()
+
   for record in records:
-    var record = record
     var changed = false
 
     proc onRow(s: RawStmtPtr) =
       changed = true
 
-    if err =?
-        self.db.upsertStmt.query(
-          (record.key.id, record.val, (?boundedToken(record.token)), stamp), onRow
-        ).errorOption:
-      ?self.db.rollbackStmt.exec() # revert transaction
-      return failure(err)
+    if record.token == 0:
+      # Insert-only mode: token 0 means "insert if key doesn't exist"
+      # InsertStmt params: (id, data, timestamp)
+      if err =?
+          self.db.insertStmt.query(
+            (record.key.id, record.val, stamp), onRow
+          ).errorOption:
+        return failure(err)
+    else:
+      # Update-only mode: token != 0 means "update if version matches"
+      # UpdateStmt params: (data, timestamp, id, version)
+      let token = ?boundedToken(record.token)
+      if err =?
+          self.db.updateStmt.query(
+            (record.val, stamp, record.key.id, token), onRow
+          ).errorOption:
+        return failure(err)
 
     if not changed:
       skipped.add(record.key)
 
   ?self.db.endStmt.exec() # commit transaction
+  committed = true
 
   return success skipped
 
@@ -153,23 +177,37 @@ method delete*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var deletedIds = initHashSet[string]()
+  var 
+    deletedIds = initHashSet[string]()
+    inTransaction = false
+    committed = false
 
-  # Build dynamic DELETE statement with all (id, version) pairs and RETURNING
-  let queryStr = ?makeDeleteManyStmStr(records.mapIt((it.key.id, it.token)))
-  let queryWithReturning = queryStr & " RETURNING " & IdColName
+  # Build parameterized DELETE statement with ? placeholders
+  let queryStr = makeDeleteManyParamQuery(records.len) & " RETURNING " & IdColName
+  
+  # Convert to (id, int64) pairs for binding
+  var pairs: seq[(string, int64)]
+  for record in records:
+    let token = ?boundedToken(record.token)
+    pairs.add((record.key.id, token))
 
   ?self.db.beginStmt.exec()
+  inTransaction = true
+  
+  defer:
+    # Rollback if transaction started but not committed
+    if inTransaction and not committed:
+      discard self.db.rollbackStmt.exec()
 
-  # Execute delete and track what was actually deleted via RETURNING
+  # Execute delete with parameterized query
   proc onRow(s: RawStmtPtr) =
     deletedIds.incl($sqlite3_column_text_not_null(s, 0.cint))
 
-  if err =? self.db.env.query(queryWithReturning, onRow).errorOption:
-    ?self.db.rollbackStmt.exec()
+  if err =? self.db.env.queryWithIdVersionPairs(queryStr, pairs, onRow).errorOption:
     return failure err
 
   ?self.db.endStmt.exec()
+  committed = true
 
   # Find skipped keys (those not in deletedIds)
   var skipped: seq[Key]
@@ -226,6 +264,7 @@ method query*(
       return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   var finished = false
+  
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
     if finished:
       return failure(newException(QueryEndedError, "Calling next on a finished query!"))
@@ -283,8 +322,9 @@ method query*(
     finished
 
   proc dispose() =
-    discard sqlite3_reset(s)
-    discard sqlite3_clear_bindings(s)
+    # Finalize the prepared statement to release resources
+    # sqlite3_finalize returns SQLITE_OK even if statement is nil
+    discard sqlite3_finalize(s)
 
   return success QueryIter.new(next, isFinished, dispose)
 

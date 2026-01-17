@@ -100,7 +100,7 @@ suite "Test SQLite Datastore DB operations":
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
-  test "Should insert key - calls callback with version 0":
+  test "Should insert key with token 0 - version becomes 1":
     proc onRow(s: RawStmtPtr) =
       var
         value = dataCol(s, GetSingleStmtDataCol)()
@@ -110,9 +110,10 @@ suite "Test SQLite Datastore DB operations":
         value == data
         token == 1'i64
 
-    discard dsDb.upsertStmt.query((key.id, data, 0'i64, timestamp()), onRow).tryGet()
+    # InsertStmt params: (id, data, timestamp)
+    discard dsDb.insertStmt.query((key.id, data, timestamp()), onRow).tryGet()
 
-  test "Should update key":
+  test "Should update key with correct token":
     proc onRow(s: RawStmtPtr) =
       var
         value = dataCol(s, GetSingleStmtDataCol)()
@@ -122,14 +123,27 @@ suite "Test SQLite Datastore DB operations":
         value == otherData
         token == 2'i64
 
+    # UpdateStmt params: (data, timestamp, id, version)
     discard
-      dsDb.upsertStmt.query((key.id, otherData, 1'i64, timestamp()), onRow).tryGet()
+      dsDb.updateStmt.query((otherData, timestamp(), key.id, 1'i64), onRow).tryGet()
 
-  test "Should fail update key with wrong version - calls callback with existing version 1":
+  test "Should fail insert with token 0 when key exists - callback not called":
+    var callbackCalled = false
     proc onRow(s: RawStmtPtr) =
-      check false # should not be called
+      callbackCalled = true
 
-    discard dsDb.upsertStmt.query((key.id, data, 0'i64, timestamp()), onRow).tryGet()
+    # Try to insert again with token 0 - should fail because key exists
+    discard dsDb.insertStmt.query((key.id, data, timestamp()), onRow).tryGet()
+    check not callbackCalled
+
+  test "Should fail update with wrong version - callback not called":
+    var callbackCalled = false
+    proc onRow(s: RawStmtPtr) =
+      callbackCalled = true
+
+    # Try to update with wrong version (0 instead of 2)
+    discard dsDb.updateStmt.query((data, timestamp(), key.id, 0'i64), onRow).tryGet()
+    check not callbackCalled
 
   test "Should select single key":
     var
@@ -152,10 +166,10 @@ suite "Test SQLite Datastore DB operations":
       datas = newSeqOfCap[seq[byte]](2)
       versions = newSeqOfCap[int](2)
 
-    # add another record
-    discard dsDb.upsertStmt
+    # add another record using insertStmt (token 0)
+    discard dsDb.insertStmt
       .query(
-        (key1.id, data, 0'i64, timestamp()),
+        (key1.id, data, timestamp()),
         proc(s: RawStmtPtr) =
           discard,
       )
@@ -171,8 +185,8 @@ suite "Test SQLite Datastore DB operations":
       datas.add(data)
       versions.add(version.int)
 
-    let queryStr = makeGetManyStmStr([key.id, key1.id]).tryGet()
-    discard dsDb.env.query(queryStr, onData).tryGet()
+    let queryStr = makeGetManyParamQuery(2)
+    discard dsDb.env.queryWithStrings(queryStr, [key.id, key1.id], onData).tryGet()
 
     check:
       keys == @[key, key1]
@@ -180,10 +194,10 @@ suite "Test SQLite Datastore DB operations":
       versions == @[2, 1]
 
   test "Should delete keys":
-    let queryStr = makeDeleteManyStmStr([(key.id, 2'u64), (key1.id, 1'u64)]).tryGet()
+    let queryStr = makeDeleteManyParamQuery(2)
 
     check:
-      dsDb.env.exec(queryStr).isOk()
+      dsDb.env.queryWithIdVersionPairs(queryStr, [(key.id, 2'i64), (key1.id, 1'i64)], proc(s: RawStmtPtr) = discard).isOk()
       dsDb.checkChanges().tryGet() == 2
 
   test "Should not contain key":
