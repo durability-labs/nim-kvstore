@@ -345,12 +345,28 @@ method query*(
   state.inFlight.store(0)
   initLock(state.lock)
 
+  let asyncLock = newAsyncLock()
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
+    # Track in-flight for dispose coordination
+    discard state.inFlight.fetchAdd(1)
+
+    # AsyncLock serializes next() calls to ensure results are returned in order.
+    # This is critical for sort order queries - without serialization, workers
+    # race for the cursor lock and results come back in arbitrary order.
+    await asyncLock.acquire()
+    defer:
+      if asyncLock.locked:
+        if err =? catch(asyncLock.release()).errorOption:
+          state.finished.store(true)
+          return failure(err)
+
     # Early check with atomic load (fast path for finished iterator)
     if state.finished.load():
+      discard state.inFlight.fetchSub(1)  # Decrement - not spawning a worker
       return success(RawRecord.none)
 
     let signal = ThreadSignalPtr.new().valueOr:
+      discard state.inFlight.fetchSub(1)  # Decrement - not spawning a worker
       return failure(newException(KVStoreError, error))
     var ctx = TaskCtx[?RawRecord](
       lock: addr state.lock,
@@ -358,8 +374,7 @@ method query*(
     )
     defer: discard ctx.signal.close()
 
-    # Increment in-flight counter BEFORE spawn (non-blocking atomic op)
-    discard state.inFlight.fetchAdd(1)
+    # Worker will decrement inFlight when done
     state.tp.spawn runNextTask(addr ctx, addr state.stmt, addr state.lock,
                                addr state.finished, addr state.inFlight, state.queryValue)
 
