@@ -45,15 +45,20 @@ type
     locks: TableRef[Key, AsyncLock]
     tp: Taskpool
 
-  # Per-iterator state for query operations
+  # Per-iterator state for query operations.
+  # Each iterator has its own lock (not the store-wide lock) since each
+  # has a private walker. The lock protects against concurrent next()
+  # calls on the same iterator instance - the walker is NOT thread-safe.
   FsQueryIterState = ref object
     basePath: string
     walker: iterator(): string {.raises: [Defect], gcsafe.}
     root: string
     queryKey: Key
     queryValue: bool
+    lock: Lock                  # Per-iterator lock for concurrent next() protection
     finished: Atomic[bool]
     isDisposed: Atomic[bool]
+    inFlight: Atomic[int]       # Track in-flight next() workers for safe disposal
     tp: Taskpool
 
 randomize() # TODO: We should probably use a stronger rng here?
@@ -247,47 +252,58 @@ proc runDeleteTask(ctx: ptr TaskCtx[bool], path: string, record: KeyRecord) {.gc
     ctx[].result = deleteFile(path).map(proc(_: void): bool = true)
 
 proc runNextTask(ctx: ptr TaskCtx[?RawRecord], state: ptr FsQueryIterState) {.gcsafe.} =
-  defer: discard ctx[].signal.fireSync()
+  ## Task worker for query iterator next() operation.
+  ## Uses per-iterator lock to protect the walker from concurrent access.
+  defer:
+    discard state[].inFlight.fetchSub(1)
+    discard ctx[].signal.fireSync()
 
   type R = ?!(?RawRecord)
 
+  # Check finished atomically before acquiring lock
   if state[].finished.load():
     ctx[].result = R.ok(RawRecord.none)
     return
 
-  while true:
-    let relPath = state[].walker()
-
-    if finished(state[].walker):
-      state[].finished.store(true)
+  withLock(state[].lock):
+    # Double-check after acquiring lock
+    if state[].finished.load():
       ctx[].result = R.ok(RawRecord.none)
       return
 
-    var keyPath = state[].basePath
-    keyPath.removePrefix(state[].root)
-    keyPath = keyPath / relPath.changeFileExt("")
-    keyPath = keyPath.replace("\\", "/")
+    while true:
+      let relPath = state[].walker()
 
-    let keyRes = Key.init(keyPath)
-    if keyRes.isErr:
-      continue
+      if finished(state[].walker):
+        state[].finished.store(true)
+        ctx[].result = R.ok(RawRecord.none)
+        return
 
-    let key = keyRes.get
-    if key != state[].queryKey and not state[].queryKey.ancestor(key):
-      continue
+      var keyPath = state[].basePath
+      keyPath.removePrefix(state[].root)
+      keyPath = keyPath / relPath.changeFileExt("")
+      keyPath = keyPath.replace("\\", "/")
 
-    let absPathRes = catch((state[].basePath / relPath).absolutePath())
-    if absPathRes.isErr:
-      ctx[].result = R.err(absPathRes.error)
+      let keyRes = Key.init(keyPath)
+      if keyRes.isErr:
+        continue
+
+      let key = keyRes.get
+      if key != state[].queryKey and not state[].queryKey.ancestor(key):
+        continue
+
+      let absPathRes = catch((state[].basePath / relPath).absolutePath())
+      if absPathRes.isErr:
+        ctx[].result = R.err(absPathRes.error)
+        return
+
+      let recordRes = readVersioned(absPathRes.get, key, state[].queryValue)
+      if recordRes.isErr:
+        ctx[].result = R.err(recordRes.error)
+        return
+
+      ctx[].result = R.ok(recordRes.get.some)
       return
-
-    let recordRes = readVersioned(absPathRes.get, key, state[].queryValue)
-    if recordRes.isErr:
-      ctx[].result = R.err(recordRes.error)
-      return
-
-    ctx[].result = R.ok(recordRes.get.some)
-    return
 
 # =============================================================================
 # Per-Key Locking (unchanged from original)
@@ -455,14 +471,20 @@ method query*(
     queryValue: query.value,
     tp: self.tp
   )
+  initLock(state.lock)
   state.finished.store(false)
   state.isDisposed.store(false)
+  state.inFlight.store(0)
 
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
     if state.finished.load():
       return success(RawRecord.none)
 
+    # Track in-flight workers for safe disposal
+    discard state.inFlight.fetchAdd(1)
+
     let signal = ThreadSignalPtr.new().valueOr:
+      discard state.inFlight.fetchSub(1)  # Didn't spawn worker
       return failure(newException(KVStoreError, error))
     var ctx = TaskCtx[?RawRecord](signal: signal)
     defer: discard ctx.signal.close()
@@ -486,8 +508,23 @@ method query*(
     if state.isDisposed.exchange(true):
       return
     state.finished.store(true)
+    # Note: We don't wait for inFlight workers here (sync dispose).
+    # Workers will complete and find finished=true on next iteration.
+    # For safe cleanup, use disposeAsync() instead.
 
-  return success QueryIter.new(next, isFinished, dispose)
+  proc disposeAsync(): Future[?!void] {.async: (raises: [CancelledError]).} =
+    if state.isDisposed.exchange(true):
+      return success()
+    state.finished.store(true)
+
+    # Wait for all in-flight workers to complete
+    while state.inFlight.load() > 0:
+      await sleepAsync(milliseconds(1'i64))
+
+    deinitLock(state.lock)
+    return success()
+
+  return success QueryIter.new(next, isFinished, dispose, disposeAsync)
 
 # =============================================================================
 # Constructor
