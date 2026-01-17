@@ -157,10 +157,7 @@ suite "Test Query":
     (await ds.put(RawRecord.init(rightKey, "right".toBytes))).tryGet()
 
     let iter = (await ds.query(Query.init(leftKey))).tryGet()
-    let res = (await allFinished(toSeq(iter)))
-      .mapIt(it.read.tryGet)
-      .filterIt(it.isSome)
-      .mapIt(it.get)
+    let res = (await iter.fetchAll()).tryGet
 
     check:
       res.len == 2
