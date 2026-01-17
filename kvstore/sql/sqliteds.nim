@@ -392,24 +392,21 @@ proc runDeleteAtomicTask(ctx: ptr TaskCtx[?!seq[Key]], db: ptr SQLiteDsDb,
 # Async Helper for Cancellation-Safe Wait
 # =============================================================================
 
-proc awaitSignal(signal: ThreadSignalPtr) {.async: (raises: [CancelledError]).} =
+proc awaitSignal(signal: ThreadSignalPtr): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Cancellation-safe wait for task completion.
-  ## On cancellation, waits for worker to complete before re-raising.
-  try:
-    await signal.wait()
-  except CancelledError as e:
-    # Wait for worker to finish even if we're cancelled
-    # This ensures ctx (stack-allocated) isn't a dangling pointer
-    try:
-      await noCancel signal.wait()
-    except CancelledError:
-      discard
-    except AsyncError:
-      discard
-    raise e
-  except AsyncError:
-    # Signal wait failed - worker may not have completed properly
-    discard
+  ##
+  ## Uses join() + noCancel pattern to ensure worker completes before exit:
+  ## - join() creates wrapper future - cancelling it does NOT cancel original
+  ## - On error/cancel: noCancel waits for worker to complete
+  ## - Ensures ctx (stack-allocated) is never a dangling pointer
+  let taskFut = signal.wait()
+  if err =? catch(await taskFut.join()).errorOption:
+    # Must wait for worker to finish - without this we'd write to freed memory
+    ?catch(await noCancel taskFut)
+    if err of CancelledError:
+      raise (ref CancelledError)(err)
+    return failure(err)
+  success()
 
 # =============================================================================
 # Async Methods (public API)
@@ -431,7 +428,7 @@ method has*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runHasTask(addr ctx, addr self.db, addr self.lock, key.id)
-  await awaitSignal(ctx.signal)
+  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method get*(
@@ -450,7 +447,7 @@ method get*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runGetTask(addr ctx, addr self.db, addr self.lock, key)
-  await awaitSignal(ctx.signal)
+  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method get*(
@@ -472,7 +469,7 @@ method get*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runGetManyTask(addr ctx, addr self.db, addr self.lock, keys)
-  await awaitSignal(ctx.signal)
+  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method put*(
@@ -491,7 +488,7 @@ method put*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runPutTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  await awaitSignal(ctx.signal)
+  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method delete*(
@@ -513,7 +510,7 @@ method delete*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runDeleteTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  await awaitSignal(ctx.signal)
+  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method close*(
@@ -563,7 +560,7 @@ method putAtomic*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runPutAtomicTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  await awaitSignal(ctx.signal)
+  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method deleteAtomic*(
@@ -588,7 +585,7 @@ method deleteAtomic*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runDeleteAtomicTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  await awaitSignal(ctx.signal)
+  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method query*(
@@ -607,29 +604,37 @@ method query*(
   if query.offset != 0:
     queryStr &= QueryStmtOffset
 
-  let
-    queryStmt =
-      QueryStmt.prepare(self.db.env, queryStr).expect("Query prepare should not fail")
+  # Capture lock pointer for use in closures
+  let lockPtr = addr self.lock
+
+  # Protect statement preparation and binding with lock
+  var
+    queryStmt: QueryStmt
+    s: RawStmtPtr
+    v: cint
+
+  withLock(self.lock):
+    queryStmt = QueryStmt.prepare(self.db.env, queryStr).expect("Query prepare should not fail")
     s = RawStmtPtr(queryStmt)
 
-  var v = sqlite3_bind_text(
-    s, 1.cint, (query.key.id & "*").cstring, -1.cint, SQLITE_TRANSIENT_GCSAFE
-  )
-
-  if v != SQLITE_OK:
-    return failure newException(KVStoreError, $sqlite3_errstr(v))
-
-  if query.limit != 0:
-    v = sqlite3_bind_int(s, 2.cint, query.limit.cint)
+    v = sqlite3_bind_text(
+      s, 1.cint, (query.key.id & "*").cstring, -1.cint, SQLITE_TRANSIENT_GCSAFE
+    )
 
     if v != SQLITE_OK:
       return failure newException(KVStoreError, $sqlite3_errstr(v))
 
-  if query.offset != 0:
-    v = sqlite3_bind_int(s, 3.cint, query.offset.cint)
+    if query.limit != 0:
+      v = sqlite3_bind_int(s, 2.cint, query.limit.cint)
 
-    if v != SQLITE_OK:
-      return failure newException(KVStoreError, $sqlite3_errstr(v))
+      if v != SQLITE_OK:
+        return failure newException(KVStoreError, $sqlite3_errstr(v))
+
+    if query.offset != 0:
+      v = sqlite3_bind_int(s, 3.cint, query.offset.cint)
+
+      if v != SQLITE_OK:
+        return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   var finished = false
 
@@ -640,63 +645,67 @@ method query*(
     if finished:
       return failure(newException(QueryEndedError, "Calling next on a finished query!"))
 
-    let v = sqlite3_step(s)
+    # Protect sqlite3_step and column access with lock
+    withLock(lockPtr[]):
+      let v = sqlite3_step(s)
 
-    case v
-    of SQLITE_ROW:
-      let
-        key = Key.init($sqlite3_column_text_not_null(s, QueryStmtIdCol)).expect(
-            "Key should should not fail"
-          )
+      case v
+      of SQLITE_ROW:
+        let
+          key = Key.init($sqlite3_column_text_not_null(s, QueryStmtIdCol)).expect(
+              "Key should should not fail"
+            )
 
-        blob: pointer =
-          if query.value:
-            sqlite3_column_blob(s, QueryStmtDataCol)
-          else:
-            nil
+          blob: pointer =
+            if query.value:
+              sqlite3_column_blob(s, QueryStmtDataCol)
+            else:
+              nil
 
-      # detect out-of-memory error
-      # see the conversion table and final paragraph of:
-      # https://www.sqlite.org/c3ref/column_blob.html
-      # see also https://www.sqlite.org/rescode.html
+        # detect out-of-memory error
+        # see the conversion table and final paragraph of:
+        # https://www.sqlite.org/c3ref/column_blob.html
+        # see also https://www.sqlite.org/rescode.html
 
-      # the "data" column can be NULL so in order to detect an out-of-memory
-      # error it is necessary to check that the result is a null pointer and
-      # that the result code is an error code
-      if blob.isNil:
-        let v = sqlite3_errcode(sqlite3_db_handle(s))
+        # the "data" column can be NULL so in order to detect an out-of-memory
+        # error it is necessary to check that the result is a null pointer and
+        # that the result code is an error code
+        if blob.isNil:
+          let v = sqlite3_errcode(sqlite3_db_handle(s))
 
-        if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
-          finished = true
-          return failure newException(KVStoreError, $sqlite3_errstr(v))
+          if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
+            finished = true
+            return failure newException(KVStoreError, $sqlite3_errstr(v))
 
-      let
-        dataLen = sqlite3_column_bytes(s, QueryStmtDataCol)
-        data =
-          if not blob.isNil:
-            @(toOpenArray(cast[ptr UncheckedArray[byte]](blob), 0, dataLen - 1))
-          else:
-            @[]
-        versionCol =
-          if query.value: QueryStmtVersionColWithData else: QueryStmtVersionColNoData
-        version = sqlite3_column_int64(s, versionCol.cint).uint64
+        let
+          dataLen = sqlite3_column_bytes(s, QueryStmtDataCol)
+          data =
+            if not blob.isNil:
+              @(toOpenArray(cast[ptr UncheckedArray[byte]](blob), 0, dataLen - 1))
+            else:
+              @[]
+          versionCol =
+            if query.value: QueryStmtVersionColWithData else: QueryStmtVersionColNoData
+          version = sqlite3_column_int64(s, versionCol.cint).uint64
 
-      return success RawRecord.init(key, data, version).some
-    of SQLITE_DONE:
-      finished = true
-      return success RawRecord.none
-    else:
-      finished = true
-      return failure newException(KVStoreError, $sqlite3_errstr(v))
+        return success RawRecord.init(key, data, version).some
+      of SQLITE_DONE:
+        finished = true
+        return success RawRecord.none
+      else:
+        finished = true
+        return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   proc isFinished(): bool =
     finished
 
   proc dispose() =
-    # Finalize the prepared statement to release resources
-    # sqlite3_finalize returns SQLITE_OK even if statement is nil
-    discard sqlite3_finalize(s)
-    # Decrement active iterator count
+    # Protect sqlite3_finalize with lock
+    withLock(lockPtr[]):
+      # Finalize the prepared statement to release resources
+      # sqlite3_finalize returns SQLITE_OK even if statement is nil
+      discard sqlite3_finalize(s)
+    # Decrement active iterator count (atomic, no lock needed)
     discard self.activeIterators.fetchSub(1)
 
   return success QueryIter.new(next, isFinished, dispose)
