@@ -5,11 +5,14 @@ import std/sequtils
 import std/options
 import std/sets
 import std/atomics
+import std/locks
 
 import pkg/chronos
+import pkg/chronos/threadsync
 import pkg/questionable
 import pkg/questionable/results
 import pkg/sqlite3_abi
+import pkg/taskpools
 
 import ../key
 import ../query
@@ -19,10 +22,19 @@ import ./sqliteutils
 
 export sqlitedsdb
 
-type SQLiteKVStore* = ref object of KVStore
-  readOnly: bool
-  db: SQLiteDsDb
-  activeIterators: Atomic[int]  # Track outstanding query iterators
+type
+  SQLiteKVStore* = ref object of KVStore
+    readOnly: bool
+    db: SQLiteDsDb
+    activeIterators: Atomic[int]  # Track outstanding query iterators
+    lock: Lock                    # Serializes access to shared prepared statements
+    tp: Taskpool                  # Injected threadpool for async operations
+
+  # TaskCtx bundles per-task state for cross-thread communication
+  TaskCtx*[T] = object
+    lock*: ptr Lock            # Store-level lock (shared across tasks)
+    signal*: ThreadSignalPtr   # Completion notification (per-task)
+    result*: T                 # Output value (per-task)
 
 proc path*(self: SQLiteKVStore): string =
   self.db.dbPath
@@ -57,21 +69,21 @@ proc boundedToken(token: uint64): ?!int64 =
     return failure(newCorruptionError("SQLite token overflow"))
   success token.int64
 
-method has*(
-    self: SQLiteKVStore, key: Key
-): Future[?!bool] {.async: (raises: [CancelledError]).} =
+# =============================================================================
+# Sync Operations (for threading - no async, no Chronos dependencies)
+# =============================================================================
+
+proc hasSync(db: SQLiteDsDb, keyId: string): ?!bool {.gcsafe.} =
+  ## Synchronous check if key exists
   var exists = false
   proc onRow(s: RawStmtPtr) =
     exists = sqlite3_column_int64(s, ContainsStmtExistsCol.cint).bool
 
-  if err =? self.db.containsStmt.query((key.id), onRow).errorOption:
-    return failure(err)
+  discard ?db.containsStmt.query((keyId), onRow)
+  success exists
 
-  return success exists
-
-method get*(
-    self: SQLiteKVStore, key: Key
-): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+proc getSync(db: SQLiteDsDb, key: Key): ?!RawRecord {.gcsafe.} =
+  ## Synchronous get single record
   var
     rowFound = false
     value: seq[byte]
@@ -81,21 +93,18 @@ method get*(
     rowFound = true
     value = dataCol(s, GetSingleStmtDataCol)()
     token = versionCol(s, GetSingleStmtVersionCol)()
-
     if token < 0:
       raiseAssert("Negative token detected")
 
-  if err =? self.db.getSingleStmt.query((key.id), onRow).errorOption:
-    return failure(err)
+  discard ?db.getSingleStmt.query((key.id), onRow)
 
   if not rowFound:
     return failure(newException(KVStoreKeyNotFound, "Key doesn't exist"))
 
-  return success RawRecord.init(key, value, token.uint64)
+  success RawRecord.init(key, value, token.uint64)
 
-method get*(
-    self: SQLiteKVStore, keys: seq[Key]
-): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+proc getManySync(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
+  ## Synchronous get multiple records
   if keys.len == 0:
     return success(newSeq[RawRecord]())
 
@@ -103,27 +112,25 @@ method get*(
 
   proc onRow(s: RawStmtPtr) =
     let
-      key = idCol(s, GetManyStmtIdCol)()
+      keyId = idCol(s, GetManyStmtIdCol)()
       value = dataCol(s, GetManyStmtDataCol)()
       token = versionCol(s, GetManyStmtVersionCol)()
 
     if token < 0:
       raiseAssert("Negative token detected")
 
-    records.add(RawRecord.init(?Key.init(key), value, token.uint64))
+    records.add(RawRecord.init(Key.init(keyId).expect("Invalid key from DB"), value, token.uint64))
 
   let queryStr = makeGetManyParamQuery(keys.len)
   let keyIds = keys.mapIt(it.id)
-  if err =? self.db.env.queryWithStrings(queryStr, keyIds, onRow).errorOption:
-    return failure err
+  discard ?db.env.queryWithStrings(queryStr, keyIds, onRow)
 
-  return success records
+  success records
 
-method put*(
-    self: SQLiteKVStore, records: seq[RawRecord]
-): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  if err =? self.ensureWritable().errorOption:
-    return failure(err)
+proc putSync(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+  ## Synchronous put records
+  if readOnly:
+    return failure(newBackendError("SQLite store opened read-only"))
 
   var
     skipped: seq[Key]
@@ -131,13 +138,12 @@ method put*(
     inTransaction = false
     committed = false
 
-  ?self.db.beginStmt.exec() # begin transaction
+  ?db.beginStmt.exec()
   inTransaction = true
 
   defer:
-    # Rollback if transaction started but not committed
     if inTransaction and not committed:
-      discard self.db.rollbackStmt.exec()
+      discard db.rollbackStmt.exec()
 
   for record in records:
     var changed = false
@@ -146,28 +152,12 @@ method put*(
       changed = true
 
     if record.token == 0:
-      # Insert-only mode: token 0 means "insert if key doesn't exist"
-      # InsertStmt params: (id, data, timestamp)
-      if err =?
-          self.db.insertStmt.query(
-            (record.key.id, record.val, stamp), onRow
-          ).errorOption:
-        return failure(err)
+      discard ?db.insertStmt.query((record.key.id, record.val, stamp), onRow)
     else:
-      # Update-only mode: token != 0 means "update if version matches"
-      # UpdateStmt params: (data, timestamp, id, version)
       let token = ?boundedToken(record.token)
-      if err =?
-          self.db.updateStmt.query(
-            (record.val, stamp, record.key.id, token), onRow
-          ).errorOption:
-        return failure(err)
+      discard ?db.updateStmt.query((record.val, stamp, record.key.id, token), onRow)
 
-    # Defense in depth: validate changes count
-    # - changes == 0: CAS conflict (already detected by RETURNING)
-    # - changes == 1: Success
-    # - changes > 1: Corruption (should never happen with unique key constraint)
-    let changes = ?self.db.checkChanges()
+    let changes = ?db.checkChanges()
     if changes > 1:
       return failure(newCorruptionError(
         "Multiple rows affected by CAS operation on key: " & record.key.id))
@@ -175,15 +165,15 @@ method put*(
     if not changed:
       skipped.add(record.key)
 
-  ?self.db.endStmt.exec() # commit transaction
+  ?db.endStmt.exec()
   committed = true
 
-  return success skipped
+  success skipped
 
-method delete*(
-    self: SQLiteKVStore, records: seq[KeyRecord]
-): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  ?self.ensureWritable()
+proc deleteSync(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+  ## Synchronous delete records
+  if readOnly:
+    return failure(newBackendError("SQLite store opened read-only"))
 
   if records.len == 0:
     return success(newSeq[Key]())
@@ -193,47 +183,338 @@ method delete*(
     inTransaction = false
     committed = false
 
-  # Build parameterized DELETE statement with ? placeholders
   let queryStr = makeDeleteManyParamQuery(records.len) & " RETURNING " & IdColName
 
-  # Convert to (id, int64) pairs for binding
   var pairs: seq[(string, int64)]
   for record in records:
     let token = ?boundedToken(record.token)
     pairs.add((record.key.id, token))
 
-  ?self.db.beginStmt.exec()
+  ?db.beginStmt.exec()
   inTransaction = true
 
   defer:
-    # Rollback if transaction started but not committed
     if inTransaction and not committed:
-      discard self.db.rollbackStmt.exec()
+      discard db.rollbackStmt.exec()
 
-  # Execute delete with parameterized query
   proc onRow(s: RawStmtPtr) =
     deletedIds.incl($sqlite3_column_text_not_null(s, 0.cint))
 
-  if err =? self.db.env.queryWithIdVersionPairs(queryStr, pairs, onRow).errorOption:
-    return failure err
+  discard ?db.env.queryWithIdVersionPairs(queryStr, pairs, onRow)
 
-  # Defense in depth: validate changes count
-  # Should not exceed number of records (each record has unique key)
-  let changes = ?self.db.checkChanges()
+  let changes = ?db.checkChanges()
   if changes > records.len:
     return failure(newCorruptionError(
       "Delete affected more rows (" & $changes & ") than records (" & $records.len & ")"))
 
-  ?self.db.endStmt.exec()
+  ?db.endStmt.exec()
   committed = true
 
-  # Find skipped keys (those not in deletedIds)
   var skipped: seq[Key]
   for record in records:
     if record.key.id notin deletedIds:
       skipped.add(record.key)
 
-  return success skipped
+  success skipped
+
+proc putAtomicSync(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+  ## Synchronous all-or-nothing batch put
+  if readOnly:
+    return failure(newBackendError("SQLite store opened read-only"))
+
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  var
+    conflicts: seq[Key]
+    stamp = timestamp()
+    inTransaction = false
+    committed = false
+
+  ?db.beginStmt.exec()
+  inTransaction = true
+
+  defer:
+    if inTransaction and not committed:
+      discard db.rollbackStmt.exec()
+
+  # First pass: check ALL CAS conditions, collect conflicts
+  for record in records:
+    var exists = false
+    var currentToken = 0'i64
+
+    proc onRow(s: RawStmtPtr) =
+      exists = true
+      currentToken = versionCol(s, GetSingleStmtVersionCol)()
+
+    discard ?db.getSingleStmt.query((record.key.id), onRow)
+
+    let conflict =
+      if record.token == 0:
+        exists  # Insert-only but key exists
+      elif not exists:
+        true    # Update expected but key missing
+      else:
+        currentToken != record.token.int64  # Token mismatch
+
+    if conflict:
+      conflicts.add(record.key)
+
+  # If any conflicts, rollback and return them
+  if conflicts.len > 0:
+    ?db.rollbackStmt.exec()
+    committed = true  # Prevent finally rollback
+    return success conflicts
+
+  # Second pass: apply ALL writes (no conflicts)
+  for record in records:
+    var changed = false
+    proc onRow(s: RawStmtPtr) =
+      changed = true
+
+    if record.token == 0:
+      discard ?db.insertStmt.query((record.key.id, record.val, stamp), onRow)
+    else:
+      let token = ?boundedToken(record.token)
+      discard ?db.updateStmt.query((record.val, stamp, record.key.id, token), onRow)
+
+  ?db.endStmt.exec()
+  committed = true
+  success newSeq[Key]()
+
+proc deleteAtomicSync(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+  ## Synchronous all-or-nothing batch delete
+  if readOnly:
+    return failure(newBackendError("SQLite store opened read-only"))
+
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  var
+    conflicts: seq[Key]
+    inTransaction = false
+    committed = false
+
+  ?db.beginStmt.exec()
+  inTransaction = true
+
+  defer:
+    if inTransaction and not committed:
+      discard db.rollbackStmt.exec()
+
+  # First pass: check ALL CAS conditions
+  for record in records:
+    var exists = false
+    var currentToken = 0'i64
+
+    proc onRow(s: RawStmtPtr) =
+      exists = true
+      currentToken = versionCol(s, GetSingleStmtVersionCol)()
+
+    discard ?db.getSingleStmt.query((record.key.id), onRow)
+
+    if not exists or currentToken != record.token.int64:
+      conflicts.add(record.key)
+
+  # If any conflicts, rollback
+  if conflicts.len > 0:
+    ?db.rollbackStmt.exec()
+    committed = true
+    return success conflicts
+
+  # Second pass: delete all
+  for record in records:
+    let token = ?boundedToken(record.token)
+
+    proc onRow(s: RawStmtPtr) =
+      discard  # Consume the returned row
+
+    discard ?db.deleteStmt.query((record.key.id, token), onRow)
+
+  ?db.endStmt.exec()
+  committed = true
+  success newSeq[Key]()
+
+# =============================================================================
+# Task Workers (for threadpool - top-level procs)
+# =============================================================================
+
+proc runHasTask(ctx: ptr TaskCtx[?!bool], db: ptr SQLiteDsDb,
+                lock: ptr Lock, keyId: string) {.gcsafe.} =
+  ## Task worker for has() operation
+  defer: discard ctx[].signal.fireSync()
+  withLock(lock[]):
+    ctx[].result = hasSync(db[], keyId)
+
+proc runGetTask(ctx: ptr TaskCtx[?!RawRecord], db: ptr SQLiteDsDb,
+                lock: ptr Lock, key: Key) {.gcsafe.} =
+  ## Task worker for get() operation
+  defer: discard ctx[].signal.fireSync()
+  withLock(lock[]):
+    ctx[].result = getSync(db[], key)
+
+proc runGetManyTask(ctx: ptr TaskCtx[?!seq[RawRecord]], db: ptr SQLiteDsDb,
+                    lock: ptr Lock, keys: seq[Key]) {.gcsafe.} =
+  ## Task worker for get(keys) operation
+  defer: discard ctx[].signal.fireSync()
+  withLock(lock[]):
+    ctx[].result = getManySync(db[], keys)
+
+proc runPutTask(ctx: ptr TaskCtx[?!seq[Key]], db: ptr SQLiteDsDb,
+                lock: ptr Lock, records: seq[RawRecord], readOnly: bool) {.gcsafe.} =
+  ## Task worker for put() operation
+  defer: discard ctx[].signal.fireSync()
+  withLock(lock[]):
+    ctx[].result = putSync(db[], records, readOnly)
+
+proc runDeleteTask(ctx: ptr TaskCtx[?!seq[Key]], db: ptr SQLiteDsDb,
+                   lock: ptr Lock, records: seq[KeyRecord], readOnly: bool) {.gcsafe.} =
+  ## Task worker for delete() operation
+  defer: discard ctx[].signal.fireSync()
+  withLock(lock[]):
+    ctx[].result = deleteSync(db[], records, readOnly)
+
+proc runPutAtomicTask(ctx: ptr TaskCtx[?!seq[Key]], db: ptr SQLiteDsDb,
+                      lock: ptr Lock, records: seq[RawRecord], readOnly: bool) {.gcsafe.} =
+  ## Task worker for putAtomic() operation
+  defer: discard ctx[].signal.fireSync()
+  withLock(lock[]):
+    ctx[].result = putAtomicSync(db[], records, readOnly)
+
+proc runDeleteAtomicTask(ctx: ptr TaskCtx[?!seq[Key]], db: ptr SQLiteDsDb,
+                         lock: ptr Lock, records: seq[KeyRecord], readOnly: bool) {.gcsafe.} =
+  ## Task worker for deleteAtomic() operation
+  defer: discard ctx[].signal.fireSync()
+  withLock(lock[]):
+    ctx[].result = deleteAtomicSync(db[], records, readOnly)
+
+# =============================================================================
+# Async Helper for Cancellation-Safe Wait
+# =============================================================================
+
+proc awaitSignal(signal: ThreadSignalPtr) {.async: (raises: [CancelledError]).} =
+  ## Cancellation-safe wait for task completion.
+  ## On cancellation, waits for worker to complete before re-raising.
+  try:
+    await signal.wait()
+  except CancelledError as e:
+    # Wait for worker to finish even if we're cancelled
+    # This ensures ctx (stack-allocated) isn't a dangling pointer
+    try:
+      await noCancel signal.wait()
+    except CancelledError:
+      discard
+    except AsyncError:
+      discard
+    raise e
+  except AsyncError:
+    # Signal wait failed - worker may not have completed properly
+    discard
+
+# =============================================================================
+# Async Methods (public API)
+# =============================================================================
+
+method has*(
+    self: SQLiteKVStore, key: Key
+): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  if self.tp.isNil:
+    # No taskpool - run synchronously (legacy behavior)
+    withLock(self.lock):
+      return hasSync(self.db, key.id)
+
+  # Use taskpool for true async
+  var ctx = TaskCtx[?!bool](
+    lock: addr self.lock,
+    signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
+  )
+  defer: discard ctx.signal.close()
+
+  self.tp.spawn runHasTask(addr ctx, addr self.db, addr self.lock, key.id)
+  await awaitSignal(ctx.signal)
+  return ctx.result
+
+method get*(
+    self: SQLiteKVStore, key: Key
+): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+  if self.tp.isNil:
+    # No taskpool - run synchronously (legacy behavior)
+    withLock(self.lock):
+      return getSync(self.db, key)
+
+  # Use taskpool for true async
+  var ctx = TaskCtx[?!RawRecord](
+    lock: addr self.lock,
+    signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
+  )
+  defer: discard ctx.signal.close()
+
+  self.tp.spawn runGetTask(addr ctx, addr self.db, addr self.lock, key)
+  await awaitSignal(ctx.signal)
+  return ctx.result
+
+method get*(
+    self: SQLiteKVStore, keys: seq[Key]
+): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  if keys.len == 0:
+    return success(newSeq[RawRecord]())
+
+  if self.tp.isNil:
+    # No taskpool - run synchronously (legacy behavior)
+    withLock(self.lock):
+      return getManySync(self.db, keys)
+
+  # Use taskpool for true async
+  var ctx = TaskCtx[?!seq[RawRecord]](
+    lock: addr self.lock,
+    signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
+  )
+  defer: discard ctx.signal.close()
+
+  self.tp.spawn runGetManyTask(addr ctx, addr self.db, addr self.lock, keys)
+  await awaitSignal(ctx.signal)
+  return ctx.result
+
+method put*(
+    self: SQLiteKVStore, records: seq[RawRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  if self.tp.isNil:
+    # No taskpool - run synchronously (legacy behavior)
+    withLock(self.lock):
+      return putSync(self.db, records, self.readOnly)
+
+  # Use taskpool for true async
+  var ctx = TaskCtx[?!seq[Key]](
+    lock: addr self.lock,
+    signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
+  )
+  defer: discard ctx.signal.close()
+
+  self.tp.spawn runPutTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
+  await awaitSignal(ctx.signal)
+  return ctx.result
+
+method delete*(
+    self: SQLiteKVStore, records: seq[KeyRecord]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  if self.tp.isNil:
+    # No taskpool - run synchronously (legacy behavior)
+    withLock(self.lock):
+      return deleteSync(self.db, records, self.readOnly)
+
+  # Use taskpool for true async
+  var ctx = TaskCtx[?!seq[Key]](
+    lock: addr self.lock,
+    signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
+  )
+  defer: discard ctx.signal.close()
+
+  self.tp.spawn runDeleteTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
+  await awaitSignal(ctx.signal)
+  return ctx.result
 
 method close*(
     self: SQLiteKVStore
@@ -244,6 +525,9 @@ method close*(
     # In debug builds, this would be an assertion
     # In release, we just log and continue (sqlite3_close_v2 handles cleanup)
     debugEcho "WARNING: SQLiteKVStore.close() called with ", activeCount, " active iterator(s)"
+
+  # Deinitialize the lock
+  deinitLock(self.lock)
 
   # Propagate close errors
   return self.db.close()
@@ -263,71 +547,24 @@ method putAtomic*(
   ## If ANY record has a CAS conflict, NO records are committed.
   ## Returns conflict keys on rollback, empty seq on success.
 
-  if err =? self.ensureWritable().errorOption:
-    return failure(err)
-
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var
-    conflicts: seq[Key]
-    stamp = timestamp()
-    inTransaction = false
-    committed = false
+  if self.tp.isNil:
+    # No taskpool - run synchronously (legacy behavior)
+    withLock(self.lock):
+      return putAtomicSync(self.db, records, self.readOnly)
 
-  ?self.db.beginStmt.exec()
-  inTransaction = true
+  # Use taskpool for true async
+  var ctx = TaskCtx[?!seq[Key]](
+    lock: addr self.lock,
+    signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
+  )
+  defer: discard ctx.signal.close()
 
-  defer:
-    if inTransaction and not committed:
-      discard self.db.rollbackStmt.exec()
-
-  # First pass: check ALL CAS conditions, collect conflicts
-  for record in records:
-    var exists = false
-    var currentToken = 0'i64
-
-    proc onRow(s: RawStmtPtr) =
-      exists = true
-      currentToken = versionCol(s, GetSingleStmtVersionCol)()
-
-    if err =? self.db.getSingleStmt.query((record.key.id), onRow).errorOption:
-      return failure(err)
-
-    let conflict =
-      if record.token == 0:
-        exists  # Insert-only but key exists
-      elif not exists:
-        true    # Update expected but key missing
-      else:
-        currentToken != record.token.int64  # Token mismatch
-
-    if conflict:
-      conflicts.add(record.key)
-
-  # If any conflicts, rollback and return them
-  if conflicts.len > 0:
-    ?self.db.rollbackStmt.exec()
-    committed = true  # Prevent finally rollback
-    return success conflicts
-
-  # Second pass: apply ALL writes (no conflicts)
-  for record in records:
-    var changed = false
-    proc onRow(s: RawStmtPtr) =
-      changed = true
-
-    if record.token == 0:
-      if err =? self.db.insertStmt.query((record.key.id, record.val, stamp), onRow).errorOption:
-        return failure(err)
-    else:
-      let token = ?boundedToken(record.token)
-      if err =? self.db.updateStmt.query((record.val, stamp, record.key.id, token), onRow).errorOption:
-        return failure(err)
-
-  ?self.db.endStmt.exec()
-  committed = true
-  return success newSeq[Key]()
+  self.tp.spawn runPutAtomicTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
+  await awaitSignal(ctx.signal)
+  return ctx.result
 
 method deleteAtomic*(
     self: SQLiteKVStore, records: seq[KeyRecord]
@@ -335,59 +572,24 @@ method deleteAtomic*(
   ## All-or-nothing batch delete with CAS.
   ## Same semantics as putAtomic().
 
-  if err =? self.ensureWritable().errorOption:
-    return failure(err)
-
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var
-    conflicts: seq[Key]
-    inTransaction = false
-    committed = false
+  if self.tp.isNil:
+    # No taskpool - run synchronously (legacy behavior)
+    withLock(self.lock):
+      return deleteAtomicSync(self.db, records, self.readOnly)
 
-  ?self.db.beginStmt.exec()
-  inTransaction = true
+  # Use taskpool for true async
+  var ctx = TaskCtx[?!seq[Key]](
+    lock: addr self.lock,
+    signal: ThreadSignalPtr.new().expect("Failed to create thread signal")
+  )
+  defer: discard ctx.signal.close()
 
-  defer:
-    if inTransaction and not committed:
-      discard self.db.rollbackStmt.exec()
-
-  # First pass: check ALL CAS conditions
-  for record in records:
-    var exists = false
-    var currentToken = 0'i64
-
-    proc onRow(s: RawStmtPtr) =
-      exists = true
-      currentToken = versionCol(s, GetSingleStmtVersionCol)()
-
-    if err =? self.db.getSingleStmt.query((record.key.id), onRow).errorOption:
-      return failure(err)
-
-    if not exists or currentToken != record.token.int64:
-      conflicts.add(record.key)
-
-  # If any conflicts, rollback
-  if conflicts.len > 0:
-    ?self.db.rollbackStmt.exec()
-    committed = true
-    return success conflicts
-
-  # Second pass: delete all
-  for record in records:
-    let token = ?boundedToken(record.token)
-
-    # DeleteStmt has RETURNING, so we use query instead of exec
-    proc onRow(s: RawStmtPtr) =
-      discard  # Consume the returned row
-
-    if err =? self.db.deleteStmt.query((record.key.id, token), onRow).errorOption:
-      return failure(err)
-
-  ?self.db.endStmt.exec()
-  committed = true
-  return success newSeq[Key]()
+  self.tp.spawn runDeleteAtomicTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
+  await awaitSignal(ctx.signal)
+  return ctx.result
 
 method query*(
     self: SQLiteKVStore, query: Query
@@ -499,14 +701,29 @@ method query*(
 
   return success QueryIter.new(next, isFinished, dispose)
 
-proc new*(T: type SQLiteKVStore, path: string, readOnly = false): ?!T =
+proc new*(T: type SQLiteKVStore, path: string, readOnly = false, tp: Taskpool = nil): ?!T =
+  ## Create a new SQLiteKVStore.
+  ##
+  ## Parameters:
+  ##   - path: Database file path, or SqliteMemory for in-memory
+  ##   - readOnly: Open in read-only mode
+  ##   - tp: Optional taskpool for true async (nil = legacy sync behavior)
   let flags =
     if readOnly:
       SQLITE_OPEN_READONLY
     else:
       SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE
 
-  success T(db: ?SQLiteDsDb.open(path, flags), readOnly: readOnly)
+  var store = T(db: ?SQLiteDsDb.open(path, flags), readOnly: readOnly, tp: tp)
+  initLock(store.lock)
+  success store
 
-proc new*(T: type SQLiteKVStore, db: SQLiteDsDb): ?!T =
-  success T(db: db, readOnly: db.readOnly)
+proc new*(T: type SQLiteKVStore, db: SQLiteDsDb, tp: Taskpool = nil): ?!T =
+  ## Create a new SQLiteKVStore from an existing database handle.
+  ##
+  ## Parameters:
+  ##   - db: Pre-opened SQLiteDsDb
+  ##   - tp: Optional taskpool for true async (nil = legacy sync behavior)
+  var store = T(db: db, readOnly: db.readOnly, tp: tp)
+  initLock(store.lock)
+  success store
