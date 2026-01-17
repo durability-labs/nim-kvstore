@@ -7,6 +7,7 @@ import pkg/stew/endians2
 import pkg/questionable/results
 
 import pkg/kvstore
+import pkg/kvstore/typedkv
 
 # Encoder/decoder for int type (needed for typed helper tests)
 proc encode(i: int): seq[byte] =

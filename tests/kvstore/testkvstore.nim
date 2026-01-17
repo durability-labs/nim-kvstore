@@ -4,6 +4,7 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 
 import pkg/kvstore
+import pkg/kvstore/typedkv
 
 suite "KVStore (base)":
   let

@@ -20,7 +20,7 @@ import pkg/taskpools
 
 import ../key
 import ../query
-import ../rawkvstore
+import ../kvstore
 import ./sqlitedsdb
 import ./sqliteutils
 

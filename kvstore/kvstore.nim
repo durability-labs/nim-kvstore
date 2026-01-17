@@ -10,31 +10,6 @@ import ./query
 export types
 
 # =============================================================================
-# Record Constructors
-# =============================================================================
-
-proc init*[T](_: type Record[T], key: Key, val: T, token = 0'u64): Record[T] =
-  Record[T](key: key, val: val, token: token)
-
-proc init*[void](_: type Record[void], key: Key, token = 0'u64): Record[void] =
-  Record[void](key: key, token: token)
-
-# =============================================================================
-# Error Constructors
-# =============================================================================
-
-proc newBackendError*(msg: string): ref KVStoreBackendError =
-  newException(KVStoreBackendError, msg)
-
-proc newCorruptionError*(msg: string): ref KVStoreCorruption =
-  newException(KVStoreCorruption, msg)
-
-proc newMaxRetriesError*(
-    msg: string = "Max retries reached"
-): ref KVStoreMaxRetriesError =
-  newException(KVStoreMaxRetriesError, msg)
-
-# =============================================================================
 # Base Interface Methods
 # =============================================================================
 
