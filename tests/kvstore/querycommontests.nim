@@ -6,6 +6,7 @@ import pkg/questionable
 import pkg/questionable/results
 
 import pkg/kvstore
+import pkg/kvstore/typedkv
 
 # Encoder/decoder for int type (needed for typed query tests)
 proc encode*(i: int): seq[byte] =

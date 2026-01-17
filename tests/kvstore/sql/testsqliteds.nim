@@ -11,6 +11,7 @@ import pkg/questionable
 import pkg/taskpools
 
 import pkg/kvstore
+import pkg/kvstore/typedkv
 
 import ../kvcommontests
 import ../querycommontests

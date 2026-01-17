@@ -7,9 +7,9 @@ import pkg/questionable/results
 
 import ./key
 import ./types
-import ./rawkvstore
+import ./kvstore
 
-export rawkvstore
+export kvstore
 
 # =============================================================================
 # Single Record Convenience Wrappers
@@ -28,6 +28,12 @@ proc put*(
     return failure newException(KVStoreError, "Unable to put record due to conflict")
 
   return success()
+
+proc put*(
+    self: KVStore, key: Key, value: seq[byte]
+): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
+  ## Convenience: insert or update raw bytes at key (token=0, insert-only semantics)
+  self.put(RawRecord.init(key, value))
 
 proc delete*(
     self: KVStore, record: KeyRecord
