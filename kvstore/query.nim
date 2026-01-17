@@ -27,13 +27,22 @@ type
     async: (raises: [CancelledError]), gcsafe, closure
   .}
 
-  QueryIter*[T] = ref object
+  QueryIterObj[T] = object
     nextImpl: GetNext[T]
     finishedImpl: IterFinished
     disposeImpl: IterDispose
+    disposed: bool
+
+  QueryIter*[T] = ref QueryIterObj[T]
 
   GetNextRaw* = GetNext[seq[byte]]
   QueryIterRaw* = QueryIter[seq[byte]]
+
+proc `=destroy`[T](iter: var QueryIterObj[T]) =
+  ## Destructor ensures dispose is called when iterator goes out of scope
+  if not iter.disposed and iter.disposeImpl != nil:
+    iter.disposeImpl()
+    iter.disposed = true
 
 proc finished*[T](iter: QueryIter[T]): bool =
   iter.finishedImpl()
@@ -44,7 +53,9 @@ proc next*[T](
   await iter.nextImpl()
 
 proc dispose*[T](iter: QueryIter[T]) =
-  iter.disposeImpl()
+  if not iter.disposed:
+    iter.disposeImpl()
+    iter.disposed = true
 
 iterator items*[T](q: QueryIter[T]): Future[?!(?Record[T])] =
   while not q.finished:

@@ -8,11 +8,10 @@ import ./kvstore/key
 import ./kvstore/rawkvstore as rawds
 import ./kvstore/fsds
 import ./kvstore/sql
-import ./kvstore/mountedds
 import ./kvstore/types
 import ./kvstore/query
 
-export rawds, fsds, mountedds, sql, types, query, key
+export rawds, fsds, sql, types, query, key
 
 ## Typed KVStore Support
 ##

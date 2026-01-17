@@ -10,7 +10,7 @@ Inspired by the Python library [datastore](https://github.com/datastore/datastor
 - **Optimistic Concurrency Control** - Token-based CAS (Compare-And-Swap) semantics prevent lost updates
 - **Typed Records** - Automatic serialization/deserialization with custom encoder/decoder procs
 - **Async/Await** - Built on Chronos for async operations
-- **Multiple Backends** - SQLite (in-memory or file), filesystem, and mounted kvstores
+- **Multiple Backends** - SQLite (in-memory or file) and filesystem
 
 ## Installation
 
@@ -343,24 +343,6 @@ let fsDs = FSKVStore.new(
 ```
 
 **Note:** FSKVStore uses `uint64` for tokens, supporting the full range.
-
-### MountedKVStore
-
-Combines multiple kvstores under different key prefixes:
-
-```nim
-let sqlDs = SQLiteKVStore.new(SqliteMemory).tryGet()
-let fsDs = FSKVStore.new("/data").tryGet()
-
-let mounted = MountedKVStore.new({
-  Key.init("/cache").tryGet(): KVStore(sqlDs),
-  Key.init("/files").tryGet(): KVStore(fsDs),
-}.toTable).tryGet()
-
-# Keys are routed to appropriate backend
-await mounted.put(Key.init("/cache/item").tryGet(), data)  # Goes to SQLite
-await mounted.put(Key.init("/files/doc").tryGet(), data)   # Goes to filesystem
-```
 
 ## Error Types
 
