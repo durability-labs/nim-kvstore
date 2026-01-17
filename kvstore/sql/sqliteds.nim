@@ -604,61 +604,63 @@ method query*(
   if query.offset != 0:
     queryStr &= QueryStmtOffset
 
-  # Capture lock pointer for use in closures
-  let lockPtr = addr self.lock
-
-  # Protect statement preparation and binding with lock
-  var
-    queryStmt: QueryStmt
-    s: RawStmtPtr
-    v: cint
-
-  withLock(self.lock):
+  # Prepare private statement (no store lock needed - SQLite FULLMUTEX handles it)
+  let
     queryStmt = QueryStmt.prepare(self.db.env, queryStr).expect("Query prepare should not fail")
     s = RawStmtPtr(queryStmt)
 
-    v = sqlite3_bind_text(
-      s, 1.cint, (query.key.id & "*").cstring, -1.cint, SQLITE_TRANSIENT_GCSAFE
-    )
+  var v = sqlite3_bind_text(
+    s, 1.cint, (query.key.id & "*").cstring, -1.cint, SQLITE_TRANSIENT_GCSAFE
+  )
+
+  if v != SQLITE_OK:
+    return failure newException(KVStoreError, $sqlite3_errstr(v))
+
+  if query.limit != 0:
+    v = sqlite3_bind_int(s, 2.cint, query.limit.cint)
 
     if v != SQLITE_OK:
       return failure newException(KVStoreError, $sqlite3_errstr(v))
 
-    if query.limit != 0:
-      v = sqlite3_bind_int(s, 2.cint, query.limit.cint)
+  if query.offset != 0:
+    v = sqlite3_bind_int(s, 3.cint, query.offset.cint)
 
-      if v != SQLITE_OK:
-        return failure newException(KVStoreError, $sqlite3_errstr(v))
+    if v != SQLITE_OK:
+      return failure newException(KVStoreError, $sqlite3_errstr(v))
 
-    if query.offset != 0:
-      v = sqlite3_bind_int(s, 3.cint, query.offset.cint)
+  # Per-iterator state with its own lock (not the store-wide lock)
+  # Each iterator has a private statement - only need to protect from
+  # concurrent next() calls on the same iterator
+  type QueryIterState = ref object
+    stmt: RawStmtPtr
+    lock: Lock
+    finished: bool
+    store: SQLiteKVStore  # For activeIterators tracking
 
-      if v != SQLITE_OK:
-        return failure newException(KVStoreError, $sqlite3_errstr(v))
-
-  var finished = false
+  var state = QueryIterState(stmt: s, finished: false, store: self)
+  initLock(state.lock)
 
   # Track this iterator
   discard self.activeIterators.fetchAdd(1)
 
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
-    if finished:
+    if state.finished:
       return failure(newException(QueryEndedError, "Calling next on a finished query!"))
 
-    # Protect sqlite3_step and column access with lock
-    withLock(lockPtr[]):
-      let v = sqlite3_step(s)
+    # Protect sqlite3_step with per-iterator lock
+    withLock(state.lock):
+      let v = sqlite3_step(state.stmt)
 
       case v
       of SQLITE_ROW:
         let
-          key = Key.init($sqlite3_column_text_not_null(s, QueryStmtIdCol)).expect(
+          key = Key.init($sqlite3_column_text_not_null(state.stmt, QueryStmtIdCol)).expect(
               "Key should should not fail"
             )
 
           blob: pointer =
             if query.value:
-              sqlite3_column_blob(s, QueryStmtDataCol)
+              sqlite3_column_blob(state.stmt, QueryStmtDataCol)
             else:
               nil
 
@@ -671,14 +673,14 @@ method query*(
         # error it is necessary to check that the result is a null pointer and
         # that the result code is an error code
         if blob.isNil:
-          let v = sqlite3_errcode(sqlite3_db_handle(s))
+          let v = sqlite3_errcode(sqlite3_db_handle(state.stmt))
 
           if not (v in [SQLITE_OK, SQLITE_ROW, SQLITE_DONE]):
-            finished = true
+            state.finished = true
             return failure newException(KVStoreError, $sqlite3_errstr(v))
 
         let
-          dataLen = sqlite3_column_bytes(s, QueryStmtDataCol)
+          dataLen = sqlite3_column_bytes(state.stmt, QueryStmtDataCol)
           data =
             if not blob.isNil:
               @(toOpenArray(cast[ptr UncheckedArray[byte]](blob), 0, dataLen - 1))
@@ -686,27 +688,26 @@ method query*(
               @[]
           versionCol =
             if query.value: QueryStmtVersionColWithData else: QueryStmtVersionColNoData
-          version = sqlite3_column_int64(s, versionCol.cint).uint64
+          version = sqlite3_column_int64(state.stmt, versionCol.cint).uint64
 
         return success RawRecord.init(key, data, version).some
       of SQLITE_DONE:
-        finished = true
+        state.finished = true
         return success RawRecord.none
       else:
-        finished = true
+        state.finished = true
         return failure newException(KVStoreError, $sqlite3_errstr(v))
 
   proc isFinished(): bool =
-    finished
+    state.finished
 
   proc dispose() =
-    # Protect sqlite3_finalize with lock
-    withLock(lockPtr[]):
-      # Finalize the prepared statement to release resources
-      # sqlite3_finalize returns SQLITE_OK even if statement is nil
-      discard sqlite3_finalize(s)
+    # Protect sqlite3_finalize with per-iterator lock
+    withLock(state.lock):
+      discard sqlite3_finalize(state.stmt)
+    deinitLock(state.lock)
     # Decrement active iterator count (atomic, no lock needed)
-    discard self.activeIterators.fetchSub(1)
+    discard state.store.activeIterators.fetchSub(1)
 
   return success QueryIter.new(next, isFinished, dispose)
 
