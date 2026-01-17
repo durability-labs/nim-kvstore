@@ -3,13 +3,16 @@
 import std/sequtils
 
 import pkg/chronos
+import pkg/questionable
 import pkg/questionable/results
 
 import ./key
 import ./types
 import ./kvstore
+import ./query
 
 export kvstore
+export query
 
 # =============================================================================
 # Single Record Convenience Wrappers
@@ -401,3 +404,29 @@ proc tryDeleteAtomic*(
   if results.len > 0:
     return failure newException(KVStoreError, "Unable to delete record due to conflict")
   return success()
+
+# =============================================================================
+# Query Iterator Helpers
+# =============================================================================
+
+proc fetchAll*[T](
+    iter: QueryIter[T]
+): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+  ## Collect all records from an iterator into a seq.
+  ##
+  ## This is the correct way to collect results from an async iterator.
+  ## Unlike `toSeq(iter)`, this properly awaits each `next()` call,
+  ## ensuring correct ordering and avoiding infinite loops.
+  ##
+  ## Example:
+  ##   let iter = (await ds.query(q)).tryGet
+  ##   let records = (await iter.fetchAll()).tryGet
+  ##
+  var res: seq[Record[T]]
+  while not iter.finished:
+    let recordOpt = ?await iter.next()
+    if record =? recordOpt:
+      res.add(record)
+    else:
+      break  # End of stream
+  return success(res)

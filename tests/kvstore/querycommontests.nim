@@ -1,5 +1,6 @@
+import std/algorithm
+
 import pkg/asynctest/chronos/unittest2
-import pkg/questionable
 import pkg/questionable/results
 
 import pkg/kvstore
@@ -32,10 +33,7 @@ template queryTests*(
 
     let
       iter = (await ds.query(q)).tryGet
-      res = (await allFinished(toSeq(iter)))
-        .mapIt(it.read.tryGet)
-        .filterIt(it.isSome)
-        .mapIt(it.get)
+      res = (await iter.fetchAll()).tryGet
 
     check:
       res.len == 3
@@ -57,10 +55,7 @@ template queryTests*(
 
     let
       iter = (await ds.query(q)).tryGet
-      res = (await allFinished(toSeq(iter)))
-        .mapIt(it.read.tryGet)
-        .filterIt(it.isSome)
-        .mapIt(it.get)
+      res = (await iter.fetchAll()).tryGet
 
     check:
       res.len == 3
@@ -82,10 +77,7 @@ template queryTests*(
 
     let
       iter = (await ds.query(q)).tryGet
-      res = (await allFinished(toSeq(iter)))
-        .mapIt(it.read.tryGet)
-        .filterIt(it.isSome)
-        .mapIt(it.get)
+      res = (await iter.fetchAll()).tryGet
 
     check:
       res.len == 2
@@ -95,7 +87,7 @@ template queryTests*(
       res[1].key == key3
       res[1].val == val3
 
-  test "Key should all list all keys at the same level":
+  test "Key should list all keys at the same level":
     let
       queryKey = Key.init("/a").tryGet
       q = Query.init(queryKey)
@@ -106,10 +98,7 @@ template queryTests*(
 
     let iter = (await ds.query(q)).tryGet
 
-    var res = (await allFinished(toSeq(iter)))
-      .mapIt(it.read.tryGet)
-      .filterIt(it.isSome)
-      .mapIt(it.get)
+    var res = (await iter.fetchAll()).tryGet
 
     res.sort do(a, b: RawRecord) -> int:
       cmp(a.key.id, b.key.id)
@@ -158,15 +147,12 @@ template queryTests*(
 
       let
         iter = (await ds.query(q)).tryGet
-        res = (await allFinished(toSeq(iter)))
-          .mapIt(it.read.tryGet)
-          .filterIt(it.isSome)
-          .mapIt(it.get)
+        res = (await iter.fetchAll()).tryGet
 
       check:
         res.len == 10
 
-    test "Should not apply offset":
+    test "Should apply offset":
       let
         key = Key.init("/a").tryGet
         q = Query.init(key, offset = 90)
@@ -180,15 +166,12 @@ template queryTests*(
 
       let
         iter = (await ds.query(q)).tryGet
-        res = (await allFinished(toSeq(iter)))
-          .mapIt(it.read.tryGet)
-          .filterIt(it.isSome)
-          .mapIt(it.get)
+        res = (await iter.fetchAll()).tryGet
 
       check:
         res.len == 10
 
-    test "Should not apply offset and limit":
+    test "Should apply offset and limit":
       let
         key = Key.init("/a").tryGet
         q = Query.init(key, offset = 95, limit = 5)
@@ -202,10 +185,7 @@ template queryTests*(
 
       let
         iter = (await ds.query(q)).tryGet
-        res = (await allFinished(toSeq(iter)))
-          .mapIt(it.read.tryGet)
-          .filterIt(it.isSome)
-          .mapIt(it.get)
+        res = (await iter.fetchAll()).tryGet
 
       check:
         res.len == 5
@@ -241,10 +221,7 @@ template queryTests*(
       kvs = kvs.reversed
       let
         iter = (await ds.query(q)).tryGet
-        res = (await allFinished(toSeq(iter)))
-          .mapIt(it.read.tryGet)
-          .filterIt(it.isSome)
-          .mapIt(it.get)
+        res = (await iter.fetchAll()).tryGet
 
       check:
         res.len == 100
