@@ -38,6 +38,7 @@ suite "Test Basic FSKVStore":
 
   basicStoreTests(fsStore, key, bytes, otherBytes)
   helperTests(fsStore, key)
+  atomicBatchTests(fsStore, key, supportsAtomic = false)
 
 suite "Test Misc FSKVStore":
   let

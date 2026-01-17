@@ -361,3 +361,79 @@ proc helperTests*(ds: KVStore, key: Key) =
     let stale = KeyRecord.init(delKey, current.token - 1)
     let res = await ds.delete(stale)
     check res.isErr
+
+proc atomicBatchTests*(ds: KVStore, key: Key, supportsAtomic: bool) =
+  ## Tests for atomic batch API behavior.
+  ## Pass supportsAtomic=true for SQLite, false for FSKVStore.
+  
+  test "supportsAtomicBatch returns expected value":
+    check ds.supportsAtomicBatch() == supportsAtomic
+  
+  if supportsAtomic:
+    # Tests for backends that support atomic batch
+    
+    test "putAtomic - all succeed when no conflicts":
+      let k1 = (key / "atomic" / "put1").tryGet()
+      let k2 = (key / "atomic" / "put2").tryGet()
+      
+      let conflicts = (await ds.putAtomic(@[
+        RawRecord.init(k1, @[1'u8], 0),
+        RawRecord.init(k2, @[2'u8], 0),
+      ])).tryGet()
+      
+      check conflicts.len == 0
+      check (await ds.has(k1)).tryGet()
+      check (await ds.has(k2)).tryGet()
+    
+    test "putAtomic - rollback on any conflict":
+      let k1 = (key / "atomic" / "rollback1").tryGet()
+      let k2 = (key / "atomic" / "rollback2").tryGet()
+      
+      # Insert k1 first
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      
+      # Try atomic batch with k1 (wrong token) and k2 (new)
+      let conflicts = (await ds.putAtomic(@[
+        RawRecord.init(k1, @[10'u8], 999),  # Wrong token
+        RawRecord.init(k2, @[20'u8], 0),     # Would succeed alone
+      ])).tryGet()
+      
+      check conflicts.len == 1
+      check conflicts[0] == k1
+      # k2 should NOT exist (rollback)
+      check (await get[seq[byte]](ds, k2)).isErr
+    
+    test "deleteAtomic - all succeed when tokens match":
+      let k1 = (key / "atomic" / "del1").tryGet()
+      let k2 = (key / "atomic" / "del2").tryGet()
+      
+      # Insert both
+      discard (await ds.put(@[
+        RawRecord.init(k1, @[1'u8], 0),
+        RawRecord.init(k2, @[2'u8], 0),
+      ])).tryGet()
+      
+      let r1 = (await get[seq[byte]](ds, k1)).tryGet()
+      let r2 = (await get[seq[byte]](ds, k2)).tryGet()
+      
+      let conflicts = (await ds.deleteAtomic(@[
+        KeyRecord.init(k1, r1.token),
+        KeyRecord.init(k2, r2.token),
+      ])).tryGet()
+      
+      check conflicts.len == 0
+      check (await get[seq[byte]](ds, k1)).isErr
+      check (await get[seq[byte]](ds, k2)).isErr
+  
+  else:
+    # Tests for backends that don't support atomic batch
+    
+    test "putAtomic - returns error for unsupported backend":
+      let k1 = (key / "atomic" / "unsupported").tryGet()
+      let result = await ds.putAtomic(@[RawRecord.init(k1, @[1'u8], 0)])
+      check result.isErr
+    
+    test "deleteAtomic - returns error for unsupported backend":
+      let k1 = (key / "atomic" / "unsupported").tryGet()
+      let result = await ds.deleteAtomic(@[KeyRecord.init(k1, 1)])
+      check result.isErr
