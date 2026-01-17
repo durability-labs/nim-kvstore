@@ -5,11 +5,9 @@ when not compileOption("threads"):
 
 import std/options
 import std/atomics
-import std/locks
 import std/os
 
 import pkg/chronos
-import pkg/chronos/threadsync
 import pkg/questionable
 import pkg/questionable/results
 import pkg/taskpools
@@ -17,12 +15,14 @@ import pkg/taskpools
 import ../key
 import ../query
 import ../kvstore
+import ../taskutils
 import ./sqlitedsdb
 import ./sqliteutils
 import ./operations
 
 export sqlitedsdb
 export operations
+export taskutils
 
 type
   SQLiteKVStore* = ref object of KVStore
@@ -30,12 +30,6 @@ type
     db: SQLiteDsDb
     lock: Lock                    # Serializes access to shared prepared statements
     tp: Taskpool                  # Injected threadpool for async operations
-
-  # TaskCtx bundles per-task state for cross-thread communication
-  TaskCtx*[T] = object
-    lock*: ptr Lock            # Store-level lock (shared across tasks)
-    signal*: ThreadSignalPtr   # Completion notification (per-task)
-    result*: ?!T               # Output value (per-task)
 
   # Per-iterator state for query operations
   # Each iterator has its own lock (not the store-wide lock) since each
@@ -166,26 +160,6 @@ proc runDisposeTask(ctx: ptr TaskCtx[void],
   deinitLock(lock[])
 
   ctx[].result = success()
-
-# =============================================================================
-# Async Helper for Cancellation-Safe Wait
-# =============================================================================
-
-proc awaitSignal(signal: ThreadSignalPtr): Future[?!void] {.async: (raises: [CancelledError]).} =
-  ## Cancellation-safe wait for task completion.
-  ##
-  ## Uses join() + noCancel pattern to ensure worker completes before exit:
-  ## - join() creates wrapper future - cancelling it does NOT cancel original
-  ## - On error/cancel: noCancel waits for worker to complete
-  ## - Ensures ctx (stack-allocated) is never a dangling pointer
-  let taskFut = signal.wait()
-  if err =? catch(await taskFut.join()).errorOption:
-    # Must wait for worker to finish - without this we'd write to freed memory
-    ?catch(await noCancel taskFut)
-    if err of CancelledError:
-      raise (ref CancelledError)(err)
-    return failure(err)
-  success()
 
 # =============================================================================
 # Async Methods (public API)

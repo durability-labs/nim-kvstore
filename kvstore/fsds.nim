@@ -1,11 +1,15 @@
 {.push raises: [].}
 
+when not compileOption("threads"):
+  {.error: "FSKVStore requires --threads:on".}
+
 import std/os
 import std/tables
 import std/strutils
 import std/options
 import std/random
 import std/times
+import std/atomics
 
 when defined(posix):
   from std/posix import open, fsync, close, O_RDONLY
@@ -14,10 +18,12 @@ import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
 import pkg/stew/endians2
+import pkg/taskpools
 
 import ./key
 import ./query
 import ./kvstore
+import ./taskutils
 
 const
   TokenBytes = sizeof(uint64)
@@ -26,20 +32,33 @@ const
 
 export kvstore
 
-type FSKVStore* = ref object of KVStore
-  ## Filesystem-backed kvstore that stores records as files.
-  ##
-  ## Tokens are stored as uint64 in little-endian format. Unlike SQLiteKVStore
-  ## which is limited to int64 range due to SQLite INTEGER type, FSKVStore
-  ## supports the full uint64 range.
-  root*: string
-  ignoreProtected: bool
-  depth: int
-  locks: TableRef[Key, AsyncLock]
+type
+  FSKVStore* = ref object of KVStore
+    ## Filesystem-backed kvstore that stores records as files.
+    ##
+    ## Tokens are stored as uint64 in little-endian format. Unlike SQLiteKVStore
+    ## which is limited to int64 range due to SQLite INTEGER type, FSKVStore
+    ## supports the full uint64 range.
+    root*: string
+    ignoreProtected: bool
+    depth: int
+    locks: TableRef[Key, AsyncLock]
+    tp: Taskpool
+
+  # Per-iterator state for query operations
+  FsQueryIterState = ref object
+    basePath: string
+    walker: iterator(): string {.raises: [Defect], gcsafe.}
+    root: string
+    queryKey: Key
+    queryValue: bool
+    finished: Atomic[bool]
+    isDisposed: Atomic[bool]
+    tp: Taskpool
 
 randomize() # TODO: We should probably use a stronger rng here?
 
-proc moveFile(src, dst: string): ?!void {.raises: [].} =
+proc moveFile(src, dst: string): ?!void {.gcsafe.} =
   try:
     os.moveFile(src, dst)
     success()
@@ -84,9 +103,13 @@ proc path*(self: FSKVStore, key: Key): ?!string =
 
   return success fullname
 
+# =============================================================================
+# Sync I/O Operations (blocking, called from threadpool workers)
+# =============================================================================
+
 proc readVersioned*(
-    self: FSKVStore, path: string, key: Key, data = true
-): ?!RawRecord =
+    path: string, key: Key, data = true
+): ?!RawRecord {.gcsafe.} =
   var file: File
 
   defer:
@@ -118,8 +141,8 @@ proc readVersioned*(
   return success RawRecord.init(key, value, token)
 
 proc writeVersioned*(
-    self: FSKVStore, path: string, token: uint64, value: seq[byte]
-): ?!void =
+    path: string, token: uint64, value: seq[byte]
+): ?!void {.gcsafe.} =
   ?catch(createDir(parentDir(path)))
 
   let tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
@@ -156,10 +179,119 @@ proc writeVersioned*(
 
   return success()
 
-method has*(
-    self: FSKVStore, key: Key
-): Future[?!bool] {.async: (raises: [CancelledError]).} =
-  return self.path(key) .? fileExists()
+proc deleteFile(path: string): ?!void {.gcsafe.} =
+  ?catch(removeFile(path))
+
+  # Sync parent directory to ensure delete is durable
+  when defined(posix):
+    let dir = parentDir(path)
+    let fd = posix.open(dir.cstring, O_RDONLY)
+    if fd >= 0:
+      discard posix.fsync(fd)
+      discard posix.close(fd)
+
+  success()
+
+# =============================================================================
+# Task Workers (top-level procs for threadpool)
+# =============================================================================
+
+proc runHasTask(ctx: ptr TaskCtx[bool], path: string) {.gcsafe.} =
+  defer: discard ctx[].signal.fireSync()
+  ctx[].result = success(path.fileExists())
+
+proc runGetTask(ctx: ptr TaskCtx[RawRecord], path: string, key: Key) {.gcsafe.} =
+  defer: discard ctx[].signal.fireSync()
+  if not path.fileExists():
+    ctx[].result = Result[RawRecord, ref CatchableError].err(
+      newException(KVStoreKeyNotFound, "Key doesn't exist"))
+  else:
+    ctx[].result = readVersioned(path, key)
+
+proc runPutTask(ctx: ptr TaskCtx[bool], path: string, record: RawRecord) {.gcsafe.} =
+  ## Returns true if successful, false if conflict
+  defer: discard ctx[].signal.fireSync()
+  
+  if not path.fileExists():
+    if record.token != 0:
+      ctx[].result = success(false)  # Conflict: insert expected but key exists check failed... wait no
+      return
+    ctx[].result = writeVersioned(path, 1'u64, record.val).map(proc(_: void): bool = true)
+  else:
+    let currentRes = readVersioned(path, record.key)
+    if currentRes.isErr:
+      ctx[].result = Result[bool, ref CatchableError].err(currentRes.error)
+      return
+    let current = currentRes.get
+    if current.token != record.token:
+      ctx[].result = success(false)  # Conflict: token mismatch
+    else:
+      ctx[].result = writeVersioned(path, current.token + 1, record.val).map(proc(_: void): bool = true)
+
+proc runDeleteTask(ctx: ptr TaskCtx[bool], path: string, record: KeyRecord) {.gcsafe.} =
+  ## Returns true if successful, false if conflict/skip
+  defer: discard ctx[].signal.fireSync()
+  
+  if not path.fileExists():
+    ctx[].result = success(false)
+    return
+    
+  let currentRes = readVersioned(path, record.key)
+  if currentRes.isErr:
+    ctx[].result = Result[bool, ref CatchableError].err(currentRes.error)
+    return
+  let current = currentRes.get
+  if current.token != record.token:
+    ctx[].result = success(false)  # Conflict
+  else:
+    ctx[].result = deleteFile(path).map(proc(_: void): bool = true)
+
+proc runNextTask(ctx: ptr TaskCtx[?RawRecord], state: ptr FsQueryIterState) {.gcsafe.} =
+  defer: discard ctx[].signal.fireSync()
+
+  type R = ?!(?RawRecord)
+
+  if state[].finished.load():
+    ctx[].result = R.ok(RawRecord.none)
+    return
+
+  while true:
+    let relPath = state[].walker()
+
+    if finished(state[].walker):
+      state[].finished.store(true)
+      ctx[].result = R.ok(RawRecord.none)
+      return
+
+    var keyPath = state[].basePath
+    keyPath.removePrefix(state[].root)
+    keyPath = keyPath / relPath.changeFileExt("")
+    keyPath = keyPath.replace("\\", "/")
+
+    let keyRes = Key.init(keyPath)
+    if keyRes.isErr:
+      continue
+
+    let key = keyRes.get
+    if key != state[].queryKey and not state[].queryKey.ancestor(key):
+      continue
+
+    let absPathRes = catch((state[].basePath / relPath).absolutePath())
+    if absPathRes.isErr:
+      ctx[].result = R.err(absPathRes.error)
+      return
+
+    let recordRes = readVersioned(absPathRes.get, key, state[].queryValue)
+    if recordRes.isErr:
+      ctx[].result = R.err(recordRes.error)
+      return
+
+    ctx[].result = R.ok(recordRes.get.some)
+    return
+
+# =============================================================================
+# Per-Key Locking (unchanged from original)
+# =============================================================================
 
 proc acquire*(
     self: FSKVStore, key: Key
@@ -178,36 +310,57 @@ proc release*(self: FSKVStore, key: Key, lock: AsyncLock) {.raises: [].} =
       if not lock.locked:
         self.locks.del(key)
 
-template withLock(self: FSKVStore, key: Key, body: untyped) =
-  let lock = await self.acquire(key)
-  try:
-    body
-  finally:
-    self.release(key, lock)
+# =============================================================================
+# Async Methods (public API)
+# =============================================================================
+
+method has*(
+    self: FSKVStore, key: Key
+): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  let p = ?self.path(key)
+
+  let signal = ThreadSignalPtr.new().valueOr:
+    return failure(newException(KVStoreError, error))
+  var ctx = TaskCtx[bool](signal: signal)
+  defer: discard ctx.signal.close()
+
+  self.tp.spawn runHasTask(addr ctx, p)
+  ?await awaitSignal(ctx.signal)
+  return ctx.result
 
 method get*(
     self: FSKVStore, key: Key
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
-  let path = ?self.path(key)
+  let p = ?self.path(key)
 
-  if not path.fileExists():
-    return failure newException(KVStoreKeyNotFound, "Key doesn't exist")
+  let signal = ThreadSignalPtr.new().valueOr:
+    return failure(newException(KVStoreError, error))
+  var ctx = TaskCtx[RawRecord](signal: signal)
+  defer: discard ctx.signal.close()
 
-  return self.readVersioned(path, key)
+  self.tp.spawn runGetTask(addr ctx, p, key)
+  ?await awaitSignal(ctx.signal)
+  return ctx.result
 
 method get*(
     self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   var records: seq[RawRecord]
+
   for key in keys:
-    let path = ?self.path(key)
+    let p = ?self.path(key)
 
-    if not path.fileExists():
-      continue
+    let signal = ThreadSignalPtr.new().valueOr:
+      return failure(newException(KVStoreError, error))
+    var ctx = TaskCtx[RawRecord](signal: signal)
+    defer: discard ctx.signal.close()
 
-    let record = ?self.readVersioned(path, key)
+    self.tp.spawn runGetTask(addr ctx, p, key)
+    ?await awaitSignal(ctx.signal)
 
-    records.add(record)
+    if ctx.result.isOk:
+      records.add(ctx.result.get)
+    # Skip keys that don't exist (KVStoreKeyNotFound)
 
   return success records
 
@@ -217,25 +370,23 @@ method put*(
   var conflicts: seq[Key]
 
   for record in records:
-    let path = ?self.path(record.key)
+    let p = ?self.path(record.key)
 
-    self.withLock(record.key):
-      var conflict = false
-      if not path.fileExists():
-        if record.token != 0:
-          conflict = true
-        else:
-          ?self.writeVersioned(path, 1'u64, record.val)
-      else:
-        let current = ?self.readVersioned(path, record.key)
+    # Acquire per-key lock BEFORE spawning task
+    let lock = await self.acquire(record.key)
+    defer: self.release(record.key, lock)
 
-        if current.token != record.token:
-          conflict = true
-        else:
-          ?self.writeVersioned(path, current.token + 1, record.val)
+    let signal = ThreadSignalPtr.new().valueOr:
+      return failure(newException(KVStoreError, error))
+    var ctx = TaskCtx[bool](signal: signal)
+    defer: discard ctx.signal.close()
 
-      if conflict:
-        conflicts.add(record.key)
+    self.tp.spawn runPutTask(addr ctx, p, record)
+    ?await awaitSignal(ctx.signal)
+
+    let ok = ?ctx.result
+    if not ok:
+      conflicts.add(record.key)
 
   return success conflicts
 
@@ -245,30 +396,32 @@ method delete*(
   var skipped: seq[Key]
 
   for record in records:
-    let path = ?self.path(record.key)
+    let p = ?self.path(record.key)
 
-    self.withLock(record.key):
-      if not path.fileExists():
-        skipped.add(record.key)
-        continue
+    # Acquire per-key lock BEFORE spawning task
+    let lock = await self.acquire(record.key)
+    defer: self.release(record.key, lock)
 
-      let current = ?self.readVersioned(path, record.key)
+    let signal = ThreadSignalPtr.new().valueOr:
+      return failure(newException(KVStoreError, error))
+    var ctx = TaskCtx[bool](signal: signal)
+    defer: discard ctx.signal.close()
 
-      if current.token != record.token:
-        skipped.add(record.key)
-        continue
+    self.tp.spawn runDeleteTask(addr ctx, p, record)
+    ?await awaitSignal(ctx.signal)
 
-      ?catch(removeFile(path))
-
-      # Sync parent directory to ensure delete is durable
-      when defined(posix):
-        let dir = parentDir(path)
-        let fd = posix.open(dir.cstring, O_RDONLY)
-        if fd >= 0:
-          discard posix.fsync(fd)
-          discard posix.close(fd)
+    let ok = ?ctx.result
+    if not ok:
+      skipped.add(record.key)
 
   return success skipped
+
+method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError]).} =
+  return success()
+
+# =============================================================================
+# Query Iterator
+# =============================================================================
 
 proc dirWalker(path: string): (iterator (): string {.raises: [Defect], gcsafe.}) =
   return
@@ -279,57 +432,71 @@ proc dirWalker(path: string): (iterator (): string {.raises: [Defect], gcsafe.})
       except CatchableError as exc:
         raise newException(Defect, exc.msg)
 
-method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError]).} =
-  return success()
-
 method query*(
     self: FSKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
-  let path = ?self.path(query.key)
+  let p = ?self.path(query.key)
 
   let basePath =
-    # it there is a file in the directory
+    # if there is a file in the directory
     # with the same name then list the contents
     # of the directory, otherwise recurse
     # into subdirectories
-    if path.fileExists:
-      path.parentDir
+    if p.fileExists:
+      p.parentDir
     else:
-      path.changeFileExt("")
+      p.changeFileExt("")
 
-  let walker = dirWalker(basePath)
+  var state = FsQueryIterState(
+    basePath: basePath,
+    walker: dirWalker(basePath),
+    root: self.root,
+    queryKey: query.key,
+    queryValue: query.value,
+    tp: self.tp
+  )
+  state.finished.store(false)
+  state.isDisposed.store(false)
+
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
-    while true:
-      let path = walker()
+    if state.finished.load():
+      return success(RawRecord.none)
 
-      if finished(walker):
-        return success RawRecord.none
+    let signal = ThreadSignalPtr.new().valueOr:
+      return failure(newException(KVStoreError, error))
+    var ctx = TaskCtx[?RawRecord](signal: signal)
+    defer: discard ctx.signal.close()
 
-      var keyPath = basePath
+    state.tp.spawn runNextTask(addr ctx, addr state)
 
-      keyPath.removePrefix(self.root)
-      keyPath = keyPath / path.changeFileExt("")
-      keyPath = keyPath.replace("\\", "/")
+    let taskFut = ctx.signal.wait()
+    if err =? catch(await taskFut.join()).errorOption:
+      state.finished.store(true)
+      ?catch(await noCancel taskFut)
+      if err of CancelledError:
+        raise (ref CancelledError)(err)
+      return failure(err)
 
-      let key = ?Key.init(keyPath)
-      if key != query.key and not query.key.ancestor(key):
-        continue
+    return ctx.result
 
-      return success (
-        ?self.readVersioned(?catch((basePath / path).absolutePath), key, query.value)
-      ).some
-
-  proc finished(): bool =
-    walker.finished
+  proc isFinished(): bool =
+    state.finished.load()
 
   proc dispose() =
-    discard # No resources to cleanup for directory walker
+    if state.isDisposed.exchange(true):
+      return
+    state.finished.store(true)
 
-  return success QueryIter.new(next, finished, dispose)
+  return success QueryIter.new(next, isFinished, dispose)
+
+# =============================================================================
+# Constructor
+# =============================================================================
 
 proc new*(
     T: type FSKVStore,
     root: string,
+    tp: Taskpool,
     depth = 2,
     caseSensitive = true,
     ignoreProtected = false,
@@ -350,4 +517,5 @@ proc new*(
     ignoreProtected: ignoreProtected,
     depth: depth,
     locks: newTable[Key, AsyncLock](),
+    tp: tp,
   )

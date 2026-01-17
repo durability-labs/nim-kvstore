@@ -7,6 +7,7 @@ import std/tables
 import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 import pkg/stew/byteutils
+import pkg/taskpools
 
 import pkg/kvstore
 
@@ -23,17 +24,21 @@ suite "Test Basic FSKVStore":
     bytes = "some bytes".toBytes
     otherBytes = "some other bytes".toBytes
 
-  var fsStore: FSKVStore
+  var
+    tp: Taskpool
+    fsStore: FSKVStore
 
   setupAll:
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    fsStore = FSKVStore.new(root = basePathAbs, depth = 16).tryGet()
+    tp = Taskpool.new(numThreads = 4)
+    fsStore = FSKVStore.new(root = basePathAbs, tp = tp, depth = 16).tryGet()
 
   teardownAll:
     require((await fsStore.close()).isOk)
+    tp.shutdown()
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
@@ -48,6 +53,14 @@ suite "Test Misc FSKVStore":
     basePathAbs = path.parentDir / basePath
     bytes = "some bytes".toBytes
 
+  var tp: Taskpool
+
+  setupAll:
+    tp = Taskpool.new(numThreads = 4)
+
+  teardownAll:
+    tp.shutdown()
+
   setup:
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
@@ -59,7 +72,7 @@ suite "Test Misc FSKVStore":
 
   test "Test validDepth()":
     let
-      fs = FSKVStore.new(root = "/", depth = 3).tryGet()
+      fs = FSKVStore.new(root = "/", tp = tp, depth = 3).tryGet()
       invalid = Key.init("/a/b/c/d").tryGet()
       valid = Key.init("/a/b/c").tryGet()
 
@@ -69,7 +82,7 @@ suite "Test Misc FSKVStore":
 
   test "Test invalid key (path) depth":
     let
-      fs = FSKVStore.new(root = basePathAbs, depth = 3).tryGet()
+      fs = FSKVStore.new(root = basePathAbs, tp = tp, depth = 3).tryGet()
       key = Key.init("/a/b/c/d").tryGet()
 
     check:
@@ -80,7 +93,7 @@ suite "Test Misc FSKVStore":
 
   test "Test valid key (path) depth":
     let
-      fs = FSKVStore.new(root = basePathAbs, depth = 3).tryGet()
+      fs = FSKVStore.new(root = basePathAbs, tp = tp, depth = 3).tryGet()
       key = Key.init("/a/b/c").tryGet()
 
     require (await fs.put(key, bytes)).isOk
@@ -94,7 +107,7 @@ suite "Test Misc FSKVStore":
 
   test "Test key cannot write outside of root":
     let
-      fs = FSKVStore.new(root = basePathAbs, depth = 3).tryGet()
+      fs = FSKVStore.new(root = basePathAbs, tp = tp, depth = 3).tryGet()
       key = Key.init("/a/../../c").tryGet()
 
     check:
@@ -104,7 +117,7 @@ suite "Test Misc FSKVStore":
       (await fs.has(key)).isErr
 
   test "Test key cannot convert to invalid path":
-    let fs = FSKVStore.new(root = basePathAbs).tryGet()
+    let fs = FSKVStore.new(root = basePathAbs, tp = tp).tryGet()
 
     for c in invalidFilenameChars:
       if c == ':':
@@ -126,20 +139,26 @@ suite "Test Query":
     basePath = "tests_data"
     basePathAbs = path.parentDir / basePath
 
-  var ds: FSKVStore
+  var
+    tp: Taskpool
+    ds: FSKVStore
+
+  setupAll:
+    tp = Taskpool.new(numThreads = 4)
+
+  teardownAll:
+    tp.shutdown()
+    removeDir(basePathAbs)
+    require(not dirExists(basePathAbs))
 
   setup:
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
     createDir(basePathAbs)
 
-    ds = FSKVStore.new(root = basePathAbs, depth = 5).tryGet()
+    ds = FSKVStore.new(root = basePathAbs, tp = tp, depth = 5).tryGet()
 
   teardown:
-    removeDir(basePathAbs)
-    require(not dirExists(basePathAbs))
-
-  teardownAll:
     removeDir(basePathAbs)
     require(not dirExists(basePathAbs))
 
