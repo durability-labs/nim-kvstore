@@ -130,7 +130,7 @@ method query*(
 
 method supportsAtomicBatch*(self: KVStore): bool {.base, gcsafe.} =
   ## Returns true if this backend supports atomic batch operations.
-  ## 
+  ##
   ## Backends that return true guarantee putAtomic/deleteAtomic will either:
   ## - Commit ALL records atomically (empty conflict list)
   ## - Commit NONE and report conflicts (non-empty conflict list)
@@ -142,7 +142,7 @@ method putAtomic*(
   ## Insert or update records atomically (all-or-nothing).
   ##
   ## If ANY record has a CAS conflict, NO records are committed.
-  ## 
+  ##
   ## Returns:
   ##   - Success with empty seq: All records committed atomically
   ##   - Success with non-empty seq: These keys had conflicts; NOTHING committed
@@ -374,45 +374,45 @@ proc tryPutAtomic*(
     middleware: RawAtomicMiddleware,
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Atomic batch put with retry on conflicts.
-  ## 
+  ##
   ## Unlike tryPut (partial commit), this uses all-or-nothing semantics:
   ## - Each iteration attempts ALL records
   ## - On conflict, NOTHING is committed
   ## - Middleware receives full batch + conflict keys to update tokens
   ##
   ## Returns empty seq on success, or remaining records after max retries.
-  
+
   if records.len == 0:
     return success(newSeq[RawRecord]())
-  
+
   if not self.supportsAtomicBatch():
     return failure newBackendError("Atomic batch not supported by this backend")
-  
+
   var
     remaining = maxRetries
     current = records
-  
+
   while true:
     if remaining == 0:
       return failure newMaxRetriesError("tryPutAtomic max retries reached")
-    
+
     let conflicts = ?(await self.putAtomic(current))
     if conflicts.len == 0:
       return success newSeq[RawRecord]()
-    
+
     # Prepare next attempt using middleware
     if not middleware.isNil:
       current = ?(await middleware(current, conflicts))
     else:
       # No middleware - can't resolve conflicts
       return success current
-    
+
     if current.len == 0:
       # Middleware gave up
       break
-    
+
     dec remaining
-  
+
   return success current
 
 proc tryPutAtomic*(
@@ -432,36 +432,36 @@ proc tryDeleteAtomic*(
 ): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
   ## Atomic batch delete with retry on conflicts.
   ## Same semantics as tryPutAtomic().
-  
+
   if records.len == 0:
     return success(newSeq[KeyRecord]())
-  
+
   if not self.supportsAtomicBatch():
     return failure newBackendError("Atomic batch not supported by this backend")
-  
+
   var
     remaining = maxRetries
     current = records
-  
+
   while true:
     if remaining == 0:
       return failure newMaxRetriesError("tryDeleteAtomic max retries reached")
-    
+
     let conflicts = ?(await self.deleteAtomic(current))
     if conflicts.len == 0:
       return success newSeq[KeyRecord]()
-    
+
     # Prepare next attempt using middleware
     if not middleware.isNil:
       current = ?(await middleware(current, conflicts))
     else:
       return success current
-    
+
     if current.len == 0:
       break
-    
+
     dec remaining
-  
+
   return success current
 
 proc tryDeleteAtomic*(
