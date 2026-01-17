@@ -7,6 +7,9 @@ import std/options
 import std/random
 import std/times
 
+when defined(posix):
+  from std/posix import open, fsync, close, O_RDONLY
+
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
@@ -143,6 +146,14 @@ proc writeVersioned*(
 
   ?moveFile(tmp, path)
 
+  # Sync parent directory to ensure rename is durable
+  when defined(posix):
+    let dir = parentDir(path)
+    let fd = posix.open(dir.cstring, O_RDONLY)
+    if fd >= 0:
+      discard posix.fsync(fd)
+      discard posix.close(fd)
+
   return success()
 
 method has*(
@@ -248,6 +259,14 @@ method delete*(
         continue
 
       ?catch(removeFile(path))
+
+      # Sync parent directory to ensure delete is durable
+      when defined(posix):
+        let dir = parentDir(path)
+        let fd = posix.open(dir.cstring, O_RDONLY)
+        if fd >= 0:
+          discard posix.fsync(fd)
+          discard posix.close(fd)
 
   return success skipped
 

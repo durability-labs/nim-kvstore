@@ -22,7 +22,11 @@ type
   ContainsStmt* = SQLiteStmt[(string), void]
   QueryStmt* = SQLiteStmt[(string), void]
   GetSingleStmt* = SQLiteStmt[(string), void]
-  UpsertStmt* = SQLiteStmt[(string, seq[byte], int64, int64), void]
+  # Insert statement: (id, data, timestamp) - version is always 1
+  InsertStmt* = SQLiteStmt[(string, seq[byte], int64), void]
+  # Update statement: (data, timestamp, id, version)
+  UpdateStmt* = SQLiteStmt[(seq[byte], int64, string, int64), void]
+  UpsertStmt* {.deprecated.} = SQLiteStmt[(string, seq[byte], int64, int64), void]
   DeleteStmt* = SQLiteStmt[(string, int64), void]
   GetChangesStmt* = NoParamsStmt
   BeginStmt* = NoParamsStmt
@@ -35,7 +39,8 @@ type
     env*: SQLite
     containsStmt*: ContainsStmt
     getSingleStmt*: GetSingleStmt
-    upsertStmt*: UpsertStmt
+    insertStmt*: InsertStmt
+    updateStmt*: UpdateStmt
     deleteStmt*: DeleteStmt
     getChangesStmt*: GetChangesStmt
     beginStmt*: BeginStmt
@@ -129,7 +134,8 @@ const
   GetManyStmtDataCol* = 1
   GetManyStmtVersionCol* = 2
 
-  # NOTE: This statment is not prepared, it is contructed dynamicaly
+  # NOTE: This statement is not prepared, it is constructed dynamically
+  # with parameterized placeholders for safety
   GetManyStmtStr* =
     fmt"""
     SELECT {IdColName}, {DataColName}, {VersionColName} FROM {TableName}
@@ -139,7 +145,40 @@ const
   UpsertStmtDataCol* = 0
   UpsertStmtVersionCol* = 1
 
-  UpsertStmtStr* =
+  # Insert statement for token == 0 (insert-only mode)
+  # Uses INSERT OR IGNORE to fail silently if key exists
+  InsertStmtStr* =
+    fmt"""
+    INSERT INTO {TableName}
+    (
+      {IdColName},
+      {DataColName},
+      {VersionColName},
+      {TimestampColName}
+    )
+    VALUES (?, ?, 1, ?)
+    ON CONFLICT({IdColName}) DO NOTHING
+    RETURNING {DataColName}, {VersionColName}
+  """
+
+  # Update statement for token != 0 (update-only mode)
+  # Only updates if key exists AND version matches
+  UpdateStmtStr* =
+    fmt"""
+    UPDATE {TableName}
+    SET
+      {DataColName} = ?,
+      {VersionColName} = {VersionColName} + 1,
+      {TimestampColName} = ?
+    WHERE
+      {IdColName} = ? AND
+      {VersionColName} = ?
+    RETURNING {DataColName}, {VersionColName}
+  """
+
+  # Legacy upsert statement - kept for reference but no longer used
+  # BUG: This incorrectly allows token != 0 to insert when key doesn't exist
+  UpsertStmtStr* {.deprecated: "Use InsertStmtStr or UpdateStmtStr instead".} =
     fmt"""
     INSERT INTO {TableName}
     (
@@ -198,10 +237,37 @@ const
   QueryStmtVersionColNoData* = 1 # When value=false: id=0, version=1
   QueryStmtVersionColWithData* = 2 # When value=true: id=0, data=1, version=2
 
-template makeGetManyStmStr*(ids: openArray[string]): ?!string =
+# Build parameterized GET MANY query with ? placeholders
+# Returns sql_string
+proc makeGetManyParamQuery*(count: int): string {.raises: [].} =
+  if count == 0:
+    return ""
+  let placeholders = newSeqWith(count, "?").join(", ")
+  try:
+    GetManyStmtStr % placeholders
+  except ValueError:
+    # Should never happen with controlled placeholders
+    raiseAssert("Invalid GetManyStmtStr format")
+
+# Build parameterized DELETE MANY query with ? placeholders
+# Each record needs 2 params: (id, version), using VALUES clause for tuples
+# Returns sql string - caller binds id1, ver1, id2, ver2, ... in order
+proc makeDeleteManyParamQuery*(count: int): string {.raises: [].} =
+  if count == 0:
+    return ""
+  # Build: WHERE (id, version) IN ((?, ?), (?, ?), ...)
+  let tuples = newSeqWith(count, "(?, ?)").join(", ")
+  try:
+    DeleteManyStmtStr % tuples
+  except ValueError:
+    # Should never happen with controlled placeholders
+    raiseAssert("Invalid DeleteManyStmtStr format")
+
+# Legacy templates - deprecated, kept for compatibility
+template makeGetManyStmStr*(ids: openArray[string]): ?!string {.deprecated: "Use makeGetManyParamQuery with parameter binding".} =
   catch (GetManyStmtStr % ids.mapIt("\"" & it & "\"").join(", "))
 
-template makeDeleteManyStmStr*(ids: openArray[(string, uint64)]): ?!string =
+template makeDeleteManyStmStr*(ids: openArray[(string, uint64)]): ?!string {.deprecated: "Use makeDeleteManyParamQuery with parameter binding".} =
   catch (
     DeleteManyStmtStr % ids.mapIt("(\"" & it[0] & "\", " & $it[1] & ")").join(", ")
   )
@@ -298,12 +364,17 @@ proc checkChanges*(self: SQLiteDsDb): ?!int =
   return success changes
 
 proc close*(self: var SQLiteDsDb) =
+  # Idempotent: skip if already closed
+  if self.env.isNil:
+    return
+
   var env: AutoDisposed[SQLite]
 
   defer:
     disposeIfUnreleased(env)
 
   env.val = self.env
+  self.env = nil  # Mark as closed
 
   if not RawStmtPtr(self.containsStmt).isNil:
     self.containsStmt.dispose
@@ -320,8 +391,11 @@ proc close*(self: var SQLiteDsDb) =
   if not RawStmtPtr(self.getSingleStmt).isNil:
     self.getSingleStmt.dispose
 
-  if not RawStmtPtr(self.upsertStmt).isNil:
-    self.upsertStmt.dispose
+  if not RawStmtPtr(self.insertStmt).isNil:
+    self.insertStmt.dispose
+
+  if not RawStmtPtr(self.updateStmt).isNil:
+    self.updateStmt.dispose
 
   if not RawStmtPtr(self.deleteStmt).isNil:
     self.deleteStmt.dispose
@@ -367,7 +441,8 @@ proc open*(
   var
     containsStmt: ContainsStmt
     getSingleStmt: GetSingleStmt
-    upsertStmt: UpsertStmt
+    insertStmt: InsertStmt
+    updateStmt: UpdateStmt
     deleteStmt: DeleteStmt
     getChangesStmt: GetChangesStmt
     beginStmt: BeginStmt
@@ -377,7 +452,9 @@ proc open*(
   if not readOnly:
     checkExec(env.val, CreateStmtStr)
 
-    upsertStmt = ?UpsertStmt.prepare(env.val, UpsertStmtStr, SQLITE_PREPARE_PERSISTENT)
+    insertStmt = ?InsertStmt.prepare(env.val, InsertStmtStr, SQLITE_PREPARE_PERSISTENT)
+
+    updateStmt = ?UpdateStmt.prepare(env.val, UpdateStmtStr, SQLITE_PREPARE_PERSISTENT)
 
     deleteStmt = ?DeleteStmt.prepare(env.val, DeleteStmtStr, SQLITE_PREPARE_PERSISTENT)
 
@@ -404,7 +481,8 @@ proc open*(
     env: env.release,
     containsStmt: containsStmt,
     getSingleStmt: getSingleStmt,
-    upsertStmt: upsertStmt,
+    insertStmt: insertStmt,
+    updateStmt: updateStmt,
     deleteStmt: deleteStmt,
     getChangesStmt: getChangesStmt,
     beginStmt: beginStmt,

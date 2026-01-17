@@ -103,12 +103,11 @@ template checkExec*(env: SQLite, q: string) =
   checkExec(s)
 
 template dispose*(db: SQLite) =
-  # TODO: the assert bellow fails because we're
-  # not releasing all the statements at the time of
-  # releasing the connection. I suspect these are the
-  # query iterators that aren't being released on close
-  # doAssert SQLITE_OK == sqlite3_close(db)
-  discard sqlite3_close(db)
+  # Use sqlite3_close_v2 which allows for pending statements to be finalized
+  # automatically when they are no longer in use. This is safer for cases where
+  # query iterators might not be explicitly disposed before close.
+  let closeResult = sqlite3_close_v2(db)
+  doAssert closeResult == SQLITE_OK, "Failed to close database: " & $sqlite3_errstr(closeResult)
 
 template dispose*(sqliteStmt: SQLiteStmt) =
   doAssert SQLITE_OK == sqlite3_finalize(RawStmtPtr(sqliteStmt))
@@ -230,3 +229,71 @@ proc query*(env: SQLite, query: string, onData: DataProc): ?!bool =
   # NB: dispose of the prepared query statement and free associated memory
   s.dispose
   return res
+
+proc queryWithStrings*(env: SQLite, query: string, params: openArray[string], onData: DataProc): ?!bool =
+  ## Execute a query with dynamically bound string parameters
+  ## Used for parameterized IN clauses to prevent SQL injection
+  var s: RawStmtPtr
+  checkErr sqlite3_prepare_v3(env, query.cstring, query.len.cint, 0, addr s, nil)
+  
+  # Bind all string parameters
+  for i, param in params:
+    let v = sqlite3_bind_text(s, (i + 1).cint, param.cstring, -1.cint, SQLITE_TRANSIENT)
+    if v != SQLITE_OK:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+  
+  var res = success false
+  
+  while true:
+    let v = sqlite3_step(s)
+    case v
+    of SQLITE_ROW:
+      onData(s)
+      res = success true
+    of SQLITE_DONE:
+      break
+    else:
+      res = failure $sqlite3_errstr(v)
+      break
+  
+  discard sqlite3_finalize(s)
+  res
+
+proc queryWithIdVersionPairs*(env: SQLite, query: string, pairs: openArray[(string, int64)], onData: DataProc): ?!bool =
+  ## Execute a query with dynamically bound (id, version) pairs
+  ## Binds as: id1, ver1, id2, ver2, ... for IN ((?, ?), (?, ?), ...) clauses
+  var s: RawStmtPtr
+  checkErr sqlite3_prepare_v3(env, query.cstring, query.len.cint, 0, addr s, nil)
+  
+  # Bind all pairs: id1, ver1, id2, ver2, ...
+  var paramIdx = 1
+  for (id, version) in pairs:
+    var v = sqlite3_bind_text(s, paramIdx.cint, id.cstring, -1.cint, SQLITE_TRANSIENT)
+    if v != SQLITE_OK:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+    
+    v = sqlite3_bind_int64(s, paramIdx.cint, version)
+    if v != SQLITE_OK:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+  
+  var res = success false
+  
+  while true:
+    let v = sqlite3_step(s)
+    case v
+    of SQLITE_ROW:
+      onData(s)
+      res = success true
+    of SQLITE_DONE:
+      break
+    else:
+      res = failure $sqlite3_errstr(v)
+      break
+  
+  discard sqlite3_finalize(s)
+  res
