@@ -26,14 +26,6 @@ method get*(
 
   raiseAssert("Not implemented!")
 
-method get*(
-    self: KVStore, key: Key
-): Future[?!RawRecord] {.base, gcsafe, async: (raises: [CancelledError]).} =
-  ## Get a single record
-  ##
-
-  raiseAssert("Not implemented!")
-
 method put*(
     self: KVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =

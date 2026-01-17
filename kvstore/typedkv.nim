@@ -110,10 +110,10 @@ proc query*[T](
 
   proc next(): Future[?!(?Record[T])] {.async: (raises: [CancelledError]).} =
     let rawOpt = ?(await dsIter.next())
-    if rawOpt.isNone:
+    without raw =? rawOpt:
       return success Record[T].none
 
-    let decoded = ?(toRecord[T](rawOpt.get()))
+    let decoded = ?(toRecord[T](raw))
     success decoded.some
 
   proc isFinished(): bool =

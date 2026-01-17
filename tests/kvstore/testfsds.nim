@@ -9,9 +9,9 @@ import pkg/chronos
 import pkg/stew/byteutils
 
 import pkg/kvstore
-import pkg/kvstore/typedkv
 
 import ./kvcommontests
+import ./typedcommontests
 import ./querycommontests
 
 suite "Test Basic FSKVStore":
@@ -38,7 +38,7 @@ suite "Test Basic FSKVStore":
     require(not dirExists(basePathAbs))
 
   basicStoreTests(fsStore, key, bytes, otherBytes)
-  helperTests(fsStore, key)
+  typedHelperTests(fsStore, key)
   atomicBatchTests(fsStore, key, supportsAtomic = false)
 
 suite "Test Misc FSKVStore":
