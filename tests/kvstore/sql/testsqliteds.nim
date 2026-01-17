@@ -11,9 +11,9 @@ import pkg/questionable
 import pkg/taskpools
 
 import pkg/kvstore
-import pkg/kvstore/typedkv
 
 import ../kvcommontests
+import ../typedcommontests
 import ../querycommontests
 
 suite "Test Basic SQLiteKVStore":
@@ -35,7 +35,7 @@ suite "Test Basic SQLiteKVStore":
     tp.shutdown()
 
   basicStoreTests(ds, key, bytes, otherBytes)
-  helperTests(ds, key)
+  typedHelperTests(ds, key)
   atomicBatchTests(ds, key, supportsAtomic = true)
 
 suite "Test Read Only SQLiteKVStore":

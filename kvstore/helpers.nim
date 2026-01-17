@@ -15,6 +15,18 @@ export kvstore
 # Single Record Convenience Wrappers
 # =============================================================================
 
+proc get*(
+    self: KVStore, key: Key
+): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+  ## Get a single record
+  ##
+
+  let records = ?(await self.get(@[key]))
+  if records.len == 0:
+    return failure newException(KVStoreKeyNotFound, "Key not found: " & $key)
+
+  return success records[0]
+
 proc put*(
     self: KVStore, record: RawRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
