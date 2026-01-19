@@ -3,9 +3,11 @@
 when not compileOption("threads"):
   {.error: "SQLiteKVStore requires --threads:on".}
 
+import std/os
+import std/sets
 import std/options
 import std/atomics
-import std/os
+import std/sequtils
 
 import pkg/chronos
 import pkg/questionable
@@ -28,8 +30,10 @@ type
   SQLiteKVStore* = ref object of KVStore
     readOnly: bool
     db: SQLiteDsDb
-    lock: Lock                    # Serializes access to shared prepared statements
-    tp: Taskpool                  # Injected threadpool for async operations
+    lock: Lock                      # Serializes access to shared prepared statements
+    tp: Taskpool                    # Injected threadpool for async operations
+    tasks: HashSet[Future[?!void]]  # Track outstanding tasks for close()
+    closed: bool
 
   # Per-iterator state for query operations
   # Each iterator has its own lock (not the store-wide lock) since each
@@ -38,11 +42,11 @@ type
   QueryIterState* = ref object
     stmt*: RawStmtPtr
     lock*: Lock
-    finished*: Atomic[bool]    # Atomic for thread-safe access without lock
-    isDisposed*: Atomic[bool]  # Prevent double-dispose
-    inFlight*: Atomic[int]     # Track in-flight next() workers (non-blocking)
-    tp*: Taskpool              # For spawning next() workers
-    queryValue*: bool          # Whether to include value in results
+    finished*: Atomic[bool]
+    isDisposed*: bool
+    tp*: Taskpool                        # For spawning next() workers
+    iterTasks*: HashSet[Future[void].Raising([AsyncError, CancelledError])]  # Track outstanding iterator tasks
+    queryValue*: bool                    # Whether to include value in results
 
 proc path*(self: SQLiteKVStore): string =
   self.db.dbPath
@@ -108,12 +112,10 @@ proc runNextTask(ctx: ptr TaskCtx[?RawRecord],
                  stmt: ptr RawStmtPtr,
                  lock: ptr Lock,
                  finished: ptr Atomic[bool],
-                 inFlight: ptr Atomic[int],
                  queryValue: bool) {.gcsafe.} =
   ## Task worker for query iterator next() operation.
   ## Uses per-iterator lock, not store-wide lock.
   defer:
-    discard inFlight[].fetchSub(1)
     discard ctx[].signal.fireSync()
 
   # Type alias for explicit Result construction (needed inside withLock)
@@ -142,25 +144,6 @@ proc runNextTask(ctx: ptr TaskCtx[?RawRecord],
       finished[].store(true)
     ctx[].result = R.ok(recordOpt)
 
-proc runDisposeTask(ctx: ptr TaskCtx[void],
-                    inFlight: ptr Atomic[int],
-                    lock: ptr Lock,
-                    stmt: ptr RawStmtPtr) {.gcsafe.} =
-  ## Task worker for query iterator dispose() operation.
-  ## Waits for all next() workers to complete, then cleans up.
-  defer: discard ctx[].signal.fireSync()
-
-  # Spin-wait for all in-flight next() workers (blocking OK in threadpool)
-  while inFlight[].load() > 0:
-    sleep(1)  # 1ms sleep to avoid busy-waiting
-
-  # Now safe - no workers can be using the lock
-  withLock(lock[]):
-    discard disposeStmtSync(stmt[])
-  deinitLock(lock[])
-
-  ctx[].result = success()
-
 # =============================================================================
 # Async Methods (public API)
 # =============================================================================
@@ -168,6 +151,9 @@ proc runDisposeTask(ctx: ptr TaskCtx[void],
 method has*(
     self: SQLiteKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
   var ctx = TaskCtx[bool](
@@ -177,12 +163,21 @@ method has*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runHasTask(addr ctx, addr self.db, addr self.lock, key.id)
-  ?await awaitSignal(ctx.signal)
+  let fut = awaitSignal(ctx.signal)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  ?await fut
+
   return ctx.result
 
 method get*(
     self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
   if keys.len == 0:
     return success(newSeq[RawRecord]())
 
@@ -197,7 +192,13 @@ method get*(
     defer: discard ctx.signal.close()
 
     self.tp.spawn runGetTask(addr ctx, addr self.db, addr self.lock, keys[0])
-    ?await awaitSignal(ctx.signal)
+    let fut = awaitSignal(ctx.signal)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
+
+    ?await fut
+
     return success @[?ctx.result]
   else:
     let signal = ThreadSignalPtr.new().valueOr:
@@ -209,12 +210,21 @@ method get*(
     defer: discard ctx.signal.close()
 
     self.tp.spawn runGetManyTask(addr ctx, addr self.db, addr self.lock, keys)
-    ?await awaitSignal(ctx.signal)
+    let fut = awaitSignal(ctx.signal)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
+
+    ?await fut
+
     return ctx.result
 
 method put*(
     self: SQLiteKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
   var ctx = TaskCtx[seq[Key]](
@@ -224,12 +234,21 @@ method put*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runPutTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  ?await awaitSignal(ctx.signal)
+  let fut = awaitSignal(ctx.signal)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  ?await fut
+
   return ctx.result
 
 method delete*(
     self: SQLiteKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
   if records.len == 0:
     return success(newSeq[Key]())
 
@@ -242,14 +261,14 @@ method delete*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runDeleteTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  ?await awaitSignal(ctx.signal)
-  return ctx.result
+  let fut = awaitSignal(ctx.signal)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
 
-method close*(
-    self: SQLiteKVStore
-): Future[?!void] {.async: (raises: [CancelledError]).} =
-  deinitLock(self.lock)
-  return self.db.close()
+  ?await fut
+
+  return ctx.result
 
 # =============================================================================
 # Atomic Batch API Implementation
@@ -266,6 +285,9 @@ method putAtomic*(
   ## If ANY record has a CAS conflict, NO records are committed.
   ## Returns conflict keys on rollback, empty seq on success.
 
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
   if records.len == 0:
     return success(newSeq[Key]())
 
@@ -278,7 +300,13 @@ method putAtomic*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runPutAtomicTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  ?await awaitSignal(ctx.signal)
+  let fut = awaitSignal(ctx.signal)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  ?await fut
+
   return ctx.result
 
 method deleteAtomic*(
@@ -286,6 +314,9 @@ method deleteAtomic*(
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch delete with CAS.
   ## Same semantics as putAtomic().
+
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
   if records.len == 0:
     return success(newSeq[Key]())
@@ -299,12 +330,37 @@ method deleteAtomic*(
   defer: discard ctx.signal.close()
 
   self.tp.spawn runDeleteAtomicTask(addr ctx, addr self.db, addr self.lock, records, self.readOnly)
-  ?await awaitSignal(ctx.signal)
+  let fut = awaitSignal(ctx.signal)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  ?await fut
+
   return ctx.result
+
+method close*(
+    self: SQLiteKVStore
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return success()
+
+  self.closed = true
+
+  defer:
+    deinitLock(self.lock) # don't leak resources
+
+  # wait for all outstanding tasks to finish
+  await noCancel allFutures(self.tasks.toSeq())
+
+  return self.db.close()
 
 method query*(
     self: SQLiteKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
   # Prepare private statement (no store lock needed - SQLite FULLMUTEX handles it)
   let s = ?prepareQueryStmt(self.db.env, query)
 
@@ -315,14 +371,13 @@ method query*(
     queryValue: query.value
   )
   state.finished.store(false)
-  state.isDisposed.store(false)
-  state.inFlight.store(0)
+  state.isDisposed = false
   initLock(state.lock)
 
   let asyncLock = newAsyncLock()
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
-    # Track in-flight for dispose coordination
-    discard state.inFlight.fetchAdd(1)
+    if self.closed or state.isDisposed or state.finished.load():
+      return failure newException(KVStoreError, "SQLiteKVStore is closed or iterator disposed/finished")
 
     # AsyncLock serializes next() calls to ensure results are returned in order.
     # This is critical for sort order queries - without serialization, workers
@@ -336,11 +391,9 @@ method query*(
 
     # Early check with atomic load (fast path for finished iterator)
     if state.finished.load():
-      discard state.inFlight.fetchSub(1)  # Decrement - not spawning a worker
       return success(RawRecord.none)
 
     let signal = ThreadSignalPtr.new().valueOr:
-      discard state.inFlight.fetchSub(1)  # Decrement - not spawning a worker
       return failure(newException(KVStoreError, error))
     var ctx = TaskCtx[?RawRecord](
       lock: addr state.lock,
@@ -348,12 +401,16 @@ method query*(
     )
     defer: discard ctx.signal.close()
 
-    # Worker will decrement inFlight when done
     state.tp.spawn runNextTask(addr ctx, addr state.stmt, addr state.lock,
-                               addr state.finished, addr state.inFlight, state.queryValue)
+                               addr state.finished, state.queryValue)
 
     # Wait for result - on cancellation, mark finished first then wait for worker
     let taskFut = ctx.signal.wait()
+
+    state.iterTasks.incl(taskFut)
+    defer:
+      state.iterTasks.excl(taskFut)
+
     if err =? catch(await taskFut.join()).errorOption:
       # Mark finished to stop further iteration, then wait for worker to complete
       state.finished.store(true)
@@ -367,44 +424,33 @@ method query*(
   proc isFinished(): bool =
     state.finished.load()
 
-  proc dispose() =
-    # Sync dispose - used by destructor as fallback
-    # Marks as finished but can't safely wait for workers
-    if state.isDisposed.exchange(true):
-      return  # Already disposed
-    state.finished.store(true)
-
-  proc disposeAsync(): Future[?!void] {.async: (raises: [CancelledError]).} =
-    # Atomic check-and-set to prevent double-dispose
-    if state.isDisposed.exchange(true):
-      return success()
-
+  proc dispose(): Future[?!void] {.async: (raises: [CancelledError]).} =
     # Signal workers to stop accepting new work
     state.finished.store(true)
 
-    let signal = ThreadSignalPtr.new().valueOr:
-      return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[void](
-      lock: addr state.lock,
-      signal: signal
-    )
-    defer: discard ctx.signal.close()
+    await asyncLock.acquire()
+    defer:
+      if asyncLock.locked:
+        if err =? catch(asyncLock.release()).errorOption:
+          state.finished.store(true)
+          return failure(err)
 
-    state.tp.spawn runDisposeTask(addr ctx, addr state.inFlight,
-                                   addr state.lock, addr state.stmt)
+    # Atomic check-and-set to prevent double-dispose
+    if state.isDisposed:
+      return success()
+    state.isDisposed = true
 
-    # Cancellation-safe wait for cleanup worker
-    let taskFut = ctx.signal.wait()
-    if err =? catch(await taskFut.join()).errorOption:
-      # Must wait for cleanup worker to finish
-      ?catch(await noCancel taskFut)
-      if err of CancelledError:
-        raise (ref CancelledError)(err)
-      return failure(err)
+    defer:
+      # don't leak resources
+      discard disposeStmtSync(state.stmt)
+      deinitLock(state.lock)
 
-    return ctx.result
+    # wait for iter tasks to finish
+    await noCancel allFutures(state.iterTasks.toSeq())
 
-  return success QueryIter.new(next, isFinished, dispose, disposeAsync)
+    return success()
+
+  return success QueryIter.new(next, isFinished, dispose)
 
 proc new*(T: type SQLiteKVStore, path: string, tp: Taskpool, readOnly = false): ?!T =
   ## Create a new SQLiteKVStore.

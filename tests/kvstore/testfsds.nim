@@ -176,6 +176,9 @@ suite "Test Query":
     (await ds.put(RawRecord.init(rightKey, "right".toBytes))).tryGet()
 
     let iter = (await ds.query(Query.init(leftKey))).tryGet()
+    defer:
+      (await iter.dispose()).tryGet()
+
     let res = (await iter.fetchAll()).tryGet
 
     check:

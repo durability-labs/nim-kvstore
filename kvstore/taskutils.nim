@@ -9,6 +9,7 @@ when not compileOption("threads"):
   {.error: "taskutils requires --threads:on".}
 
 import std/locks
+import std/hashes
 
 import pkg/chronos
 import pkg/chronos/threadsync
@@ -43,3 +44,7 @@ proc awaitSignal*(signal: ThreadSignalPtr): Future[?!void] {.async: (raises: [Ca
       raise (ref CancelledError)(err)
     return failure(err)
   success()
+
+proc hash*[T](fut: Future[T]): Hash =
+  ## Hash a chronos Future by its pointer address.
+  hash(cast[pointer](fut))
