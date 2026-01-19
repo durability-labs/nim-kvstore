@@ -20,7 +20,7 @@ type
   Middleware*[T] =
     proc(failed: seq[T]): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
   ValueProducer*[T] = proc(): Future[?!T] {.gcsafe, async: (raises: [CancelledError]).}
-  
+
   # Atomic batch middleware receives ALL records + conflict keys
   # This allows it to refresh tokens for the entire batch, not just failed records
   AtomicMiddleware*[T] = proc(
@@ -38,6 +38,7 @@ type
 
   # Error types
   KVStoreError* = object of CatchableError
+  KVConflictError* = object of KVStoreError
   KVStoreMaxRetriesError* = object of KVStoreError
   KVStoreBackendError* = object of KVStoreError
   KVStoreKeyNotFound* = object of KVStoreBackendError
