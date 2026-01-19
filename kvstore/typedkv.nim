@@ -119,7 +119,7 @@ proc query*[T](
   proc isFinished(): bool =
     dsIter.finished
 
-  proc dispose() =
+  proc dispose(): Future[?!void] {.async: (raises: [CancelledError], raw: true), gcsafe.} =
     dsIter.dispose()
 
   success QueryIter[T].new(next = next, finished = isFinished, dispose = dispose)

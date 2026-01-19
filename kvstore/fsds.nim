@@ -10,6 +10,8 @@ import std/options
 import std/random
 import std/times
 import std/atomics
+import std/sets
+import std/sequtils
 
 when defined(posix):
   from std/posix import open, fsync, close, O_RDONLY
@@ -43,19 +45,23 @@ type
     ignoreProtected: bool
     depth: int
     locks: TableRef[Key, AsyncLock]
+    tasks: HashSet[Future[?!void]]
     tp: Taskpool
+    closed: bool
 
   # Per-iterator state for query operations.
   # The walker is stepped on the async thread (single-threaded, no races).
   # Only file I/O is offloaded to the threadpool.
   FsQueryIterState = ref object
     basePath: string
-    walker: iterator(): string {.raises: [Defect], gcsafe.}
+    walker: iterator (): string {.raises: [Defect], gcsafe.}
     root: string
     queryKey: Key
     queryValue: bool
-    finished: Atomic[bool]
-    isDisposed: Atomic[bool]
+    finished: bool
+    isDisposed: bool
+    iterTasks: HashSet[Future[void].Raising([AsyncError, CancelledError])]
+    lock: AsyncLock
     tp: Taskpool
 
 randomize() # TODO: We should probably use a stronger rng here?
@@ -73,7 +79,7 @@ proc validDepth*(self: FSKVStore, key: Key): bool =
 proc isRootSubdir*(self: FSKVStore, path: string): bool =
   path.startsWith(self.root)
 
-proc path*(self: FSKVStore, key: Key): ?!string =
+proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
   ## Return filename corresponding to the key
   ## or failure if the key doesn't correspond to a valid filename
   ##
@@ -109,18 +115,19 @@ proc path*(self: FSKVStore, key: Key): ?!string =
 # Sync I/O Operations (blocking, called from threadpool workers)
 # =============================================================================
 
-proc readVersioned*(
-    path: string, key: Key, data = true
-): ?!RawRecord {.gcsafe.} =
+proc readVersioned*(path: string, key: Key, data = true): ?!RawRecord {.gcsafe, raises: [].} =
   var file: File
 
   defer:
     file.close
 
-  if not file.open(path):
-    return failure newBackendError("unable to open file: " & path)
+  if not fileExists(path):
+    return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
 
-  let size = ?catch (file.getFileSize)
+  if not file.open(path):
+    return failure newException(KVStoreBackendError, "unable to open file: " & path)
+
+  let size = ?catch(file.getFileSize)
   if size < TokenBytes:
     return failure newCorruptionError("File too small for record: " & path)
 
@@ -134,7 +141,7 @@ proc readVersioned*(
   let value =
     if data:
       var value = newSeq[byte](payloadLen)
-      if payloadLen > 0 and ?catch (file.readBytes(value, 0, payloadLen)) != payloadLen:
+      if payloadLen > 0 and ?catch(file.readBytes(value, 0, payloadLen)) != payloadLen:
         return failure newBackendError("unable to read payload")
       value
     else:
@@ -142,9 +149,7 @@ proc readVersioned*(
 
   return success RawRecord.init(key, value, token)
 
-proc writeVersioned*(
-    path: string, token: uint64, value: seq[byte]
-): ?!void {.gcsafe.} =
+proc writeVersioned*(path: string, token: uint64, value: seq[byte]): ?!void {.gcsafe, raises: [].} =
   ?catch(createDir(parentDir(path)))
 
   let tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
@@ -181,7 +186,7 @@ proc writeVersioned*(
 
   return success()
 
-proc deleteFile(path: string): ?!void {.gcsafe.} =
+proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
   ?catch(removeFile(path))
 
   # Sync parent directory to ensure delete is durable
@@ -194,64 +199,77 @@ proc deleteFile(path: string): ?!void {.gcsafe.} =
 
   success()
 
+proc getSync*(path: string, key: Key): ?!RawRecord =
+  return readVersioned(path, key)
+
+proc putSync*(path: string, record: RawRecord): ?!void =
+  if not path.fileExists():
+    if record.token != 0:
+      return failure newException(
+        KVConflictError, "Token not 0 for new record " & $record.key
+      )
+    else:
+      ?writeVersioned(path, 1'u64, record.val)
+  else:
+    let current = ?readVersioned(path, record.key)
+    if current.token != record.token:
+      return failure newException(
+        KVConflictError,
+        "Token mismatch for record " & $record.key & ", expected " & $record.token &
+          ", got " & $current.token,
+      )
+    else:
+      ?writeVersioned(path, current.token + 1, record.val)
+
+  return success()
+
+proc deleteSync*(path: string, record: KeyRecord): ?!void =
+  if not path.fileExists():
+    return failure newException(KVConflictError, "Record does not exist: " & $record.key)
+
+  let current = ?readVersioned(path, record.key)
+  if current.token != record.token:
+    return failure newException(KVConflictError,
+      "Token mismatch for record " & $record.key & ", expected " & $record.token &
+        ", got " & $current.token
+    )
+
+  discard ?catch(deleteFile(path))
+  return success()
+
 # =============================================================================
 # Task Workers (top-level procs for threadpool)
 # =============================================================================
 
 proc runHasTask(ctx: ptr TaskCtx[bool], path: string) {.gcsafe.} =
-  defer: discard ctx[].signal.fireSync()
+  defer:
+    discard ctx[].signal.fireSync()
   ctx[].result = success(path.fileExists())
 
 proc runGetTask(ctx: ptr TaskCtx[RawRecord], path: string, key: Key) {.gcsafe.} =
-  defer: discard ctx[].signal.fireSync()
-  if not path.fileExists():
-    ctx[].result = Result[RawRecord, ref CatchableError].err(
-      newException(KVStoreKeyNotFound, "Key doesn't exist"))
-  else:
-    ctx[].result = readVersioned(path, key)
+  defer:
+    discard ctx[].signal.fireSync()
+  ctx[].result = getSync(path, key)
 
-proc runPutTask(ctx: ptr TaskCtx[bool], path: string, record: RawRecord) {.gcsafe.} =
+proc runPutTask(ctx: ptr TaskCtx[void], path: string, record: RawRecord) {.gcsafe.} =
   ## Returns true if successful, false if conflict
-  defer: discard ctx[].signal.fireSync()
-  
-  if not path.fileExists():
-    if record.token != 0:
-      ctx[].result = success(false)  # Conflict: insert expected but key exists check failed... wait no
-      return
-    ctx[].result = writeVersioned(path, 1'u64, record.val).map(proc(_: void): bool = true)
-  else:
-    let currentRes = readVersioned(path, record.key)
-    if currentRes.isErr:
-      ctx[].result = Result[bool, ref CatchableError].err(currentRes.error)
-      return
-    let current = currentRes.get
-    if current.token != record.token:
-      ctx[].result = success(false)  # Conflict: token mismatch
-    else:
-      ctx[].result = writeVersioned(path, current.token + 1, record.val).map(proc(_: void): bool = true)
+  defer:
+    discard ctx[].signal.fireSync()
+  ctx[].result = putSync(path, record)
 
-proc runDeleteTask(ctx: ptr TaskCtx[bool], path: string, record: KeyRecord) {.gcsafe.} =
+proc runDeleteTask(ctx: ptr TaskCtx[void], path: string, record: KeyRecord) {.gcsafe.} =
   ## Returns true if successful, false if conflict/skip
-  defer: discard ctx[].signal.fireSync()
-  
-  if not path.fileExists():
-    ctx[].result = success(false)
-    return
-    
-  let currentRes = readVersioned(path, record.key)
-  if currentRes.isErr:
-    ctx[].result = Result[bool, ref CatchableError].err(currentRes.error)
-    return
-  let current = currentRes.get
-  if current.token != record.token:
-    ctx[].result = success(false)  # Conflict
-  else:
-    ctx[].result = deleteFile(path).map(proc(_: void): bool = true)
+  defer:
+    discard ctx[].signal.fireSync()
+  ctx[].result = deleteSync(path, record)
 
-proc runReadRecordTask(ctx: ptr TaskCtx[RawRecord], path: string, key: Key, includeValue: bool) {.gcsafe.} =
+proc runReadRecordTask(
+    ctx: ptr TaskCtx[RawRecord], path: string, key: Key, includeValue: bool
+) {.gcsafe.} =
   ## Task worker for reading a single record from disk.
   ## Walker stepping happens on the async thread; this only does file I/O.
-  defer: discard ctx[].signal.fireSync()
+  defer:
+    discard ctx[].signal.fireSync()
   ctx[].result = readVersioned(path, key, includeValue)
 
 # =============================================================================
@@ -282,34 +300,33 @@ proc release*(self: FSKVStore, key: Key, lock: AsyncLock) {.raises: [].} =
 method has*(
     self: FSKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
   let p = ?self.path(key)
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
   var ctx = TaskCtx[bool](signal: signal)
-  defer: discard ctx.signal.close()
+  defer:
+    discard ctx.signal.close()
 
   self.tp.spawn runHasTask(addr ctx, p)
-  ?await awaitSignal(ctx.signal)
-  return ctx.result
+  let fut = awaitSignal(ctx.signal)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
 
-method get*(
-    self: FSKVStore, key: Key
-): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
-  let p = ?self.path(key)
+  ?await fut
 
-  let signal = ThreadSignalPtr.new().valueOr:
-    return failure(newException(KVStoreError, error))
-  var ctx = TaskCtx[RawRecord](signal: signal)
-  defer: discard ctx.signal.close()
-
-  self.tp.spawn runGetTask(addr ctx, p, key)
-  ?await awaitSignal(ctx.signal)
   return ctx.result
 
 method get*(
     self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
   var records: seq[RawRecord]
 
   for key in keys:
@@ -318,10 +335,16 @@ method get*(
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
     var ctx = TaskCtx[RawRecord](signal: signal)
-    defer: discard ctx.signal.close()
+    defer:
+      discard ctx.signal.close()
 
     self.tp.spawn runGetTask(addr ctx, p, key)
-    ?await awaitSignal(ctx.signal)
+    let fut = awaitSignal(ctx.signal)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
+
+    ?await fut
 
     if ctx.result.isOk:
       records.add(ctx.result.get)
@@ -332,6 +355,9 @@ method get*(
 method put*(
     self: FSKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
   var conflicts: seq[Key]
 
   for record in records:
@@ -343,21 +369,31 @@ method put*(
 
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[bool](signal: signal)
-    defer: discard ctx.signal.close()
+    var ctx = TaskCtx[void](signal: signal)
+    defer:
+      discard ctx.signal.close()
 
     self.tp.spawn runPutTask(addr ctx, p, record)
-    ?await awaitSignal(ctx.signal)
+    let fut = awaitSignal(ctx.signal)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
 
-    let ok = ?ctx.result
-    if not ok:
+    ?await fut
+
+    if ctx.result.isErr and ctx.result.error of KVConflictError:
       conflicts.add(record.key)
+    else:
+      ?ctx.result
 
   return success conflicts
 
 method delete*(
     self: FSKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
   var skipped: seq[Key]
 
   for record in records:
@@ -369,19 +405,33 @@ method delete*(
 
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[bool](signal: signal)
-    defer: discard ctx.signal.close()
+    var ctx = TaskCtx[void](signal: signal)
+    defer:
+      discard ctx.signal.close()
 
     self.tp.spawn runDeleteTask(addr ctx, p, record)
-    ?await awaitSignal(ctx.signal)
+    let fut = awaitSignal(ctx.signal)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
 
-    let ok = ?ctx.result
-    if not ok:
+    ?await fut
+
+    if ctx.result.isErr and ctx.result.error of KVConflictError:
       skipped.add(record.key)
+    else:
+      ?ctx.result
 
   return success skipped
 
 method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return success()
+
+  self.closed = true
+
+  # wait for all outstanding tasks to finish
+  await noCancel allFutures(self.tasks.toSeq())
   return success()
 
 # =============================================================================
@@ -400,6 +450,9 @@ proc dirWalker(path: string): (iterator (): string {.raises: [Defect], gcsafe.})
 method query*(
     self: FSKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
   let p = ?self.path(query.key)
 
   let basePath =
@@ -418,22 +471,32 @@ method query*(
     root: self.root,
     queryKey: query.key,
     queryValue: query.value,
-    tp: self.tp
+    tp: self.tp,
+    lock: newAsyncLock()
   )
-  state.finished.store(false)
-  state.isDisposed.store(false)
+  state.finished = false
+  state.isDisposed = false
 
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
-    if state.finished.load():
-      return success(RawRecord.none)
+    if self.closed or state.isDisposed or state.finished:
+      return failure newException(
+        KVStoreError, "FSKVStore is closed or iterator disposed/finished"
+      )
+
+    await state.lock.acquire()
+    defer:
+      if state.lock.locked:
+        if err =? catch(state.lock.release()).errorOption:
+          state.finished = true
+          return failure(err)
 
     # Step the walker on the async thread (single-threaded, no races).
     # This loop finds the next valid path before spawning a worker.
-    while true:
+    while not state.finished:
       let relPath = state.walker()
 
       if finished(state.walker):
-        state.finished.store(true)
+        state.finished = true
         return success(RawRecord.none)
 
       var keyPath = state.basePath
@@ -459,30 +522,53 @@ method query*(
       let signal = ThreadSignalPtr.new().valueOr:
         return failure(newException(KVStoreError, error))
       var ctx = TaskCtx[RawRecord](signal: signal)
-      defer: discard ctx.signal.close()
+      defer:
+        discard ctx.signal.close()
 
       state.tp.spawn runReadRecordTask(addr ctx, absPath, key, state.queryValue)
 
-      ?await awaitSignal(ctx.signal)
+      # Wait for result - on cancellation, mark finished first then wait for worker
+      let taskFut = ctx.signal.wait()
+
+      state.iterTasks.incl(taskFut)
+      defer:
+        state.iterTasks.excl(taskFut)
+
+      if err =? catch(await taskFut.join()).errorOption:
+        # Mark finished to stop further iteration, then wait for worker to complete
+        state.finished = true
+        ?catch(await noCancel taskFut)
+        if err of CancelledError:
+          raise (ref CancelledError)(err)
+        return failure(err)
 
       let record = ?ctx.result
       return success(record.some)
 
   proc isFinished(): bool =
-    state.finished.load()
+    state.finished
 
-  proc dispose() =
-    if state.isDisposed.exchange(true):
-      return
-    state.finished.store(true)
+  proc dispose(): Future[?!void] {.async: (raises: [CancelledError]), gcsafe.} =
+    state.finished = true
 
-  proc disposeAsync(): Future[?!void] {.async: (raises: [CancelledError]).} =
-    if state.isDisposed.exchange(true):
+    if state.isDisposed:
       return success()
-    state.finished.store(true)
+
+    await state.lock.acquire()
+    defer:
+      if state.lock.locked:
+        if err =? catch(state.lock.release()).errorOption:
+          state.finished = true
+          return failure(err)
+
+    state.isDisposed = true
+
+    # wait for all iter tasks to finish
+    await noCancel allFutures(state.iterTasks.toSeq())
+
     return success()
 
-  return success QueryIter.new(next, isFinished, dispose, disposeAsync)
+  return success QueryIter.new(next, isFinished, dispose)
 
 # =============================================================================
 # Constructor

@@ -338,7 +338,6 @@ proc changesCol*(s: RawStmtPtr, index: int): BoundVersionCol =
     sqlite3_column_int64(s, index.cint)
 
 proc getDBFilePath*(path: string): ?!string =
-  try:
     let
       (parent, name, ext) = path.normalizePathEnd.splitFile
       dbExt = if ext == "": DbExt else: ext
@@ -346,12 +345,10 @@ proc getDBFilePath*(path: string): ?!string =
         if parent.isAbsolute:
           parent
         else:
-          getCurrentDir() / parent
+          ?catch(getCurrentDir()) / parent
       dbPath = absPath / name & dbExt
 
     return success dbPath
-  except CatchableError as exc:
-    return failure(exc.msg)
 
 proc checkChanges*(self: SQLiteDsDb): ?!int =
   var changes = 0
@@ -366,7 +363,7 @@ proc checkChanges*(self: SQLiteDsDb): ?!int =
 proc close*(self: var SQLiteDsDb): ?!void =
   ## Close the database and all prepared statements.
   ## Returns failure if the database cannot be closed properly.
-  
+
   # Idempotent: skip if already closed
   if self.env.isNil:
     return success()
@@ -439,7 +436,7 @@ proc open*(
   var pragmaStmt = journalModePragmaStmt(env.val)
 
   checkExec(pragmaStmt)
-  
+
   # Set production pragmas for durability and performance
   ?setProductionPragmas(env.val)
 

@@ -119,7 +119,7 @@ suite "Test Query":
     let iter = (await ds.query(q)).tryGet()
 
     defer:
-      iter.dispose()
+      (await iter.dispose()).tryGet()
 
     for item in iter:
       let maybeRecord = (await item).tryGet()
@@ -135,7 +135,7 @@ suite "Test Query":
     let iter = (await ds.query(q)).tryGet()
 
     defer:
-      iter.dispose()
+      (await iter.dispose()).tryGet()
 
     for item in iter:
       let maybeRecord = (await item).tryGet()

@@ -108,21 +108,19 @@ proc closeDb*(db: SQLite): ?!void =
   ## automatically when they are no longer in use.
   if db.isNil:
     return success()
-  
+
   let closeResult = sqlite3_close_v2(db)
   if closeResult != SQLITE_OK:
     # In debug builds, also output to stderr for visibility
-    debugEcho "WARNING: sqlite3_close_v2 failed: ", $sqlite3_errstr(closeResult)
     return failure("Failed to close database: " & $sqlite3_errstr(closeResult))
-  
+
   success()
 
 template dispose*(db: SQLite) =
   # Legacy template for backward compatibility
   # Prefer using closeDb() for proper error handling
   let closeResult = sqlite3_close_v2(db)
-  if closeResult != SQLITE_OK:
-    debugEcho "WARNING: sqlite3_close_v2 failed: ", $sqlite3_errstr(closeResult)
+  doAssert(closeResult == SQLITE_OK, "sqlite3_close_v2 failed: " & $sqlite3_errstr(closeResult))
 
 template dispose*(sqliteStmt: SQLiteStmt) =
   doAssert SQLITE_OK == sqlite3_finalize(RawStmtPtr(sqliteStmt))
@@ -250,16 +248,16 @@ proc queryWithStrings*(env: SQLite, query: string, params: openArray[string], on
   ## Used for parameterized IN clauses to prevent SQL injection
   var s: RawStmtPtr
   checkErr sqlite3_prepare_v3(env, query.cstring, query.len.cint, 0, addr s, nil)
-  
+
   # Bind all string parameters
   for i, param in params:
     let v = sqlite3_bind_text(s, (i + 1).cint, param.cstring, -1.cint, SQLITE_TRANSIENT)
     if v != SQLITE_OK:
       discard sqlite3_finalize(s)
       return failure $sqlite3_errstr(v)
-  
+
   var res = success false
-  
+
   while true:
     let v = sqlite3_step(s)
     case v
@@ -271,7 +269,7 @@ proc queryWithStrings*(env: SQLite, query: string, params: openArray[string], on
     else:
       res = failure $sqlite3_errstr(v)
       break
-  
+
   discard sqlite3_finalize(s)
   res
 
@@ -280,7 +278,7 @@ proc queryWithIdVersionPairs*(env: SQLite, query: string, pairs: openArray[(stri
   ## Binds as: id1, ver1, id2, ver2, ... for IN ((?, ?), (?, ?), ...) clauses
   var s: RawStmtPtr
   checkErr sqlite3_prepare_v3(env, query.cstring, query.len.cint, 0, addr s, nil)
-  
+
   # Bind all pairs: id1, ver1, id2, ver2, ...
   var paramIdx = 1
   for (id, version) in pairs:
@@ -289,15 +287,15 @@ proc queryWithIdVersionPairs*(env: SQLite, query: string, pairs: openArray[(stri
       discard sqlite3_finalize(s)
       return failure $sqlite3_errstr(v)
     inc paramIdx
-    
+
     v = sqlite3_bind_int64(s, paramIdx.cint, version)
     if v != SQLITE_OK:
       discard sqlite3_finalize(s)
       return failure $sqlite3_errstr(v)
     inc paramIdx
-  
+
   var res = success false
-  
+
   while true:
     let v = sqlite3_step(s)
     case v
@@ -309,7 +307,7 @@ proc queryWithIdVersionPairs*(env: SQLite, query: string, pairs: openArray[(stri
     else:
       res = failure $sqlite3_errstr(v)
       break
-  
+
   discard sqlite3_finalize(s)
   res
 
@@ -317,7 +315,7 @@ proc execPragma(env: SQLite, pragma: string): ?!void =
   ## Execute a PRAGMA statement that returns a result row.
   ## Steps until done, then finalizes.
   var s = prepare(env, pragma)
-  
+
   # Step through - PRAGMAs typically return SQLITE_ROW then SQLITE_DONE
   while true:
     let v = sqlite3_step(s)
@@ -329,29 +327,29 @@ proc execPragma(env: SQLite, pragma: string): ?!void =
     else:
       discard sqlite3_finalize(s)
       return failure $sqlite3_errstr(v)
-  
+
   let finalizeResult = sqlite3_finalize(s)
   if finalizeResult != SQLITE_OK:
     return failure $sqlite3_errstr(finalizeResult)
-  
+
   success()
 
 proc setProductionPragmas*(env: SQLite): ?!void =
   ## Set production-ready SQLite pragmas for durability and performance.
-  ## 
+  ##
   ## - busy_timeout: Wait up to 5 seconds for locks instead of failing immediately
   ## - synchronous=NORMAL: Safe with WAL mode, ~2x faster than FULL
   ##
   ## These pragmas improve behavior under concurrent access and write performance.
-  
+
   # Set busy timeout to 5 seconds (5000ms)
   # This prevents immediate "database is locked" errors under contention
   ?env.execPragma("PRAGMA busy_timeout = 5000;")
-  
+
   # Set synchronous to NORMAL (safe with WAL mode)
   # WAL + NORMAL provides durability guarantees while improving write performance
   # - Transactions are durable after commit (written to WAL)
   # - Only risk: corruption if OS crashes during WAL checkpoint (very rare)
   ?env.execPragma("PRAGMA synchronous = NORMAL;")
-  
+
   success()
