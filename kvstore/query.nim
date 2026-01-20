@@ -22,6 +22,7 @@ type
     sort*: SortOrder # Sort order - not available in all backends
 
   IterFinished* = proc(): bool {.closure, gcsafe, raises: [].}
+  IterDisposed* = proc(): bool {.closure, gcsafe, raises: [].}
   IterDispose* =
     proc(): Future[?!void] {.closure, async: (raises: [CancelledError]), gcsafe.}
   GetNext*[T] = proc(): Future[?!(?Record[T])] {.
@@ -31,8 +32,8 @@ type
   QueryIterObj[T] = object
     nextImpl: GetNext[T]
     finishedImpl: IterFinished
+    disposedImpl: IterDisposed
     disposeImpl: IterDispose
-    disposed: bool
 
   QueryIter*[T] = ref QueryIterObj[T]
 
@@ -41,6 +42,9 @@ type
 
 proc finished*[T](iter: QueryIter[T]): bool =
   iter.finishedImpl()
+
+proc disposed*[T](iter: QueryIter[T]): bool =
+  iter.disposedImpl()
 
 proc next*[T](
     iter: QueryIter[T]
@@ -51,11 +55,8 @@ proc dispose*[T](
     iter: QueryIter[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Async dispose - properly waits for in-flight workers to complete.
-  ## Should be preferred over sync dispose() when in async context.
   if not iter.disposed and iter.disposeImpl != nil:
-    let res = await iter.disposeImpl()
-    iter.disposed = true
-    return res
+    return await iter.disposeImpl()
   return success()
 
 iterator items*[T](q: QueryIter[T]): Future[?!(?Record[T])] =
@@ -65,13 +66,19 @@ iterator items*[T](q: QueryIter[T]): Future[?!(?Record[T])] =
 proc defaultDispose*[T](): Future[?!void] {.async: (raises: [CancelledError]).} =
   return success()
 
+proc defaultDisposed*(): bool =
+  false
+
 proc new*[T](
     _: type QueryIter[T],
     next: GetNext[T],
     finished: IterFinished,
+    disposed: IterDisposed = defaultDisposed,
     dispose: IterDispose = defaultDispose[T],
 ): QueryIter[T] =
-  QueryIter[T](nextImpl: next, finishedImpl: finished, disposeImpl: dispose)
+  QueryIter[T](
+    nextImpl: next, finishedImpl: finished, disposedImpl: disposed, disposeImpl: dispose
+  )
 
 proc init*(
     _: type Query,

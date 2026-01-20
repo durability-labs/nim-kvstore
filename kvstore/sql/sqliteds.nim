@@ -493,6 +493,9 @@ method query*(
   proc isFinished(): bool =
     state.finished.load()
 
+  proc isDisposed(): bool =
+    state.isDisposed
+
   let handle = newFuture[?!void]()
   proc dispose(): Future[?!void] {.async: (raises: [CancelledError]).} =
     # Signal workers to stop accepting new work
@@ -530,7 +533,7 @@ method query*(
   # Register dispose proc with store for tracking
   self.iteratorDisposers.incl(dispose)
 
-  return success QueryIter.new(next, isFinished, dispose)
+  return success QueryIter.new(next, isFinished, isDisposed, dispose)
 
 proc new*(T: type SQLiteKVStore, path: string, tp: Taskpool, readOnly = false): ?!T =
   ## Create a new SQLiteKVStore.
