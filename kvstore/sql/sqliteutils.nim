@@ -120,7 +120,9 @@ template dispose*(db: SQLite) {.deprecated: "Use closeDb()".} =
   # Legacy template for backward compatibility
   # Prefer using closeDb() for proper error handling
   let closeResult = sqlite3_close_v2(db)
-  doAssert(closeResult == SQLITE_OK, "sqlite3_close_v2 failed: " & $sqlite3_errstr(closeResult))
+  doAssert(
+    closeResult == SQLITE_OK, "sqlite3_close_v2 failed: " & $sqlite3_errstr(closeResult)
+  )
 
 template dispose*(sqliteStmt: SQLiteStmt) =
   doAssert SQLITE_OK == sqlite3_finalize(RawStmtPtr(sqliteStmt))
@@ -243,7 +245,9 @@ proc query*(env: SQLite, query: string, onData: DataProc): ?!bool =
   s.dispose
   return res
 
-proc queryWithStrings*(env: SQLite, query: string, params: openArray[string], onData: DataProc): ?!bool =
+proc queryWithStrings*(
+    env: SQLite, query: string, params: openArray[string], onData: DataProc
+): ?!bool =
   ## Execute a query with dynamically bound string parameters
   ## Used for parameterized IN clauses to prevent SQL injection
   var s: RawStmtPtr
@@ -273,7 +277,9 @@ proc queryWithStrings*(env: SQLite, query: string, params: openArray[string], on
   discard sqlite3_finalize(s)
   res
 
-proc queryWithIdVersionPairs*(env: SQLite, query: string, pairs: openArray[(string, int64)], onData: DataProc): ?!bool =
+proc queryWithIdVersionPairs*(
+    env: SQLite, query: string, pairs: openArray[(string, int64)], onData: DataProc
+): ?!bool =
   ## Execute a query with dynamically bound (id, version) pairs
   ## Binds as: id1, ver1, id2, ver2, ... for IN ((?, ?), (?, ?), ...) clauses
   var s: RawStmtPtr
@@ -321,7 +327,7 @@ proc execPragma(env: SQLite, pragma: string): ?!void =
     let v = sqlite3_step(s)
     case v
     of SQLITE_ROW:
-      continue  # Consume result row
+      continue # Consume result row
     of SQLITE_DONE:
       break
     else:

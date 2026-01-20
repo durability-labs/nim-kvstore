@@ -197,7 +197,14 @@ suite "Test SQLite Datastore DB operations":
     let queryStr = makeDeleteManyParamQuery(2)
 
     check:
-      dsDb.env.queryWithIdVersionPairs(queryStr, [(key.id, 2'i64), (key1.id, 1'i64)], proc(s: RawStmtPtr) = discard).isOk()
+      dsDb.env
+      .queryWithIdVersionPairs(
+        queryStr,
+        [(key.id, 2'i64), (key1.id, 1'i64)],
+        proc(s: RawStmtPtr) =
+          discard,
+      )
+      .isOk()
       dsDb.checkChanges().tryGet() == 2
 
   test "Should not contain key":

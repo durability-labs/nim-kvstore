@@ -232,7 +232,9 @@ suite "Test Iterator Tracking":
     tp.shutdown()
     removeDir(basePathAbs)
 
-  proc fsFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+  proc fsFactory(): Future[KVStore] {.
+      async: (raises: [CancelledError, CatchableError])
+  .} =
     # Each call creates a fresh store in a unique subdirectory
     let subDir = basePathAbs / $factoryCounter
     factoryCounter.inc
@@ -263,7 +265,9 @@ suite "Test Threading":
     tp.shutdown()
     removeDir(basePathAbs)
 
-  proc fsThreadingFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+  proc fsThreadingFactory(): Future[KVStore] {.
+      async: (raises: [CancelledError, CatchableError])
+  .} =
     let subDir = basePathAbs / $factoryCounter
     factoryCounter.inc
     removeDir(subDir)

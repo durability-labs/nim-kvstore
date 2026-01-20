@@ -23,10 +23,9 @@ type
 
   # Atomic batch middleware receives ALL records + conflict keys
   # This allows it to refresh tokens for the entire batch, not just failed records
-  AtomicMiddleware*[T] = proc(
-    allRecords: seq[T],
-    conflicts: seq[Key]
-  ): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
+  AtomicMiddleware*[T] = proc(allRecords: seq[T], conflicts: seq[Key]): Future[?!seq[T]] {.
+    gcsafe, async: (raises: [CancelledError])
+  .}
 
   RawRecord* = Record[seq[byte]]
   KeyRecord* = Record[void]
