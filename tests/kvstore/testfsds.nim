@@ -15,6 +15,7 @@ import ./kvcommontests
 import ./typedcommontests
 import ./querycommontests
 import ./closecommontests
+import ./threadingcommontests
 
 suite "Test Basic FSKVStore":
   let
@@ -242,3 +243,31 @@ suite "Test Iterator Tracking":
   iteratorTrackingTests(fsFactory, key)
   closeAndDisposeTests(fsFactory, key)
   concurrentCloseTests(fsFactory, key)
+
+suite "Test Threading":
+  let
+    path = currentSourcePath()
+    basePath = "tests_data_threading"
+    basePathAbs = path.parentDir / basePath
+    key = Key.init("/threading/test").tryGet()
+
+  var
+    tp: Taskpool
+    factoryCounter: int
+
+  setupAll:
+    tp = Taskpool.new(numThreads = 4)
+    factoryCounter = 0
+
+  teardownAll:
+    tp.shutdown()
+    removeDir(basePathAbs)
+
+  proc fsThreadingFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+    let subDir = basePathAbs / $factoryCounter
+    factoryCounter.inc
+    removeDir(subDir)
+    createDir(subDir)
+    FSKVStore.new(root = subDir, tp = tp, depth = 16).tryGet()
+
+  threadingTests(fsThreadingFactory, key)
