@@ -86,19 +86,26 @@ proc doSomething(): ?!void =
 
 ### Unwrapping Results
 
-**`.tryGet()`** - Unwrap or raise exception (used in examples for brevity):
-
-```nim
-let value = getValue().tryGet()  # Raises if failure
-```
-
-**`?` operator** - Early return on error (preferred in library code):
+**`?` operator** - Early return on error (idiomatic, use this):
 
 ```nim
 proc process(): ?!Result =
   let a = ?getValue()      # Returns failure if getValue fails
   let b = ?transform(a)    # Returns failure if transform fails
   success(b)
+
+proc processAsync(): Future[?!Data] {.async.} =
+  let data = ?(await fetchData())  # Works with await too
+  success(transform(data))
+```
+
+**`.tryGet()`** - Unwrap or raise exception (acceptable in tests/scripts):
+
+```nim
+# In tests - exceptions are fine
+let value = getValue().tryGet()
+
+# Quick Start examples use .tryGet() for brevity, but prefer ? in production
 ```
 
 **`without` pattern** - Handle errors with custom logic:
@@ -120,34 +127,23 @@ else:
   echo "Error: ", result.error.msg
 ```
 
-### Async + Results
-
-Async operations return `Future[?!T]`:
-
-```nim
-proc fetchData(): Future[?!Data] {.async.} =
-  let response = ?await httpGet(url)  # ? works with await
-  success(parse(response))
-
-# Usage
-let data = (await fetchData()).tryGet()
-```
-
 ### Idiomatic Patterns
 
 ```nim
-# Chain operations with ?
+# Chain operations with ? - all errors propagate automatically
 proc updateUser(id: string, name: string): Future[?!void] {.async.} =
-  let record = ?await ds.get(Key.init("/users/" & id).tryGet())
-  let updated = RawRecord.init(record.key, name.toBytes(), record.token)
-  discard ?await ds.put(updated)
+  let
+    key = ?Key.init("/users/" & id)
+    record = ?(await ds.get(key))
+    updated = RawRecord.init(record.key, name.toBytes(), record.token)
+  discard ?(await ds.put(updated))
   success()
 
 # Collect results, propagate first error
 proc getAll(keys: seq[Key]): Future[?!seq[RawRecord]] {.async.} =
   var results: seq[RawRecord]
   for key in keys:
-    results.add(?await ds.get(key))
+    results.add(?(await ds.get(key)))
   success(results)
 ```
 
