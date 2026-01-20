@@ -379,7 +379,10 @@ method get*(
 
     if ctx.result.isOk:
       records.add(ctx.result.get)
-    # Skip keys that don't exist (KVStoreKeyNotFound)
+    elif ctx.result.error of KVStoreKeyNotFound:
+      discard # Skip keys that don't exist
+    else:
+      return failure(ctx.result.error) # Propagate other errors
 
   return success records
 
@@ -666,12 +669,7 @@ method query*(
 # =============================================================================
 
 proc new*(
-    T: type FSKVStore,
-    root: string,
-    tp: Taskpool,
-    depth = 2,
-    caseSensitive = true,
-    ignoreProtected = false,
+    T: type FSKVStore, root: string, tp: Taskpool, depth = 2, ignoreProtected = false
 ): ?!T =
   let root =
     ?(

@@ -303,9 +303,8 @@ proc putAtomicSync*(
 
   # Second pass: apply ALL writes (no conflicts)
   for record in records:
-    var changed = false
     proc onRow(s: RawStmtPtr) =
-      changed = true
+      discard # Consume RETURNING clause
 
     if record.token == 0:
       discard ?db.insertStmt.query((record.key.id, record.val, stamp), onRow)
