@@ -8,6 +8,7 @@ import std/sets
 import std/options
 import std/atomics
 import std/sequtils
+import std/strutils
 
 import pkg/chronos
 import pkg/questionable
@@ -33,6 +34,7 @@ type
     lock: Lock                      # Serializes access to shared prepared statements
     tp: Taskpool                    # Injected threadpool for async operations
     tasks: HashSet[Future[?!void]]  # Track outstanding tasks for close()
+    iteratorDisposers: HashSet[IterDispose]  # Track active iterators for close()
     closed: bool
 
   # Per-iterator state for query operations
@@ -350,10 +352,46 @@ method close*(
   defer:
     deinitLock(self.lock) # don't leak resources
 
-  # wait for all outstanding tasks to finish
-  await noCancel allFutures(self.tasks.toSeq())
+  let
+    disposers = (self.iteratorDisposers).toSeq().mapIt(it())
+    tasks = self.tasks.toSeq()
 
-  return self.db.close()
+  await noCancel allFutures(@[
+    # Dispose all active iterators first (copy set since dispose modifies it)
+    noCancel allFutures(disposers),
+    # Dispose all active tasks
+    noCancel allFutures(tasks)])
+
+  let
+    dispErrors = disposers
+      .filterIt(catch(it.read).flatten().isErr)
+      .mapIt(catch(it.read).flatten().error.msg)
+
+    taskErrors = tasks
+      .filterIt(catch(it.read).flatten().isErr)
+      .mapIt(catch(it.read).flatten().error.msg)
+
+  var
+    errMsg: string
+    failed = false
+
+  if dispErrors.len > 0 or taskErrors.len > 0:
+    failed = true
+    if dispErrors.len > 0:
+      errMsg &= "\nDisposer errors:\n  - " & dispErrors.join("\n  - ")
+    if taskErrors.len > 0:
+      errMsg &= "\nTask errors:\n  - " & taskErrors.join("\n  - ")
+
+  if err =? self.db.close().errorOption:
+    failed = true
+    errMsg &= "\nDatabase close error: " & err.msg
+
+
+  if failed:
+    errMsg = "Error closing SQLiteKVStore:\n" & errMsg
+    return failure(newException(KVStoreError, errMsg))
+
+  return success()
 
 method query*(
     self: SQLiteKVStore, query: Query
@@ -389,7 +427,10 @@ method query*(
           state.finished.store(true)
           return failure(err)
 
-    # Early check with atomic load (fast path for finished iterator)
+    # Re-check after await - close/dispose may have run
+    if self.closed or state.isDisposed:
+      return failure newException(KVStoreError, "SQLiteKVStore is closed or iterator disposed")
+
     if state.finished.load():
       return success(RawRecord.none)
 
@@ -424,6 +465,7 @@ method query*(
   proc isFinished(): bool =
     state.finished.load()
 
+  let handle = newFuture[?!void]()
   proc dispose(): Future[?!void] {.async: (raises: [CancelledError]).} =
     # Signal workers to stop accepting new work
     state.finished.store(true)
@@ -435,10 +477,15 @@ method query*(
           state.finished.store(true)
           return failure(err)
 
-    # Atomic check-and-set to prevent double-dispose
+    # Lock serializes dispose calls - if already disposed, first dispose completed
     if state.isDisposed:
-      return success()
+      return ?catch(await handle)
+
     state.isDisposed = true
+
+    defer:
+      # Unregister from store
+      self.iteratorDisposers.excl(dispose)
 
     defer:
       # don't leak resources
@@ -447,8 +494,13 @@ method query*(
 
     # wait for iter tasks to finish
     await noCancel allFutures(state.iterTasks.toSeq())
+    if not handle.finished:
+      handle.complete(success())
 
-    return success()
+    return ?catch(await handle)
+
+  # Register dispose proc with store for tracking
+  self.iteratorDisposers.incl(dispose)
 
   return success QueryIter.new(next, isFinished, dispose)
 
