@@ -9,8 +9,10 @@ Inspired by the Python library [datastore](https://github.com/datastore/datastor
 - **Unified API** - Same interface across different storage backends
 - **Optimistic Concurrency Control** - Token-based CAS (Compare-And-Swap) semantics prevent lost updates
 - **Typed Records** - Automatic serialization/deserialization with custom encoder/decoder procs
-- **Async/Await** - Built on Chronos for async operations
+- **Async/Await** - Built on Chronos for non-blocking async operations
+- **True Async I/O** - Blocking operations offloaded to threadpool, never blocks the event loop
 - **Multiple Backends** - SQLite (in-memory or file) and filesystem
+- **Atomic Batch Operations** - All-or-nothing batch puts/deletes (SQLite backend)
 
 ## Installation
 
@@ -24,15 +26,19 @@ nimble install kvstore
 import pkg/chronos
 import pkg/kvstore
 import pkg/stew/byteutils
+import pkg/taskpools
 
 proc main() {.async.} =
+  # Create a threadpool for async I/O
+  let tp = Taskpool.new(num_threads = 4)
+
   # Create an in-memory SQLite kvstore
-  let ds = SQLiteKVStore.new(SqliteMemory).tryGet()
+  let ds = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
 
   # Create a key
   let key = Key.init("/users/alice").tryGet()
 
-  # Store data
+  # Store data (token=0 means insert-only)
   (await ds.put(key, "Hello, World!".toBytes())).tryGet()
 
   # Retrieve data
@@ -47,8 +53,13 @@ proc main() {.async.} =
   # Close the store
   (await ds.close()).tryGet()
 
+  # Shutdown threadpool
+  tp.shutdown()
+
 waitFor main()
 ```
+
+**Note:** Compile with `--threads:on` (required for threadpool support).
 
 ## Core Concepts
 
@@ -246,14 +257,36 @@ let skipped = (await ds.put(records)).tryGet()
 | `query(query)` | Query records by key prefix |
 | `close()` | Close the store |
 
+### Atomic Batch Operations
+
+For backends that support it (SQLite), atomic operations provide all-or-nothing semantics:
+
+| Method | Description |
+| ------ | ----------- |
+| `supportsAtomicBatch()` | Check if backend supports atomic batches |
+| `putAtomic(records)` | Insert/update all records atomically (rolls back on any conflict) |
+| `deleteAtomic(records)` | Delete all records atomically (rolls back on any conflict) |
+
+```nim
+# Check if atomic operations are supported
+if ds.supportsAtomicBatch():
+  # All succeed or all fail
+  let conflicts = (await ds.putAtomic(records)).tryGet()
+  if conflicts.len > 0:
+    echo "Atomic batch failed due to conflicts: ", conflicts
+    # No records were written
+```
+
 ### Helper Operations
 
 | Method | Description |
 | ------ | ----------- |
 | `tryPut(records, maxRetries, middleware)` | Bulk put with retry on conflicts |
 | `tryDelete(records, maxRetries, middleware)` | Bulk delete with retry on conflicts |
+| `tryPutAtomic(records, maxRetries, middleware)` | Atomic put with retry on conflicts |
+| `tryDeleteAtomic(records, maxRetries, middleware)` | Atomic delete with retry on conflicts |
 | `getOrPut(key, producer, maxRetries)` | Get existing or lazily create |
-| `contains(key)` | Alias for `has` returning bool |
+| `fetchAll(iter)` | Collect all iterator results into a seq |
 
 ### Middleware for Conflict Resolution
 
@@ -314,20 +347,31 @@ echo record.val.age   # 30
 
 ## Storage Backends
 
+Both backends require a `Taskpool` for async I/O operations.
+
 ### SQLiteKVStore
 
 SQLite-backed storage supporting both in-memory and file-based databases.
 
 ```nim
+import pkg/taskpools
+
+let tp = Taskpool.new(num_threads = 4)
+
 # In-memory database
-let memDs = SQLiteKVStore.new(SqliteMemory).tryGet()
+let memDs = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
 
 # File-based database
-let fileDs = SQLiteKVStore.new("/path/to/db.sqlite").tryGet()
+let fileDs = SQLiteKVStore.new("/path/to/db.sqlite", tp).tryGet()
 
 # Read-only mode
-let readOnlyDs = SQLiteKVStore.new("/path/to/db.sqlite", readOnly = true).tryGet()
+let readOnlyDs = SQLiteKVStore.new("/path/to/db.sqlite", tp, readOnly = true).tryGet()
 ```
+
+**Features:**
+- Supports atomic batch operations (`putAtomic`, `deleteAtomic`)
+- Uses WAL mode and production-ready pragmas
+- Automatic statement finalization and connection cleanup
 
 **Note:** SQLite uses `int64` for tokens, limiting the range to `0..high(int64)`.
 
@@ -336,23 +380,23 @@ let readOnlyDs = SQLiteKVStore.new("/path/to/db.sqlite", readOnly = true).tryGet
 Filesystem-backed storage where each record is a file.
 
 ```nim
+import pkg/taskpools
+
+let tp = Taskpool.new(num_threads = 4)
+
 let fsDs = FSKVStore.new(
   root = "/path/to/data",
+  tp = tp,
   depth = 5  # Maximum key depth
 ).tryGet()
 ```
 
-**Note:** FSKVStore uses `uint64` for tokens, supporting the full range.
+**Features:**
+- Atomic file writes (write to temp, then rename)
+- Parent directory fsync for crash safety (POSIX)
+- Per-key locking for write ordering
 
-## Error Types
-
-```nim
-KVStoreError              # Base error type
-├── KVStoreMaxRetriesError  # tryPut/tryDelete exhausted retries
-└── KVStoreBackendError     # Backend-specific errors
-    ├── KVStoreKeyNotFound  # Key doesn't exist
-    └── KVStoreCorruption   # Data corruption detected
-```
+**Note:** FSKVStore uses `uint64` for tokens, supporting the full range. Does not support atomic batch operations.
 
 ## Query API
 
@@ -364,28 +408,82 @@ let query = Query.init(
   value = true,              # Include values in results
   sort = SortOrder.Ascending,
   offset = 0,
-  limit = 100
+  limit = 100                # -1 for unlimited (default)
 )
 
 let iter = (await ds.query(query)).tryGet()
 
-defer:
-  iter.dispose()
-
+# Option 1: Manual iteration
 while not iter.finished:
   let recordOpt = (await iter.next()).tryGet()
   if record =? recordOpt:
     echo record.key, ": ", record.val
 
+# Always dispose the iterator (async)
+discard await iter.dispose()
+
+# Option 2: Use fetchAll helper
+let iter2 = (await ds.query(query)).tryGet()
+let records = (await iter2.fetchAll()).tryGet()
+discard await iter2.dispose()
+```
+
+**Important:** Iterator `dispose()` is async and should always be called to release resources.
+
+## Error Types
+
+```
+KVStoreError                  # Base error type
+├── KVConflictError           # CAS conflict on single-record operations
+├── KVStoreMaxRetriesError    # tryPut/tryDelete exhausted retries
+├── QueryEndedError           # Iterator accessed after completion
+└── KVStoreBackendError       # Backend-specific errors
+    ├── KVStoreKeyNotFound    # Key doesn't exist
+    └── KVStoreCorruption     # Data corruption detected
+```
+
+## Threading
+
+nim-kvstore uses a threadpool to offload blocking I/O operations, ensuring the Chronos event loop is never blocked.
+
+**Requirements:**
+- Compile with `--threads:on`
+- Provide a `Taskpool` when creating stores
+- Uses `--gc:orc` (default in Nim 2.0+)
+
+```nim
+import pkg/taskpools
+
+# Create a shared threadpool
+let tp = Taskpool.new(num_threads = 4)
+
+# Pass to store constructors
+let sqliteDs = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
+let fsDs = FSKVStore.new(root = "/data", tp = tp).tryGet()
+
+# Shutdown when done
+tp.shutdown()
+```
+
+## Development
+
+### Formatting
+
+Code is formatted with [nph](https://github.com/arnetheduck/nph):
+
+```bash
+nimble format
+```
+
+### Testing
+
+```bash
+nimble test
 ```
 
 ## Stability
 
 nim-kvstore is currently marked as experimental and may be subject to breaking changes across any version bump until it is marked as stable.
-
-## Future Work
-
-- **Token Provider API** - A pluggable interface for token generation, allowing backends to implement custom token strategies (incrementing integers, timestamps, vector clocks, etc.) while maintaining the opaque token semantics.
 
 ## License
 
