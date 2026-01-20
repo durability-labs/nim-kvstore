@@ -135,10 +135,12 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
   # Chunk keys to stay within SQLite parameter limits
   var offset = 0
   while offset < keys.len:
-    let chunkSize = min(MaxSqliteParams, keys.len - offset)
-    let chunk = keys[offset ..< offset + chunkSize]
-    let queryStr = makeGetManyParamQuery(chunk.len)
-    let keyIds = chunk.mapIt(it.id)
+    let
+      chunkSize = min(MaxSqliteParams, keys.len - offset)
+      chunk = keys[offset ..< offset + chunkSize]
+      queryStr = makeGetManyParamQuery(chunk.len)
+      keyIds = chunk.mapIt(it.id)
+
     discard ?db.env.queryWithStrings(queryStr, keyIds, onRow)
     offset += chunkSize
 
@@ -213,15 +215,11 @@ proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq
   # Chunk records to stay within SQLite parameter limits (2 params per record)
   var offset = 0
   while offset < records.len:
-    let chunkSize = min(MaxDeleteChunkSize, records.len - offset)
-    let chunk = records[offset ..< offset + chunkSize]
-
-    let queryStr = makeDeleteManyParamQuery(chunk.len) & " RETURNING " & IdColName
-
-    var pairs: seq[(string, int64)]
-    for record in chunk:
-      let token = ?boundedToken(record.token)
-      pairs.add((record.key.id, token))
+    let
+      chunkSize = min(MaxDeleteChunkSize, records.len - offset)
+      chunk = records[offset ..< offset + chunkSize]
+      queryStr = makeDeleteManyParamQuery(chunk.len) & " RETURNING " & IdColName
+      pairs = chunk.mapIt((it.key.id, ?boundedToken(it.token)))
 
     discard ?db.env.queryWithIdVersionPairs(queryStr, pairs, onRow)
 
@@ -236,11 +234,7 @@ proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq
   ?db.endStmt.exec()
   committed = true
 
-  var skipped: seq[Key]
-  for record in records:
-    if record.key.id notin deletedIds:
-      skipped.add(record.key)
-
+  let skipped = records.filterIt(it.key.id notin deletedIds).mapIt(it.key)
   success skipped
 
 proc putAtomicSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
@@ -265,8 +259,9 @@ proc putAtomicSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!
 
   # First pass: check ALL CAS conditions, collect conflicts
   for record in records:
-    var exists = false
-    var currentToken = 0'i64
+    var
+      exists = false
+      currentToken = 0'i64
 
     proc onRow(s: RawStmtPtr) =
       exists = true
@@ -275,12 +270,9 @@ proc putAtomicSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!
     discard ?db.getSingleStmt.query((record.key.id), onRow)
 
     let conflict =
-      if record.token == 0:
-        exists  # Insert-only but key exists
-      elif not exists:
-        true    # Update expected but key missing
-      else:
-        currentToken != record.token.int64  # Token mismatch
+      if record.token == 0: exists              # Insert-only but key exists
+      elif not exists: true                     # Update expected but key missing
+      else: currentToken != record.token.int64  # Token mismatch
 
     if conflict:
       conflicts.add(record.key)
@@ -328,8 +320,9 @@ proc deleteAtomicSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool):
 
   # First pass: check ALL CAS conditions
   for record in records:
-    var exists = false
-    var currentToken = 0'i64
+    var
+      exists = false
+      currentToken = 0'i64
 
     proc onRow(s: RawStmtPtr) =
       exists = true
@@ -380,10 +373,11 @@ proc buildQueryString*(query: Query): string =
 
 proc prepareQueryStmt*(env: SQLite, query: Query): ?!RawStmtPtr {.gcsafe.} =
   ## Prepare and bind a query statement.
-  let queryStr = buildQueryString(query)
-  let queryStmt = QueryStmt.prepare(env, queryStr).valueOr:
-    return failure(newException(KVStoreError, "Query prepare failed: " & error.msg))
-  let s = RawStmtPtr(queryStmt)
+  let
+    queryStr = buildQueryString(query)
+    queryStmt = QueryStmt.prepare(env, queryStr).valueOr:
+      return failure(newException(KVStoreError, "Query prepare failed: " & error.msg))
+    s = RawStmtPtr(queryStmt)
 
   var v = sqlite3_bind_text(
     s, 1.cint, (query.key.id & "*").cstring, -1.cint, SQLITE_TRANSIENT_GCSAFE
