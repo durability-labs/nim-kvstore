@@ -14,6 +14,7 @@ import pkg/kvstore
 import ./kvcommontests
 import ./typedcommontests
 import ./querycommontests
+import ./closecommontests
 
 suite "Test Basic FSKVStore":
   let
@@ -186,3 +187,58 @@ suite "Test Query":
       res.filterIt(it.key == leftKey).len == 1
       res.filterIt(it.key == leftChild).len == 1
       res.filterIt(it.key == rightKey).len == 0
+
+suite "Test Close and Dispose":
+  let
+    path = currentSourcePath()
+    basePath = "tests_data_close"
+    basePathAbs = path.parentDir / basePath
+    key = Key.init("/close/test").tryGet()
+
+  var
+    tp: Taskpool
+    ds: FSKVStore
+
+  setupAll:
+    removeDir(basePathAbs)
+    createDir(basePathAbs)
+    tp = Taskpool.new(numThreads = 4)
+    ds = FSKVStore.new(root = basePathAbs, tp = tp, depth = 16).tryGet()
+
+  teardownAll:
+    discard await ds.close()
+    tp.shutdown()
+    removeDir(basePathAbs)
+
+  iteratorDisposeTests(ds, key)
+
+suite "Test Iterator Tracking":
+  let
+    path = currentSourcePath()
+    basePath = "tests_data_tracking"
+    basePathAbs = path.parentDir / basePath
+    key = Key.init("/tracking/test").tryGet()
+
+  var
+    tp: Taskpool
+    factoryCounter: int
+
+  setupAll:
+    tp = Taskpool.new(numThreads = 4)
+    factoryCounter = 0
+
+  teardownAll:
+    tp.shutdown()
+    removeDir(basePathAbs)
+
+  proc fsFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+    # Each call creates a fresh store in a unique subdirectory
+    let subDir = basePathAbs / $factoryCounter
+    factoryCounter.inc
+    removeDir(subDir)
+    createDir(subDir)
+    FSKVStore.new(root = subDir, tp = tp, depth = 16).tryGet()
+
+  iteratorTrackingTests(fsFactory, key)
+  closeAndDisposeTests(fsFactory, key)
+  concurrentCloseTests(fsFactory, key)
