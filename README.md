@@ -61,6 +61,96 @@ waitFor main()
 
 **Note:** Compile with `--threads:on` (required for threadpool support).
 
+## Error Handling
+
+nim-kvstore uses the [questionable](https://github.com/codex-storage/questionable) library for type-safe error handling. All fallible operations return `?!T` (Result type) instead of raising exceptions.
+
+### Result Type (`?!T`)
+
+```nim
+import pkg/questionable/results
+
+# ?!T is either a success value or a failure with error
+proc getValue(): ?!int =
+  if condition:
+    success(42)        # Return success with value
+  else:
+    failure("error")   # Return failure with message
+
+# ?!void for operations that don't return a value
+proc doSomething(): ?!void =
+  if failed:
+    return failure(newException(IOError, "write failed"))
+  success()
+```
+
+### Unwrapping Results
+
+**`.tryGet()`** - Unwrap or raise exception (used in examples for brevity):
+
+```nim
+let value = getValue().tryGet()  # Raises if failure
+```
+
+**`?` operator** - Early return on error (preferred in library code):
+
+```nim
+proc process(): ?!Result =
+  let a = ?getValue()      # Returns failure if getValue fails
+  let b = ?transform(a)    # Returns failure if transform fails
+  success(b)
+```
+
+**`without` pattern** - Handle errors with custom logic:
+
+```nim
+without value =? getValue(), err:
+  echo "Failed: ", err.msg
+  return failure(err)
+# use value here
+```
+
+**`.isOk` / `.isErr`** - Check without unwrapping:
+
+```nim
+let result = getValue()
+if result.isOk:
+  echo "Got: ", result.get()
+else:
+  echo "Error: ", result.error.msg
+```
+
+### Async + Results
+
+Async operations return `Future[?!T]`:
+
+```nim
+proc fetchData(): Future[?!Data] {.async.} =
+  let response = ?await httpGet(url)  # ? works with await
+  success(parse(response))
+
+# Usage
+let data = (await fetchData()).tryGet()
+```
+
+### Idiomatic Patterns
+
+```nim
+# Chain operations with ?
+proc updateUser(id: string, name: string): Future[?!void] {.async.} =
+  let record = ?await ds.get(Key.init("/users/" & id).tryGet())
+  let updated = RawRecord.init(record.key, name.toBytes(), record.token)
+  discard ?await ds.put(updated)
+  success()
+
+# Collect results, propagate first error
+proc getAll(keys: seq[Key]): Future[?!seq[RawRecord]] {.async.} =
+  var results: seq[RawRecord]
+  for key in keys:
+    results.add(?await ds.get(key))
+  success(results)
+```
+
 ## Core Concepts
 
 ### Keys and Namespaces
