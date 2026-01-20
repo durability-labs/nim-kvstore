@@ -33,7 +33,7 @@ proc catchPatternTests*() =
       return failure(newException(CatchableError, "result failure msg"))
 
     let fut = failingOp()
-    discard await fut  # Future completes successfully, discard the Result
+    discard await fut # Future completes successfully, discard the Result
 
     # catch alone does NOT capture Result failures - it only catches exceptions
     # We need flatten to collapse Result[Result[T,E],E] -> Result[T,E]
@@ -43,14 +43,16 @@ proc catchPatternTests*() =
 
   test "catch + flatten captures exception from failed Future":
     # Simulate a Future that fails with an exception
-    proc throwingOp(): Future[?!void] {.async: (raises: [CancelledError, CatchableError]).} =
+    proc throwingOp(): Future[?!void] {.
+        async: (raises: [CancelledError, CatchableError])
+    .} =
       raise newException(CatchableError, "future exception msg")
 
     let fut = throwingOp()
     try:
       discard await fut
     except CatchableError:
-      discard  # Expected
+      discard # Expected
 
     # catch captures the exception, flatten collapses the nested Result
     let caught = catch(fut.read).flatten()
@@ -94,7 +96,8 @@ proc catchPatternTests*() =
 type
   ## Factory proc that creates a fresh store instance for each test.
   ## May raise CatchableError if store creation fails (e.g., tryGet on Result).
-  StoreFactory* = proc(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).}
+  StoreFactory* =
+    proc(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).}
 
 # =============================================================================
 # Tests that can share a store instance
@@ -131,7 +134,8 @@ proc iteratorDisposeTests*(ds: KVStore, key: Key) =
     let testKey = (key / "dispose" / "full").tryGet()
     (await ds.put(testKey, "value".toBytes)).tryGet()
 
-    let iter = (await ds.query(Query.init((key / "dispose" / "full").tryGet()))).tryGet()
+    let iter =
+      (await ds.query(Query.init((key / "dispose" / "full").tryGet()))).tryGet()
 
     # Consume all items
     while not iter.finished:
@@ -144,7 +148,8 @@ proc iteratorDisposeTests*(ds: KVStore, key: Key) =
     let testKey = (key / "dispose" / "idempotent").tryGet()
     (await ds.put(testKey, "value".toBytes)).tryGet()
 
-    let iter = (await ds.query(Query.init((key / "dispose" / "idempotent").tryGet()))).tryGet()
+    let iter =
+      (await ds.query(Query.init((key / "dispose" / "idempotent").tryGet()))).tryGet()
 
     # Dispose twice should both succeed
     (await iter.dispose()).tryGet()
@@ -154,7 +159,8 @@ proc iteratorDisposeTests*(ds: KVStore, key: Key) =
     let testKey = (key / "dispose" / "nextfail").tryGet()
     (await ds.put(testKey, "value".toBytes)).tryGet()
 
-    let iter = (await ds.query(Query.init((key / "dispose" / "nextfail").tryGet()))).tryGet()
+    let iter =
+      (await ds.query(Query.init((key / "dispose" / "nextfail").tryGet()))).tryGet()
     (await iter.dispose()).tryGet()
 
     # next() should fail after dispose
@@ -198,8 +204,10 @@ proc iteratorTrackingTests*(factory: StoreFactory, key: Key) =
     (await ds.put(k2, "v2".toBytes)).tryGet()
 
     # Create multiple iterators
-    let iter1 = (await ds.query(Query.init((key / "tracking" / "multi1").tryGet()))).tryGet()
-    let iter2 = (await ds.query(Query.init((key / "tracking" / "multi2").tryGet()))).tryGet()
+    let iter1 =
+      (await ds.query(Query.init((key / "tracking" / "multi1").tryGet()))).tryGet()
+    let iter2 =
+      (await ds.query(Query.init((key / "tracking" / "multi2").tryGet()))).tryGet()
 
     # Both should work independently
     let r1 = (await iter1.next()).tryGet()
@@ -218,7 +226,8 @@ proc iteratorTrackingTests*(factory: StoreFactory, key: Key) =
     let testKey = (key / "tracking" / "unreg").tryGet()
     (await ds.put(testKey, "value".toBytes)).tryGet()
 
-    let iter = (await ds.query(Query.init((key / "tracking" / "unreg").tryGet()))).tryGet()
+    let iter =
+      (await ds.query(Query.init((key / "tracking" / "unreg").tryGet()))).tryGet()
     (await iter.dispose()).tryGet()
 
     # Close should succeed without errors (no iterators to dispose)
@@ -258,7 +267,8 @@ proc concurrentCloseTests*(factory: StoreFactory, key: Key) =
     let testKey = (key / "concurrent" / "inflight").tryGet()
     (await ds.put(testKey, "value".toBytes)).tryGet()
 
-    let iter = (await ds.query(Query.init((key / "concurrent" / "inflight").tryGet()))).tryGet()
+    let iter =
+      (await ds.query(Query.init((key / "concurrent" / "inflight").tryGet()))).tryGet()
 
     # Start a next() call
     let nextFut = iter.next()

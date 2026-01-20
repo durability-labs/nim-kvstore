@@ -24,7 +24,8 @@ import pkg/kvstore
 
 type
   ## Factory proc that creates a fresh store instance for each test.
-  StoreFactory* = proc(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).}
+  StoreFactory* =
+    proc(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).}
 
 const
   # Timeout for blocking tests - operations should complete well within this
@@ -41,7 +42,8 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
 
   test "get operations don't block event loop":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     let k1 = (key / "nonblock" / "get1").tryGet
     let k2 = (key / "nonblock" / "get2").tryGet
@@ -73,7 +75,8 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
 
   test "put operations don't block event loop":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     let k1 = (key / "nonblock" / "put1").tryGet
     let k2 = (key / "nonblock" / "put2").tryGet
@@ -107,7 +110,8 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
 
   test "query operations don't block event loop":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     for i in 0 ..< 5:
       let k = (key / "nonblock" / "query" / $i).tryGet
@@ -118,7 +122,8 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
 
     proc tightQueries(): Future[void] {.async.} =
       while running:
-        let iter = (await ds.query(Query.init((key / "nonblock" / "query").tryGet))).tryGet
+        let iter =
+          (await ds.query(Query.init((key / "nonblock" / "query").tryGet))).tryGet
         discard (await iter.fetchAll()).tryGet
         (await iter.dispose()).tryGet
         inc loopCount
@@ -127,7 +132,8 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
 
     proc mainWork(): Future[void] {.async.} =
       for i in 0 ..< 5:
-        let iter = (await ds.query(Query.init((key / "nonblock" / "query").tryGet))).tryGet
+        let iter =
+          (await ds.query(Query.init((key / "nonblock" / "query").tryGet))).tryGet
         let records = (await iter.fetchAll()).tryGet
         check records.len == 5
         (await iter.dispose()).tryGet
@@ -143,7 +149,8 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
 
   test "mixed operations don't block each other":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     let k1 = (key / "nonblock" / "mixed1").tryGet
     let k2 = (key / "nonblock" / "mixed2").tryGet
@@ -179,8 +186,8 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
     check completed
 
     running = false
-    let loopsExited = await withTimeout(
-      allFutures(readLoopFut, writeLoopFut), BlockingTestTimeout)
+    let loopsExited =
+      await withTimeout(allFutures(readLoopFut, writeLoopFut), BlockingTestTimeout)
     check loopsExited
 
     check readCount > 0
@@ -195,7 +202,8 @@ proc serializationTests*(factory: StoreFactory, key: Key) =
 
   test "concurrent updates to same key - only one succeeds per token":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     let testKey = (key / "serial" / "same").tryGet
 
@@ -221,11 +229,13 @@ proc serializationTests*(factory: StoreFactory, key: Key) =
     # Verify final state: token advanced and value is one of the updates
     let final = (await ds.get(testKey)).tryGet
     check final.token == initial.token + 1
-    check string.fromBytes(final.val) in ["update0", "update1", "update2", "update3", "update4"]
+    check string.fromBytes(final.val) in
+      ["update0", "update1", "update2", "update3", "update4"]
 
   test "concurrent deletes with same token - only one succeeds":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     let testKey = (key / "serial" / "del").tryGet
 
@@ -256,7 +266,8 @@ proc iteratorThreadingTests*(factory: StoreFactory, key: Key) =
 
   test "multiple iterators can be consumed concurrently":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     for prefix in ["a", "b", "c"]:
       for i in 0 ..< 5:
@@ -283,14 +294,16 @@ proc iteratorThreadingTests*(factory: StoreFactory, key: Key) =
 
   test "iterator next() calls are serialized - no duplicates or losses":
     let ds = await factory()
-    defer: (await ds.close()).tryGet
+    defer:
+      (await ds.close()).tryGet
 
     for i in 0 ..< 10:
       let k = (key / "iterserial" / $i).tryGet
       (await ds.put(k, ($i).toBytes)).tryGet
 
     let iter = (await ds.query(Query.init((key / "iterserial").tryGet))).tryGet
-    defer: (await iter.dispose()).tryGet
+    defer:
+      (await iter.dispose()).tryGet
 
     # Fire multiple next() calls concurrently
     var futures: seq[Future[?!Option[RawRecord]]]
@@ -308,12 +321,12 @@ proc iteratorThreadingTests*(factory: StoreFactory, key: Key) =
     check values.len == 10
 
     # All values 0-9 should be present (order may vary)
-    var seen: set[0..9]
+    var seen: set[0 .. 9]
     for v in values:
       let num = parseInt(v)
       check num notin seen
       seen.incl(num)
-    check seen == {0..9}
+    check seen == {0 .. 9}
 
     # Verify iterator is exhausted
     check (await iter.next()).tryGet.isNone
@@ -336,7 +349,7 @@ proc gracefulShutdownTests*(factory: StoreFactory, key: Key) =
         let k = (key / "shutdown" / "inflight" / $i).tryGet
         let res = await ds.put(k, ("value" & $i).toBytes)
         if res.isErr:
-          break  # Store closed, exit loop
+          break # Store closed, exit loop
         inc opCount
         inc i
 

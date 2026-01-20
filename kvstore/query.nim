@@ -22,7 +22,8 @@ type
     sort*: SortOrder # Sort order - not available in all backends
 
   IterFinished* = proc(): bool {.closure, gcsafe, raises: [].}
-  IterDispose* = proc(): Future[?!void] {.closure, async: (raises: [CancelledError]), gcsafe.}
+  IterDispose* =
+    proc(): Future[?!void] {.closure, async: (raises: [CancelledError]), gcsafe.}
   GetNext*[T] = proc(): Future[?!(?Record[T])] {.
     closure, async: (raises: [CancelledError]), gcsafe
   .}
@@ -70,11 +71,7 @@ proc new*[T](
     finished: IterFinished,
     dispose: IterDispose = defaultDispose[T],
 ): QueryIter[T] =
-  QueryIter[T](
-    nextImpl: next,
-    finishedImpl: finished,
-    disposeImpl: dispose,
-  )
+  QueryIter[T](nextImpl: next, finishedImpl: finished, disposeImpl: dispose)
 
 proc init*(
     _: type Query,
