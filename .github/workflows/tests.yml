@@ -1,6 +1,19 @@
 name: Tests
 on: [push, pull_request]
+
 jobs:
+  formatting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check nph formatting
+        uses: arnetheduck/nph-action@v1
+        with:
+          version: 0.6.1
+          options: "kvstore/ tests/"
+          fail: true
+          suggest: false
+
   test:
     strategy:
       matrix:
