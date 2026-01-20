@@ -1,6 +1,7 @@
 import std/options
 import std/os
 import std/sequtils
+import std/sets
 from std/algorithm import sort, reversed
 import std/tables
 
@@ -370,3 +371,55 @@ suite "Test Threading":
     SQLiteKVStore.new(SqliteMemory, tp).tryGet()
 
   threadingTests(sqliteFactory, key)
+
+suite "Test Large Batch Operations":
+  ## Tests for automatic chunking of large batches (>999 SQLite parameters)
+  var
+    tp: Taskpool
+    ds: SQLiteKVStore
+
+  setupAll:
+    tp = Taskpool.new(num_threads = 4)
+    ds = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
+
+  teardownAll:
+    (await ds.close()).tryGet()
+    tp.shutdown()
+
+  test "getMany with >1000 keys chunks correctly":
+    # Create 1100 records (exceeds 999 param limit)
+    let count = 1100
+    var keys: seq[Key]
+    for i in 0 ..< count:
+      let k = Key.init("/largebatch/get/" & $i).tryGet()
+      keys.add(k)
+      (await ds.put(k, ($i).toBytes)).tryGet()
+
+    # Get all keys in one call - should be chunked internally
+    let records = (await ds.get(keys)).tryGet()
+    check records.len == count
+
+    # Verify all records were retrieved
+    var seen = initHashSet[string]()
+    for r in records:
+      seen.incl(r.key.id)
+    check seen.len == count
+
+  test "delete with >500 records chunks correctly":
+    # Create 600 records (exceeds 495 param limit for delete - 2 params per record)
+    let count = 600
+    var records: seq[KeyRecord]
+    for i in 0 ..< count:
+      let k = Key.init("/largebatch/del/" & $i).tryGet()
+      (await ds.put(k, ($i).toBytes)).tryGet()
+      let stored = (await ds.get(k)).tryGet()
+      records.add(KeyRecord.init(k, stored.token))
+
+    # Delete all in one call - should be chunked internally
+    let skipped = (await ds.delete(records)).tryGet()
+    check skipped.len == 0
+
+    # Verify all were deleted
+    for i in 0 ..< count:
+      let k = Key.init("/largebatch/del/" & $i).tryGet()
+      check not (await ds.has(k)).tryGet()
