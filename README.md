@@ -398,6 +398,43 @@ let fsDs = FSKVStore.new(
 
 **Note:** FSKVStore uses `uint64` for tokens, supporting the full range. Does not support atomic batch operations.
 
+## Store Lifecycle
+
+### Closing a Store
+
+The `close()` method performs graceful shutdown:
+
+```nim
+(await ds.close()).tryGet()
+```
+
+**Close behavior:**
+1. **Waits for in-flight operations** - All pending `get`, `put`, `delete` operations complete before close returns
+2. **Auto-disposes active iterators** - Any iterators not explicitly disposed are automatically cleaned up
+3. **Releases resources** - Database connections, file handles, and locks are released
+4. **Idempotent** - Calling `close()` multiple times is safe (subsequent calls return immediately)
+
+**After close:**
+- All operations (`get`, `put`, `delete`, `query`, etc.) return a failure
+- The store cannot be reopened - create a new instance instead
+
+```nim
+# Operations after close fail gracefully
+(await ds.close()).tryGet()
+let result = await ds.get(key)
+assert result.isErr  # Returns failure, doesn't crash
+```
+
+**Best practice:** While `close()` auto-disposes iterators, explicitly disposing them is recommended for deterministic resource cleanup:
+
+```nim
+let iter = (await ds.query(q)).tryGet()
+defer: discard await iter.dispose()  # Explicit dispose
+# ... use iterator ...
+
+(await ds.close()).tryGet()  # Will still work if you forget dispose
+```
+
 ## Query API
 
 Query records by key prefix:
