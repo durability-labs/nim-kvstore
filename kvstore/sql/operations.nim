@@ -20,6 +20,13 @@ import ../kvstore
 import ./sqlitedsdb
 import ./sqliteutils
 
+const
+  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
+  # Leave some headroom for safety
+  MaxSqliteParams* = 990
+  # For delete, each record uses 2 params (id, token)
+  MaxDeleteChunkSize* = MaxSqliteParams div 2
+
 # =============================================================================
 # Utilities
 # =============================================================================
@@ -107,7 +114,8 @@ proc getSync*(db: SQLiteDsDb, key: Key): ?!RawRecord {.gcsafe.} =
   success RawRecord.init(key, value, token.uint64)
 
 proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
-  ## Synchronous get multiple records
+  ## Synchronous get multiple records.
+  ## Automatically chunks large batches to stay within SQLite parameter limits.
   if keys.len == 0:
     return success(newSeq[RawRecord]())
 
@@ -124,9 +132,15 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
 
     records.add(RawRecord.init(Key.init(keyId).expect("Invalid key from DB"), value, token.uint64))
 
-  let queryStr = makeGetManyParamQuery(keys.len)
-  let keyIds = keys.mapIt(it.id)
-  discard ?db.env.queryWithStrings(queryStr, keyIds, onRow)
+  # Chunk keys to stay within SQLite parameter limits
+  var offset = 0
+  while offset < keys.len:
+    let chunkSize = min(MaxSqliteParams, keys.len - offset)
+    let chunk = keys[offset ..< offset + chunkSize]
+    let queryStr = makeGetManyParamQuery(chunk.len)
+    let keyIds = chunk.mapIt(it.id)
+    discard ?db.env.queryWithStrings(queryStr, keyIds, onRow)
+    offset += chunkSize
 
   success records
 
@@ -173,7 +187,8 @@ proc putSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Ke
   success skipped
 
 proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
-  ## Synchronous delete records
+  ## Synchronous delete records.
+  ## Automatically chunks large batches to stay within SQLite parameter limits.
   ?checkWritable(readOnly)
 
   if records.len == 0:
@@ -183,13 +198,7 @@ proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq
     deletedIds = initHashSet[string]()
     inTransaction = false
     committed = false
-
-  let queryStr = makeDeleteManyParamQuery(records.len) & " RETURNING " & IdColName
-
-  var pairs: seq[(string, int64)]
-  for record in records:
-    let token = ?boundedToken(record.token)
-    pairs.add((record.key.id, token))
+    totalChanges = 0
 
   ?db.beginStmt.exec()
   inTransaction = true
@@ -201,12 +210,28 @@ proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq
   proc onRow(s: RawStmtPtr) =
     deletedIds.incl($sqlite3_column_text_not_null(s, 0.cint))
 
-  discard ?db.env.queryWithIdVersionPairs(queryStr, pairs, onRow)
+  # Chunk records to stay within SQLite parameter limits (2 params per record)
+  var offset = 0
+  while offset < records.len:
+    let chunkSize = min(MaxDeleteChunkSize, records.len - offset)
+    let chunk = records[offset ..< offset + chunkSize]
 
-  let changes = ?db.checkChanges()
-  if changes > records.len:
+    let queryStr = makeDeleteManyParamQuery(chunk.len) & " RETURNING " & IdColName
+
+    var pairs: seq[(string, int64)]
+    for record in chunk:
+      let token = ?boundedToken(record.token)
+      pairs.add((record.key.id, token))
+
+    discard ?db.env.queryWithIdVersionPairs(queryStr, pairs, onRow)
+
+    let changes = ?db.checkChanges()
+    totalChanges += changes
+    offset += chunkSize
+
+  if totalChanges > records.len:
     return failure(newCorruptionError(
-      "Delete affected more rows (" & $changes & ") than records (" & $records.len & ")"))
+      "Delete affected more rows (" & $totalChanges & ") than records (" & $records.len & ")"))
 
   ?db.endStmt.exec()
   committed = true
