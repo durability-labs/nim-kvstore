@@ -116,7 +116,7 @@ proc closeDb*(db: SQLite): ?!void =
 
   success()
 
-template dispose*(db: SQLite) =
+template dispose*(db: SQLite) {.deprecated: "Use closeDb()".} =
   # Legacy template for backward compatibility
   # Prefer using closeDb() for proper error handling
   let closeResult = sqlite3_close_v2(db)
