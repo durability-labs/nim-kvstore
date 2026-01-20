@@ -16,6 +16,7 @@ import ../kvcommontests
 import ../typedcommontests
 import ../querycommontests
 import ../closecommontests
+import ../threadingcommontests
 
 suite "Test Basic SQLiteKVStore":
   var
@@ -351,3 +352,21 @@ suite "Test Iterator Tracking":
 suite "Test Error Aggregation Pattern":
   ## Unit tests for the catch(fut.read) pattern used in close()
   catchPatternTests()
+
+suite "Test Threading":
+  var
+    tp: Taskpool
+
+  let
+    key = Key.init("/threading/test").tryGet()
+
+  setupAll:
+    tp = Taskpool.new(num_threads = 4)
+
+  teardownAll:
+    tp.shutdown()
+
+  proc sqliteFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+    SQLiteKVStore.new(SqliteMemory, tp).tryGet()
+
+  threadingTests(sqliteFactory, key)
