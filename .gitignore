@@ -13,3 +13,4 @@ nimble.develop
 nimble.paths
 nimbledeps
 .claude
+AGENTS.md
