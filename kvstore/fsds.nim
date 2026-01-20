@@ -13,13 +13,11 @@ import std/atomics
 import std/sets
 import std/sequtils
 
-when defined(posix):
-  from std/posix import open, fsync, close, O_RDONLY
-
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
 import pkg/stew/endians2
+import pkg/stew/io2
 import pkg/taskpools
 
 import ./key
@@ -79,6 +77,17 @@ proc moveFile(src, dst: string): ?!void {.gcsafe.} =
     success()
   except Exception as exc:
     failure newBackendError("unable to move '" & src & "' to '" & dst & "': " & exc.msg)
+
+proc syncParentDirectory(path: string) {.gcsafe.} =
+  ## Sync parent directory to ensure rename/delete operations are durable.
+  ## On POSIX: opens directory, fsyncs it, closes it.
+  ## On Windows: no-op (directory sync not supported/undefined behavior).
+  when defined(posix):
+    let dir = parentDir(path)
+    let handle = openFile(dir, {OpenFlags.Read}).valueOr:
+      return # Best effort - don't fail if we can't sync
+    discard fsync(handle)
+    discard closeFile(handle)
 
 proc validDepth*(self: FSKVStore, key: Key): bool =
   key.len <= self.depth
@@ -167,7 +176,7 @@ proc writeVersioned*(
 
   var file: File
   defer:
-    ?catch(removeFile(tmp))
+    ?catch(os.removeFile(tmp))
 
   try:
     if not file.open(tmp, fmWrite):
@@ -186,28 +195,12 @@ proc writeVersioned*(
     file.close
 
   ?moveFile(tmp, path)
-
-  # Sync parent directory to ensure rename is durable
-  when defined(posix):
-    let dir = parentDir(path)
-    let fd = posix.open(dir.cstring, O_RDONLY)
-    if fd >= 0:
-      discard posix.fsync(fd)
-      discard posix.close(fd)
-
+  syncParentDirectory(path)
   return success()
 
 proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
-  ?catch(removeFile(path))
-
-  # Sync parent directory to ensure delete is durable
-  when defined(posix):
-    let dir = parentDir(path)
-    let fd = posix.open(dir.cstring, O_RDONLY)
-    if fd >= 0:
-      discard posix.fsync(fd)
-      discard posix.close(fd)
-
+  ?catch(os.removeFile(path))
+  syncParentDirectory(path)
   success()
 
 proc getSync*(path: string, key: Key): ?!RawRecord =
@@ -620,6 +613,9 @@ method query*(
   proc isFinished(): bool =
     state.finished
 
+  proc isDisposed(): bool =
+    state.isDisposed
+
   let handle = newFuture[?!void]()
   proc dispose(): Future[?!void] {.async: (raises: [CancelledError]), gcsafe.} =
     state.finished = true
@@ -651,7 +647,7 @@ method query*(
   # Register dispose proc with store for tracking
   self.iteratorDisposers.incl(dispose)
 
-  return success QueryIter.new(next, isFinished, dispose)
+  return success QueryIter.new(next, isFinished, isDisposed, dispose)
 
 # =============================================================================
 # Constructor
@@ -670,7 +666,7 @@ proc new*(
       block:
         if root.isAbsolute: root
         else:
-          getCurrentDir() / root
+          os.getCurrentDir() / root
     ).catch
 
   if not dirExists(root):
