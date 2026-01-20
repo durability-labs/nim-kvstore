@@ -134,23 +134,26 @@ proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
 proc readVersioned*(
     path: string, key: Key, data = true
 ): ?!RawRecord {.gcsafe, raises: [].} =
-  var file: File
-
-  defer:
-    file.close
-
-  if not fileExists(path):
+  if not isFile(path):
     return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
 
-  if not file.open(path):
+  let handle = openFile(path, {OpenFlags.Read}).valueOr:
     return failure newException(KVStoreBackendError, "unable to open file: " & path)
 
-  let size = ?catch(file.getFileSize)
+  defer:
+    discard closeFile(handle)
+
+  let size = getFileSize(handle).valueOr:
+    return failure newBackendError("unable to get file size: " & path)
+
   if size < TokenBytes:
     return failure newCorruptionError("File too small for record: " & path)
 
   var header: array[TokenBytes, byte]
-  if ?catch (file.readBuffer(addr header[0], TokenBytes)) != TokenBytes:
+  let headerRead = readFile(handle, header).valueOr:
+    return failure newBackendError("unable to read token header")
+
+  if headerRead != TokenBytes.uint:
     return failure newBackendError("unable to read token header")
 
   let token = uint64.fromBytesLE(header)
@@ -159,8 +162,11 @@ proc readVersioned*(
   let value =
     if data:
       var value = newSeq[byte](payloadLen)
-      if payloadLen > 0 and ?catch(file.readBytes(value, 0, payloadLen)) != payloadLen:
-        return failure newBackendError("unable to read payload")
+      if payloadLen > 0:
+        let payloadRead = readFile(handle, value).valueOr:
+          return failure newBackendError("unable to read payload")
+        if payloadRead != payloadLen.uint:
+          return failure newBackendError("unable to read payload")
       value
     else:
       EmptyBytes
@@ -170,36 +176,42 @@ proc readVersioned*(
 proc writeVersioned*(
     path: string, token: uint64, value: seq[byte]
 ): ?!void {.gcsafe, raises: [].} =
-  ?catch(createDir(parentDir(path)))
+  if createPath(parentDir(path)).isErr:
+    return failure newBackendError("unable to create parent directory")
 
   let tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
 
-  var file: File
+  let handle = openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).valueOr:
+    return failure newBackendError("unable to open temporary file '" & tmp & "'")
+
   defer:
-    ?catch(os.removeFile(tmp))
+    discard closeFile(handle)
+    discard io2.removeFile(tmp)
 
-  try:
-    if not file.open(tmp, fmWrite):
-      return failure newBackendError("unable to open temporary file '" & tmp & "'")
+  let header = token.toBytesLE()
+  let headerWritten = writeFile(handle, header).valueOr:
+    return failure newBackendError("Failed writing token")
 
-    let header = token.toBytesLE()
-    if ?catch(file.writeBuffer(addr header[0], TokenBytes)) != TokenBytes:
-      return failure newBackendError("Failed writing token")
+  if headerWritten != TokenBytes.uint:
+    return failure newBackendError("Failed writing token")
 
-    if value.len > 0:
-      if ?catch (file.writeBytes(value, 0, value.len)) != value.len:
-        return failure newBackendError("Failed writing data")
+  if value.len > 0:
+    let valueWritten = writeFile(handle, value).valueOr:
+      return failure newBackendError("Failed writing data")
+    if valueWritten != value.len.uint:
+      return failure newBackendError("Failed writing data")
 
-    file.flushFile()
-  finally:
-    file.close
+  if fsync(handle).isErr:
+    return failure newBackendError("Failed to sync file")
 
+  discard closeFile(handle)
   ?moveFile(tmp, path)
   syncParentDirectory(path)
   return success()
 
 proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
-  ?catch(os.removeFile(path))
+  if io2.removeFile(path).isErr:
+    return failure newBackendError("unable to delete file: " & path)
   syncParentDirectory(path)
   success()
 
@@ -207,7 +219,7 @@ proc getSync*(path: string, key: Key): ?!RawRecord =
   return readVersioned(path, key)
 
 proc putSync*(path: string, record: RawRecord): ?!void =
-  if not path.fileExists():
+  if not isFile(path):
     if record.token != 0:
       return failure newException(
         KVConflictError, "Token not 0 for new record " & $record.key
@@ -228,7 +240,7 @@ proc putSync*(path: string, record: RawRecord): ?!void =
   return success()
 
 proc deleteSync*(path: string, record: KeyRecord): ?!void =
-  if not path.fileExists():
+  if not isFile(path):
     return
       failure newException(KVConflictError, "Record does not exist: " & $record.key)
 
@@ -250,7 +262,7 @@ proc deleteSync*(path: string, record: KeyRecord): ?!void =
 proc runHasTask(ctx: ptr TaskCtx[bool], path: string) {.gcsafe.} =
   defer:
     discard ctx[].signal.fireSync()
-  ctx[].result = success(path.fileExists())
+  ctx[].result = success(isFile(path))
 
 proc runGetTask(ctx: ptr TaskCtx[RawRecord], path: string, key: Key) {.gcsafe.} =
   defer:
@@ -517,7 +529,7 @@ method query*(
     # with the same name then list the contents
     # of the directory, otherwise recurse
     # into subdirectories
-    if p.fileExists:
+    if isFile(p):
       p.parentDir
     else:
       p.changeFileExt("")
@@ -669,7 +681,7 @@ proc new*(
           os.getCurrentDir() / root
     ).catch
 
-  if not dirExists(root):
+  if not isDir(root):
     return failure "directory does not exist: " & root
 
   success T(
