@@ -264,10 +264,14 @@ proc makeDeleteManyParamQuery*(count: int): string {.raises: [].} =
     raiseAssert("Invalid DeleteManyStmtStr format")
 
 # Legacy templates - deprecated, kept for compatibility
-template makeGetManyStmStr*(ids: openArray[string]): ?!string {.deprecated: "Use makeGetManyParamQuery with parameter binding".} =
+template makeGetManyStmStr*(
+    ids: openArray[string]
+): ?!string {.deprecated: "Use makeGetManyParamQuery with parameter binding".} =
   catch (GetManyStmtStr % ids.mapIt("\"" & it & "\"").join(", "))
 
-template makeDeleteManyStmStr*(ids: openArray[(string, uint64)]): ?!string {.deprecated: "Use makeDeleteManyParamQuery with parameter binding".} =
+template makeDeleteManyStmStr*(
+    ids: openArray[(string, uint64)]
+): ?!string {.deprecated: "Use makeDeleteManyParamQuery with parameter binding".} =
   catch (
     DeleteManyStmtStr % ids.mapIt("(\"" & it[0] & "\", " & $it[1] & ")").join(", ")
   )
@@ -338,17 +342,17 @@ proc changesCol*(s: RawStmtPtr, index: int): BoundVersionCol =
     sqlite3_column_int64(s, index.cint)
 
 proc getDBFilePath*(path: string): ?!string =
-    let
-      (parent, name, ext) = path.normalizePathEnd.splitFile
-      dbExt = if ext == "": DbExt else: ext
-      absPath =
-        if parent.isAbsolute:
-          parent
-        else:
-          ?catch(getCurrentDir()) / parent
-      dbPath = absPath / name & dbExt
+  let
+    (parent, name, ext) = path.normalizePathEnd.splitFile
+    dbExt = if ext == "": DbExt else: ext
+    absPath =
+      if parent.isAbsolute:
+        parent
+      else:
+        ?catch(getCurrentDir()) / parent
+    dbPath = absPath / name & dbExt
 
-    return success dbPath
+  return success dbPath
 
 proc checkChanges*(self: SQLiteDsDb): ?!int =
   var changes = 0
@@ -369,7 +373,7 @@ proc close*(self: var SQLiteDsDb): ?!void =
     return success()
 
   let env = self.env
-  self.env = nil  # Mark as closed immediately to prevent double-close
+  self.env = nil # Mark as closed immediately to prevent double-close
 
   # Finalize all prepared statements first
   if not RawStmtPtr(self.containsStmt).isNil:

@@ -52,7 +52,7 @@ type
     depth: int
     locks: Table[Key, RefCountedLock]
     tasks: HashSet[Future[?!void]]
-    iteratorDisposers: HashSet[IterDispose]  # Track active iterators for close()
+    iteratorDisposers: HashSet[IterDispose] # Track active iterators for close()
     tp: Taskpool
     closed: bool
 
@@ -122,7 +122,9 @@ proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
 # Sync I/O Operations (blocking, called from threadpool workers)
 # =============================================================================
 
-proc readVersioned*(path: string, key: Key, data = true): ?!RawRecord {.gcsafe, raises: [].} =
+proc readVersioned*(
+    path: string, key: Key, data = true
+): ?!RawRecord {.gcsafe, raises: [].} =
   var file: File
 
   defer:
@@ -156,7 +158,9 @@ proc readVersioned*(path: string, key: Key, data = true): ?!RawRecord {.gcsafe, 
 
   return success RawRecord.init(key, value, token)
 
-proc writeVersioned*(path: string, token: uint64, value: seq[byte]): ?!void {.gcsafe, raises: [].} =
+proc writeVersioned*(
+    path: string, token: uint64, value: seq[byte]
+): ?!void {.gcsafe, raises: [].} =
   ?catch(createDir(parentDir(path)))
 
   let tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
@@ -232,13 +236,15 @@ proc putSync*(path: string, record: RawRecord): ?!void =
 
 proc deleteSync*(path: string, record: KeyRecord): ?!void =
   if not path.fileExists():
-    return failure newException(KVConflictError, "Record does not exist: " & $record.key)
+    return
+      failure newException(KVConflictError, "Record does not exist: " & $record.key)
 
   let current = ?readVersioned(path, record.key)
   if current.token != record.token:
-    return failure newException(KVConflictError,
+    return failure newException(
+      KVConflictError,
       "Token mismatch for record " & $record.key & ", expected " & $record.token &
-        ", got " & $current.token
+        ", got " & $current.token,
     )
 
   discard ?catch(deleteFile(path))
@@ -288,8 +294,9 @@ proc acquire*(
 ): Future[RefCountedLock] {.async: (raises: [CancelledError]).} =
   ## Acquire a per-key lock. Refcount is incremented BEFORE await to track waiters.
   ## This prevents the race where a lock is deleted while tasks are waiting on it.
-  var rcLock = self.locks.mgetOrPut(key, RefCountedLock(lock: newAsyncLock(), refCount: 0))
-  rcLock.refCount += 1  # Increment BEFORE await to count waiters
+  var rcLock =
+    self.locks.mgetOrPut(key, RefCountedLock(lock: newAsyncLock(), refCount: 0))
+  rcLock.refCount += 1 # Increment BEFORE await to count waiters
   try:
     await rcLock.lock.acquire()
   except CancelledError as exc:
@@ -384,7 +391,8 @@ method put*(
 
     # Acquire per-key lock BEFORE spawning task
     let lock = await self.acquire(record.key)
-    defer: self.release(record.key, lock)
+    defer:
+      self.release(record.key, lock)
 
     # Re-check after await - close() may have started during acquire
     if self.closed:
@@ -424,7 +432,8 @@ method delete*(
 
     # Acquire per-key lock BEFORE spawning task
     let lock = await self.acquire(record.key)
-    defer: self.release(record.key, lock)
+    defer:
+      self.release(record.key, lock)
 
     # Re-check after await - close() may have started during acquire
     if self.closed:
@@ -461,20 +470,23 @@ method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError
     disposers = (self.iteratorDisposers).toSeq().mapIt(it())
     tasks = self.tasks.toSeq()
 
-  await noCancel allFutures(@[
-    # Dispose all active iterators first (copy set since dispose modifies it)
-    noCancel allFutures(disposers),
-    # Dispose all active tasks
-    noCancel allFutures(tasks)])
+  await noCancel allFutures(
+    @[
+      # Dispose all active iterators first (copy set since dispose modifies it)
+      noCancel allFutures(disposers),
+      # Dispose all active tasks
+      noCancel allFutures(tasks),
+    ]
+  )
 
   let
-    dispErrors = disposers
-      .filterIt(catch(it.read).flatten().isErr)
-      .mapIt(catch(it.read).flatten().error.msg)
+    dispErrors = disposers.filterIt(catch(it.read).flatten().isErr).mapIt(
+        catch(it.read).flatten().error.msg
+      )
 
-    taskErrors = tasks
-      .filterIt(catch(it.read).flatten().isErr)
-      .mapIt(catch(it.read).flatten().error.msg)
+    taskErrors = tasks.filterIt(catch(it.read).flatten().isErr).mapIt(
+        catch(it.read).flatten().error.msg
+      )
 
   if dispErrors.len > 0 or taskErrors.len > 0:
     var msg = "Errors occurred during FSKVStore close()"
@@ -524,7 +536,7 @@ method query*(
     queryKey: query.key,
     queryValue: query.value,
     tp: self.tp,
-    lock: newAsyncLock()
+    lock: newAsyncLock(),
   )
   state.finished = false
   state.isDisposed = false
@@ -544,7 +556,8 @@ method query*(
 
     # Re-check after await - close/dispose may have run
     if self.closed or state.isDisposed:
-      return failure newException(KVStoreError, "FSKVStore is closed or iterator disposed")
+      return
+        failure newException(KVStoreError, "FSKVStore is closed or iterator disposed")
 
     if state.finished:
       return success(RawRecord.none)

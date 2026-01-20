@@ -1,3 +1,5 @@
+import std/os
+
 mode = ScriptMode.Verbose
 
 packageName = "kvstore"
@@ -52,3 +54,8 @@ task coverage, "generates code coverage report":
   exec("genhtml --ignore-errors range coverage/coverage.f.info --output-directory coverage/report")
   echo "Opening HTML coverage report in browser..."
   exec("open coverage/report/index.html")
+
+task format, "Format code using NPH":
+  exec "nimble install https://github.com/durability-labs/nph@#version-0-6-2-prerelease" # TODO: update to version 0.6.2 once it is released
+  exec findExe("nph") & " kvstore/"
+  exec findExe("nph") & " tests/"

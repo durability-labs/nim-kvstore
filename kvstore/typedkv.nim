@@ -119,7 +119,9 @@ proc query*[T](
   proc isFinished(): bool =
     dsIter.finished
 
-  proc dispose(): Future[?!void] {.async: (raises: [CancelledError], raw: true), gcsafe.} =
+  proc dispose(): Future[?!void] {.
+      async: (raises: [CancelledError], raw: true), gcsafe
+  .} =
     dsIter.dispose()
 
   success QueryIter[T].new(next = next, finished = isFinished, dispose = dispose)
@@ -209,7 +211,8 @@ proc tryDelete*[T](
       success resolved.mapIt(it.toRaw)
 
   # Call raw tryDelete
-  let failedRaw = ?(await helpers.tryDelete(self, rawRecords, maxRetries, rawMiddleware))
+  let failedRaw =
+    ?(await helpers.tryDelete(self, rawRecords, maxRetries, rawMiddleware))
 
   # Convert failed records back to typed
   return success(failedRaw.mapIt(?toRecord[T](it)))
@@ -223,8 +226,7 @@ proc tryDelete*[T](
   ## Single-record tryDelete
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return
-      failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return failure newException(KVStoreError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*[T](

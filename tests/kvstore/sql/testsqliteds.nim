@@ -127,7 +127,7 @@ suite "Test Query":
     for item in iter:
       let maybeRecord = (await item).tryGet()
       if record =? maybeRecord:
-        check record.token > 0  # Token should be non-zero after put
+        check record.token > 0 # Token should be non-zero after put
 
   test "Query with value=true should return records with tokens":
     let key = Key.init("/test/query/token/value").tryGet()
@@ -144,8 +144,8 @@ suite "Test Query":
       let maybeRecord = (await item).tryGet()
       if record =? maybeRecord:
         check:
-          record.token > 0  # Token should be non-zero after put
-          record.val == data  # Value should be returned
+          record.token > 0 # Token should be non-zero after put
+          record.val == data # Value should be returned
 
 suite "Test Atomic Batch Operations":
   var
@@ -170,11 +170,12 @@ suite "Test Atomic Batch Operations":
 
   test "putAtomic succeeds when all tokens match (inserts)":
     # All new keys with token=0 (insert mode)
-    let records = @[
-      RawRecord.init(key1, "value1".toBytes, 0),
-      RawRecord.init(key2, "value2".toBytes, 0),
-      RawRecord.init(key3, "value3".toBytes, 0),
-    ]
+    let records =
+      @[
+        RawRecord.init(key1, "value1".toBytes, 0),
+        RawRecord.init(key2, "value2".toBytes, 0),
+        RawRecord.init(key3, "value3".toBytes, 0),
+      ]
 
     let conflicts = (await ds.putAtomic(records)).tryGet()
     check conflicts.len == 0
@@ -193,10 +194,11 @@ suite "Test Atomic Batch Operations":
     (await ds.put(RawRecord.init(key1, "v1".toBytes, 0))).tryGet()
 
     # Atomic batch: k1 (wrong token), k2 (new)
-    let records = @[
-      RawRecord.init(key1, "v1-new".toBytes, 999),  # Wrong token
-      RawRecord.init(key2, "v2".toBytes, 0),         # Would succeed alone
-    ]
+    let records =
+      @[
+        RawRecord.init(key1, "v1-new".toBytes, 999), # Wrong token
+        RawRecord.init(key2, "v2".toBytes, 0), # Would succeed alone
+      ]
 
     let conflicts = (await ds.putAtomic(records)).tryGet()
 
@@ -206,24 +208,29 @@ suite "Test Atomic Batch Operations":
 
     # k2 was NOT committed (atomic rollback)
     let k2result = await ds.get(key2)
-    check k2result.isErr  # Key doesn't exist
+    check k2result.isErr # Key doesn't exist
 
   test "putAtomic succeeds when all tokens match (updates)":
     # Insert both keys first
-    discard (await ds.put(@[
-      RawRecord.init(key1, "v1".toBytes, 0),
-      RawRecord.init(key2, "v2".toBytes, 0),
-    ])).tryGet()
+    discard (
+      await ds.put(
+        @[RawRecord.init(key1, "v1".toBytes, 0), RawRecord.init(key2, "v2".toBytes, 0)]
+      )
+    ).tryGet()
 
     # Get current tokens
     let r1 = (await ds.get(key1)).tryGet()
     let r2 = (await ds.get(key2)).tryGet()
 
     # Update both atomically
-    let conflicts = (await ds.putAtomic(@[
-      RawRecord.init(key1, "v1-new".toBytes, r1.token),
-      RawRecord.init(key2, "v2-new".toBytes, r2.token),
-    ])).tryGet()
+    let conflicts = (
+      await ds.putAtomic(
+        @[
+          RawRecord.init(key1, "v1-new".toBytes, r1.token),
+          RawRecord.init(key2, "v2-new".toBytes, r2.token),
+        ]
+      )
+    ).tryGet()
 
     check conflicts.len == 0
 
@@ -239,9 +246,8 @@ suite "Test Atomic Batch Operations":
     (await ds.put(RawRecord.init(key1, "v1".toBytes, 0))).tryGet()
 
     # Try to insert again with token=0 (insert-only mode)
-    let conflicts = (await ds.putAtomic(@[
-      RawRecord.init(key1, "v1-new".toBytes, 0),
-    ])).tryGet()
+    let conflicts =
+      (await ds.putAtomic(@[RawRecord.init(key1, "v1-new".toBytes, 0)])).tryGet()
 
     check conflicts.len == 1
     check conflicts[0] == key1
@@ -252,9 +258,13 @@ suite "Test Atomic Batch Operations":
 
   test "putAtomic fails update when key missing":
     # Try to update non-existent key with token != 0
-    let conflicts = (await ds.putAtomic(@[
-      RawRecord.init(key1, "v1".toBytes, 5),  # token != 0 means update-only
-    ])).tryGet()
+    let conflicts = (
+      await ds.putAtomic(
+        @[
+          RawRecord.init(key1, "v1".toBytes, 5) # token != 0 means update-only
+        ]
+      )
+    ).tryGet()
 
     check conflicts.len == 1
     check conflicts[0] == key1
@@ -265,20 +275,22 @@ suite "Test Atomic Batch Operations":
 
   test "deleteAtomic succeeds when all tokens match":
     # Insert records first
-    discard (await ds.put(@[
-      RawRecord.init(key1, "v1".toBytes, 0),
-      RawRecord.init(key2, "v2".toBytes, 0),
-    ])).tryGet()
+    discard (
+      await ds.put(
+        @[RawRecord.init(key1, "v1".toBytes, 0), RawRecord.init(key2, "v2".toBytes, 0)]
+      )
+    ).tryGet()
 
     # Get current tokens
     let r1 = (await ds.get(key1)).tryGet()
     let r2 = (await ds.get(key2)).tryGet()
 
     # Delete both atomically
-    let conflicts = (await ds.deleteAtomic(@[
-      KeyRecord.init(key1, r1.token),
-      KeyRecord.init(key2, r2.token),
-    ])).tryGet()
+    let conflicts = (
+      await ds.deleteAtomic(
+        @[KeyRecord.init(key1, r1.token), KeyRecord.init(key2, r2.token)]
+      )
+    ).tryGet()
 
     check conflicts.len == 0
 
@@ -292,10 +304,13 @@ suite "Test Atomic Batch Operations":
     let r1 = (await ds.get(key1)).tryGet()
 
     # Try to delete k1 (correct) and k2 (doesn't exist)
-    let conflicts = (await ds.deleteAtomic(@[
-      KeyRecord.init(key1, r1.token),
-      KeyRecord.init(key2, 1),  # k2 doesn't exist
-    ])).tryGet()
+    let conflicts = (
+      await ds.deleteAtomic(
+        @[
+          KeyRecord.init(key1, r1.token), KeyRecord.init(key2, 1) # k2 doesn't exist
+        ]
+      )
+    ).tryGet()
 
     check conflicts.len == 1
     check conflicts[0] == key2
@@ -316,8 +331,7 @@ suite "Test Close and Dispose":
     tp: Taskpool
     ds: SQLiteKVStore
 
-  let
-    key = Key.init("/close/test").tryGet()
+  let key = Key.init("/close/test").tryGet()
 
   setupAll:
     tp = Taskpool.new(num_threads = 4)
@@ -331,11 +345,9 @@ suite "Test Close and Dispose":
   iteratorDisposeTests(ds, key)
 
 suite "Test Iterator Tracking":
-  var
-    tp: Taskpool
+  var tp: Taskpool
 
-  let
-    key = Key.init("/tracking/test").tryGet()
+  let key = Key.init("/tracking/test").tryGet()
 
   setupAll:
     tp = Taskpool.new(num_threads = 4)
@@ -343,7 +355,9 @@ suite "Test Iterator Tracking":
   teardownAll:
     tp.shutdown()
 
-  proc sqliteFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+  proc sqliteFactory(): Future[KVStore] {.
+      async: (raises: [CancelledError, CatchableError])
+  .} =
     SQLiteKVStore.new(SqliteMemory, tp).tryGet()
 
   iteratorTrackingTests(sqliteFactory, key)
@@ -355,11 +369,9 @@ suite "Test Error Aggregation Pattern":
   catchPatternTests()
 
 suite "Test Threading":
-  var
-    tp: Taskpool
+  var tp: Taskpool
 
-  let
-    key = Key.init("/threading/test").tryGet()
+  let key = Key.init("/threading/test").tryGet()
 
   setupAll:
     tp = Taskpool.new(num_threads = 4)
@@ -367,7 +379,9 @@ suite "Test Threading":
   teardownAll:
     tp.shutdown()
 
-  proc sqliteFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+  proc sqliteFactory(): Future[KVStore] {.
+      async: (raises: [CancelledError, CatchableError])
+  .} =
     SQLiteKVStore.new(SqliteMemory, tp).tryGet()
 
   threadingTests(sqliteFactory, key)

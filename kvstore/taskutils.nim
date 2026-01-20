@@ -18,18 +18,19 @@ import pkg/questionable/results
 export locks
 export threadsync
 
-type
-  TaskCtx*[T] = object
-    ## Bundles per-task state for cross-thread communication.
-    ##
-    ## - lock: Optional store-level lock (nil if not needed)
-    ## - signal: Completion notification (per-task)
-    ## - result: Output value (per-task)
-    lock*: ptr Lock
-    signal*: ThreadSignalPtr
-    result*: ?!T
+type TaskCtx*[T] = object
+  ## Bundles per-task state for cross-thread communication.
+  ##
+  ## - lock: Optional store-level lock (nil if not needed)
+  ## - signal: Completion notification (per-task)
+  ## - result: Output value (per-task)
+  lock*: ptr Lock
+  signal*: ThreadSignalPtr
+  result*: ?!T
 
-proc awaitSignal*(signal: ThreadSignalPtr): Future[?!void] {.async: (raises: [CancelledError]).} =
+proc awaitSignal*(
+    signal: ThreadSignalPtr
+): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Cancellation-safe wait for task completion.
   ##
   ## Uses join() + noCancel pattern to ensure worker completes before exit:

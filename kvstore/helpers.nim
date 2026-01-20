@@ -60,8 +60,7 @@ proc delete*(
 
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
-    return
-      failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return failure newException(KVStoreError, "Unable to delete record due to conflict")
 
   success()
 
@@ -76,8 +75,7 @@ proc delete*(
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
-    return
-      failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return failure newException(KVStoreError, "Unable to delete record due to conflict")
   success()
 
 # =============================================================================
@@ -121,10 +119,7 @@ proc deleteAtomic*(
 # =============================================================================
 
 proc tryPut*(
-    self: KVStore,
-    records: seq[RawRecord],
-    maxRetries = 3,
-    middleware: RawMiddleware,
+    self: KVStore, records: seq[RawRecord], maxRetries = 3, middleware: RawMiddleware
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk put with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
@@ -173,10 +168,7 @@ proc tryPut*(
   return success()
 
 proc tryDelete*(
-    self: KVStore,
-    records: seq[KeyRecord],
-    maxRetries = 3,
-    middleware: KeyMiddleware,
+    self: KVStore, records: seq[KeyRecord], maxRetries = 3, middleware: KeyMiddleware
 ): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
@@ -220,17 +212,13 @@ proc tryDelete*(
 
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return
-      failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return failure newException(KVStoreError, "Unable to delete record due to conflict")
 
   return success()
 
 # RawRecord tryDelete - middleware works with RawRecord, no conversion
 proc tryDelete*(
-    self: KVStore,
-    records: seq[RawRecord],
-    maxRetries = 3,
-    middleware: RawMiddleware,
+    self: KVStore, records: seq[RawRecord], maxRetries = 3, middleware: RawMiddleware
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry - value passes through untouched (no encode/decode)
   if records.len == 0:
@@ -267,8 +255,7 @@ proc tryDelete*(
   ## Single-record tryDelete - value is ignored (no encode/decode)
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return
-      failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return failure newException(KVStoreError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*(
@@ -331,8 +318,11 @@ proc tryPutAtomic*(
 
     # Prepare next attempt using middleware
     if middleware.isNil:
-      return failure newException(KVStoreError,
-        "Atomic put failed: conflicts on " & $conflicts.len & " keys, no middleware to resolve")
+      return failure newException(
+        KVStoreError,
+        "Atomic put failed: conflicts on " & $conflicts.len &
+          " keys, no middleware to resolve",
+      )
 
     current = ?(await middleware(current, conflicts))
     if current.len == 0:
@@ -343,7 +333,10 @@ proc tryPutAtomic*(
   return failure newMaxRetriesError("tryPutAtomic max retries reached")
 
 proc tryPutAtomic*(
-    self: KVStore, record: RawRecord, maxRetries = 3, middleware: RawAtomicMiddleware = nil
+    self: KVStore,
+    record: RawRecord,
+    maxRetries = 3,
+    middleware: RawAtomicMiddleware = nil,
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Single-record wrapper for tryPutAtomic
   self.tryPutAtomic(@[record], maxRetries, middleware)
@@ -374,8 +367,11 @@ proc tryDeleteAtomic*(
 
     # Prepare next attempt using middleware
     if middleware.isNil:
-      return failure newException(KVStoreError,
-        "Atomic delete failed: conflicts on " & $conflicts.len & " keys, no middleware to resolve")
+      return failure newException(
+        KVStoreError,
+        "Atomic delete failed: conflicts on " & $conflicts.len &
+          " keys, no middleware to resolve",
+      )
 
     current = ?(await middleware(current, conflicts))
     if current.len == 0:
@@ -386,7 +382,10 @@ proc tryDeleteAtomic*(
   return failure newMaxRetriesError("tryDeleteAtomic max retries reached")
 
 proc tryDeleteAtomic*(
-    self: KVStore, record: KeyRecord, maxRetries = 3, middleware: KeyAtomicMiddleware = nil
+    self: KVStore,
+    record: KeyRecord,
+    maxRetries = 3,
+    middleware: KeyAtomicMiddleware = nil,
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Single-record wrapper for tryDeleteAtomic
   self.tryDeleteAtomic(@[record], maxRetries, middleware)
@@ -414,5 +413,5 @@ proc fetchAll*[T](
     if record =? recordOpt:
       res.add(record)
     else:
-      break  # End of stream
+      break # End of stream
   return success(res)

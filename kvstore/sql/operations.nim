@@ -130,7 +130,9 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
     if token < 0:
       raiseAssert("Negative token detected")
 
-    records.add(RawRecord.init(Key.init(keyId).expect("Invalid key from DB"), value, token.uint64))
+    records.add(
+      RawRecord.init(Key.init(keyId).expect("Invalid key from DB"), value, token.uint64)
+    )
 
   # Chunk keys to stay within SQLite parameter limits
   var offset = 0
@@ -146,7 +148,9 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
 
   success records
 
-proc putSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+proc putSync*(
+    db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool
+): ?!seq[Key] {.gcsafe.} =
   ## Synchronous put records
   ?checkWritable(readOnly)
 
@@ -177,8 +181,11 @@ proc putSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Ke
 
     let changes = ?db.checkChanges()
     if changes > 1:
-      return failure(newCorruptionError(
-        "Multiple rows affected by CAS operation on key: " & record.key.id))
+      return failure(
+        newCorruptionError(
+          "Multiple rows affected by CAS operation on key: " & record.key.id
+        )
+      )
 
     if not changed:
       skipped.add(record.key)
@@ -188,7 +195,9 @@ proc putSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Ke
 
   success skipped
 
-proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+proc deleteSync*(
+    db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool
+): ?!seq[Key] {.gcsafe.} =
   ## Synchronous delete records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
   ?checkWritable(readOnly)
@@ -228,8 +237,12 @@ proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq
     offset += chunkSize
 
   if totalChanges > records.len:
-    return failure(newCorruptionError(
-      "Delete affected more rows (" & $totalChanges & ") than records (" & $records.len & ")"))
+    return failure(
+      newCorruptionError(
+        "Delete affected more rows (" & $totalChanges & ") than records (" & $records.len &
+          ")"
+      )
+    )
 
   ?db.endStmt.exec()
   committed = true
@@ -237,7 +250,9 @@ proc deleteSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq
   let skipped = records.filterIt(it.key.id notin deletedIds).mapIt(it.key)
   success skipped
 
-proc putAtomicSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+proc putAtomicSync*(
+    db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool
+): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch put
   ?checkWritable(readOnly)
 
@@ -270,9 +285,12 @@ proc putAtomicSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!
     discard ?db.getSingleStmt.query((record.key.id), onRow)
 
     let conflict =
-      if record.token == 0: exists              # Insert-only but key exists
-      elif not exists: true                     # Update expected but key missing
-      else: currentToken != record.token.int64  # Token mismatch
+      if record.token == 0:
+        exists # Insert-only but key exists
+      elif not exists:
+        true # Update expected but key missing
+      else:
+        currentToken != record.token.int64 # Token mismatch
 
     if conflict:
       conflicts.add(record.key)
@@ -280,7 +298,7 @@ proc putAtomicSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!
   # If any conflicts, rollback and return them
   if conflicts.len > 0:
     ?db.rollbackStmt.exec()
-    committed = true  # Prevent defer rollback
+    committed = true # Prevent defer rollback
     return success conflicts
 
   # Second pass: apply ALL writes (no conflicts)
@@ -299,7 +317,9 @@ proc putAtomicSync*(db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool): ?!
   committed = true
   success newSeq[Key]()
 
-proc deleteAtomicSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool): ?!seq[Key] {.gcsafe.} =
+proc deleteAtomicSync*(
+    db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool
+): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch delete
   ?checkWritable(readOnly)
 
@@ -344,7 +364,7 @@ proc deleteAtomicSync*(db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool):
     let token = ?boundedToken(record.token)
 
     proc onRow(s: RawStmtPtr) =
-      discard  # Consume the returned row
+      discard # Consume the returned row
 
     discard ?db.deleteStmt.query((record.key.id, token), onRow)
 
