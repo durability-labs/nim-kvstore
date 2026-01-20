@@ -35,6 +35,12 @@ const
 export kvstore
 
 type
+  RefCountedLock* = ref object
+    ## AsyncLock with reference counting to safely track waiters.
+    ## Only removed from table when refcount reaches zero.
+    lock*: AsyncLock
+    refCount*: int
+
   FSKVStore* = ref object of KVStore
     ## Filesystem-backed kvstore that stores records as files.
     ##
@@ -44,8 +50,9 @@ type
     root*: string
     ignoreProtected: bool
     depth: int
-    locks: TableRef[Key, AsyncLock]
+    locks: Table[Key, RefCountedLock]
     tasks: HashSet[Future[?!void]]
+    iteratorDisposers: HashSet[IterDispose]  # Track active iterators for close()
     tp: Taskpool
     closed: bool
 
@@ -273,25 +280,37 @@ proc runReadRecordTask(
   ctx[].result = readVersioned(path, key, includeValue)
 
 # =============================================================================
-# Per-Key Locking (unchanged from original)
+# Per-Key Locking with Reference Counting
 # =============================================================================
 
 proc acquire*(
     self: FSKVStore, key: Key
-): Future[AsyncLock] {.async: (raises: [CancelledError]).} =
-  var lock = self.locks.mgetOrPut(key, newAsyncLock())
-  await lock.acquire()
-  lock
+): Future[RefCountedLock] {.async: (raises: [CancelledError]).} =
+  ## Acquire a per-key lock. Refcount is incremented BEFORE await to track waiters.
+  ## This prevents the race where a lock is deleted while tasks are waiting on it.
+  var rcLock = self.locks.mgetOrPut(key, RefCountedLock(lock: newAsyncLock(), refCount: 0))
+  rcLock.refCount += 1  # Increment BEFORE await to count waiters
+  try:
+    await rcLock.lock.acquire()
+  except CancelledError as exc:
+    # If cancelled while waiting, decrement refcount and maybe cleanup
+    rcLock.refCount -= 1
+    if rcLock.refCount == 0:
+      self.locks.del(key)
+    raise exc
+  rcLock
 
-proc release*(self: FSKVStore, key: Key, lock: AsyncLock) {.raises: [].} =
-  if lock.locked:
+proc release*(self: FSKVStore, key: Key, rcLock: RefCountedLock) {.raises: [].} =
+  ## Release a per-key lock. Only removes from table when refcount reaches zero.
+  if rcLock.lock.locked:
     try:
-      lock.release()
+      rcLock.lock.release()
     except CatchableError as err:
       raiseAssert(err.msg) # shouldn't happen
-    finally:
-      if not lock.locked:
-        self.locks.del(key)
+
+  rcLock.refCount -= 1
+  if rcLock.refCount == 0:
+    self.locks.del(key)
 
 # =============================================================================
 # Async Methods (public API)
@@ -367,6 +386,10 @@ method put*(
     let lock = await self.acquire(record.key)
     defer: self.release(record.key, lock)
 
+    # Re-check after await - close() may have started during acquire
+    if self.closed:
+      return failure(newException(KVStoreError, "FSKVStore is closed"))
+
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
     var ctx = TaskCtx[void](signal: signal)
@@ -403,6 +426,10 @@ method delete*(
     let lock = await self.acquire(record.key)
     defer: self.release(record.key, lock)
 
+    # Re-check after await - close() may have started during acquire
+    if self.closed:
+      return failure(newException(KVStoreError, "FSKVStore is closed"))
+
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
     var ctx = TaskCtx[void](signal: signal)
@@ -430,8 +457,33 @@ method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError
 
   self.closed = true
 
-  # wait for all outstanding tasks to finish
-  await noCancel allFutures(self.tasks.toSeq())
+  let
+    disposers = (self.iteratorDisposers).toSeq().mapIt(it())
+    tasks = self.tasks.toSeq()
+
+  await noCancel allFutures(@[
+    # Dispose all active iterators first (copy set since dispose modifies it)
+    noCancel allFutures(disposers),
+    # Dispose all active tasks
+    noCancel allFutures(tasks)])
+
+  let
+    dispErrors = disposers
+      .filterIt(catch(it.read).flatten().isErr)
+      .mapIt(catch(it.read).flatten().error.msg)
+
+    taskErrors = tasks
+      .filterIt(catch(it.read).flatten().isErr)
+      .mapIt(catch(it.read).flatten().error.msg)
+
+  if dispErrors.len > 0 or taskErrors.len > 0:
+    var msg = "Errors occurred during FSKVStore close()"
+    if dispErrors.len > 0:
+      msg &= "\nDisposer errors:\n  - " & dispErrors.join("\n  - ")
+    if taskErrors.len > 0:
+      msg &= "\nTask errors:\n  - " & taskErrors.join("\n  - ")
+    return failure(newException(KVStoreBackendError, msg))
+
   return success()
 
 # =============================================================================
@@ -489,6 +541,13 @@ method query*(
         if err =? catch(state.lock.release()).errorOption:
           state.finished = true
           return failure(err)
+
+    # Re-check after await - close/dispose may have run
+    if self.closed or state.isDisposed:
+      return failure newException(KVStoreError, "FSKVStore is closed or iterator disposed")
+
+    if state.finished:
+      return success(RawRecord.none)
 
     # Step the walker on the async thread (single-threaded, no races).
     # This loop finds the next valid path before spawning a worker.
@@ -548,11 +607,9 @@ method query*(
   proc isFinished(): bool =
     state.finished
 
+  let handle = newFuture[?!void]()
   proc dispose(): Future[?!void] {.async: (raises: [CancelledError]), gcsafe.} =
     state.finished = true
-
-    if state.isDisposed:
-      return success()
 
     await state.lock.acquire()
     defer:
@@ -561,12 +618,25 @@ method query*(
           state.finished = true
           return failure(err)
 
+    # Lock serializes dispose calls - if already disposed, first dispose completed
+    if state.isDisposed:
+      return ?catch(await handle)
+
     state.isDisposed = true
+
+    defer:
+      # Unregister from store
+      self.iteratorDisposers.excl(dispose)
 
     # wait for all iter tasks to finish
     await noCancel allFutures(state.iterTasks.toSeq())
+    if not handle.finished:
+      handle.complete(success())
 
-    return success()
+    return ?catch(await handle)
+
+  # Register dispose proc with store for tracking
+  self.iteratorDisposers.incl(dispose)
 
   return success QueryIter.new(next, isFinished, dispose)
 
@@ -597,6 +667,6 @@ proc new*(
     root: root,
     ignoreProtected: ignoreProtected,
     depth: depth,
-    locks: newTable[Key, AsyncLock](),
+    locks: initTable[Key, RefCountedLock](),
     tp: tp,
   )

@@ -15,6 +15,7 @@ import pkg/kvstore
 import ../kvcommontests
 import ../typedcommontests
 import ../querycommontests
+import ../closecommontests
 
 suite "Test Basic SQLiteKVStore":
   var
@@ -307,3 +308,46 @@ suite "Test Atomic Batch Operations":
 
     let delConflicts = (await ds.deleteAtomic(newSeq[KeyRecord]())).tryGet()
     check delConflicts.len == 0
+
+suite "Test Close and Dispose":
+  var
+    tp: Taskpool
+    ds: SQLiteKVStore
+
+  let
+    key = Key.init("/close/test").tryGet()
+
+  setupAll:
+    tp = Taskpool.new(num_threads = 4)
+    ds = SQLiteKVStore.new(SqliteMemory, tp).tryGet()
+
+  teardownAll:
+    # Best effort close - may already be closed by test
+    discard await ds.close()
+    tp.shutdown()
+
+  iteratorDisposeTests(ds, key)
+
+suite "Test Iterator Tracking":
+  var
+    tp: Taskpool
+
+  let
+    key = Key.init("/tracking/test").tryGet()
+
+  setupAll:
+    tp = Taskpool.new(num_threads = 4)
+
+  teardownAll:
+    tp.shutdown()
+
+  proc sqliteFactory(): Future[KVStore] {.async: (raises: [CancelledError, CatchableError]).} =
+    SQLiteKVStore.new(SqliteMemory, tp).tryGet()
+
+  iteratorTrackingTests(sqliteFactory, key)
+  closeAndDisposeTests(sqliteFactory, key)
+  concurrentCloseTests(sqliteFactory, key)
+
+suite "Test Error Aggregation Pattern":
+  ## Unit tests for the catch(fut.read) pattern used in close()
+  catchPatternTests()
