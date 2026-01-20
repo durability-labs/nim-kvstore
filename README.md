@@ -370,7 +370,8 @@ let readOnlyDs = SQLiteKVStore.new("/path/to/db.sqlite", tp, readOnly = true).tr
 
 **Features:**
 - Supports atomic batch operations (`putAtomic`, `deleteAtomic`)
-- Uses WAL mode and production-ready pragmas
+- WAL mode with `synchronous=NORMAL` (safe, ~2x faster than FULL)
+- `busy_timeout=5000` (waits for locks instead of failing immediately)
 - Automatic statement finalization and connection cleanup
 
 **Note:** SQLite uses `int64` for tokens, limiting the range to `0..high(int64)`.
