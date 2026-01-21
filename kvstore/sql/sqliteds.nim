@@ -68,8 +68,10 @@ proc runHasTask(
   ## Task worker for has() operation
   defer:
     discard ctx[].signal.fireSync()
+
   withLock(lock[]):
-    ctx[].result = hasSync(db[], keyId)
+    let res = hasSync(db[], keyId)
+    ctx[].result = move res
 
 proc runGetTask(
     ctx: ptr TaskCtx[RawRecord], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
@@ -77,8 +79,10 @@ proc runGetTask(
   ## Task worker for get() operation
   defer:
     discard ctx[].signal.fireSync()
+
   withLock(lock[]):
-    ctx[].result = getSync(db[], key)
+    let res = getSync(db[], key)
+    ctx[].result = move res
 
 proc runGetManyTask(
     ctx: ptr TaskCtx[seq[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, keys: seq[Key]
@@ -86,8 +90,10 @@ proc runGetManyTask(
   ## Task worker for get(keys) operation
   defer:
     discard ctx[].signal.fireSync()
+
   withLock(lock[]):
-    ctx[].result = getManySync(db[], keys)
+    let res = getManySync(db[], keys)
+    ctx[].result = move res
 
 proc runPutTask(
     ctx: ptr TaskCtx[seq[Key]],
@@ -99,8 +105,10 @@ proc runPutTask(
   ## Task worker for put() operation
   defer:
     discard ctx[].signal.fireSync()
+
   withLock(lock[]):
-    ctx[].result = putSync(db[], records, readOnly)
+    let res = putSync(db[], records, readOnly)
+    ctx[].result = move res
 
 proc runDeleteTask(
     ctx: ptr TaskCtx[seq[Key]],
@@ -112,8 +120,10 @@ proc runDeleteTask(
   ## Task worker for delete() operation
   defer:
     discard ctx[].signal.fireSync()
+
   withLock(lock[]):
-    ctx[].result = deleteSync(db[], records, readOnly)
+    let res = deleteSync(db[], records, readOnly)
+    ctx[].result = move res
 
 proc runPutAtomicTask(
     ctx: ptr TaskCtx[seq[Key]],
@@ -125,8 +135,10 @@ proc runPutAtomicTask(
   ## Task worker for putAtomic() operation
   defer:
     discard ctx[].signal.fireSync()
+
   withLock(lock[]):
-    ctx[].result = putAtomicSync(db[], records, readOnly)
+    let res = putAtomicSync(db[], records, readOnly)
+    ctx[].result = move res
 
 proc runDeleteAtomicTask(
     ctx: ptr TaskCtx[seq[Key]],
@@ -138,8 +150,10 @@ proc runDeleteAtomicTask(
   ## Task worker for deleteAtomic() operation
   defer:
     discard ctx[].signal.fireSync()
+
   withLock(lock[]):
-    ctx[].result = deleteAtomicSync(db[], records, readOnly)
+    let res = deleteAtomicSync(db[], records, readOnly)
+    ctx[].result = move res
 
 proc runNextTask(
     ctx: ptr TaskCtx[?RawRecord],
@@ -191,19 +205,23 @@ method has*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtx[bool](lock: addr self.lock, signal: signal)
+  let ctx = TaskCtxPtr[bool].new(signal)
   defer:
-    discard ctx.signal.close()
+    discard ctx[].signal.close()
+    freeTaskCtx(ctx)
 
-  self.tp.spawn runHasTask(addr ctx, addr self.db, addr self.lock, key.id)
-  let fut = awaitSignal(ctx.signal)
+  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+  let taskFut = ctx[].signal.wait()
+  self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, key.id)
+
+  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
   ?await fut
 
-  return ctx.result
+  return move ctx[].result
 
 method get*(
     self: SQLiteKVStore, keys: seq[Key]
@@ -218,35 +236,43 @@ method get*(
     # Optimize single-key get to avoid extra allocation
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[RawRecord](lock: addr self.lock, signal: signal)
-    defer:
-      discard ctx.signal.close()
 
-    self.tp.spawn runGetTask(addr ctx, addr self.db, addr self.lock, keys[0])
-    let fut = awaitSignal(ctx.signal)
+    var ctx = TaskCtxPtr[RawRecord].new(signal = signal)
+    defer:
+      discard ctx[].signal.close()
+      freeTaskCtx(ctx)
+
+    # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+    let taskFut = ctx[].signal.wait()
+    self.tp.spawn runGetTask(ctx, addr self.db, addr self.lock, keys[0])
+
+    let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
 
     ?await fut
 
-    return success @[?ctx.result]
+    return success @[?ctx[].result]
   else:
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[seq[RawRecord]](lock: addr self.lock, signal: signal)
+    var ctx = TaskCtxPtr[seq[RawRecord]].new(signal)
     defer:
-      discard ctx.signal.close()
+      discard ctx[].signal.close()
 
-    self.tp.spawn runGetManyTask(addr ctx, addr self.db, addr self.lock, keys)
-    let fut = awaitSignal(ctx.signal)
+    # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+    let taskFut = ctx[].signal.wait()
+    self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, keys)
+
+    let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
 
     ?await fut
 
-    return ctx.result
+    return move ctx[].result
 
 method put*(
     self: SQLiteKVStore, records: seq[RawRecord]
@@ -256,21 +282,23 @@ method put*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtx[seq[Key]](lock: addr self.lock, signal: signal)
+  var ctx = TaskCtxPtr[seq[Key]].new(signal)
   defer:
-    discard ctx.signal.close()
+    discard ctx[].signal.close()
+    freeTaskCtx(ctx)
 
-  self.tp.spawn runPutTask(
-    addr ctx, addr self.db, addr self.lock, records, self.readOnly
-  )
-  let fut = awaitSignal(ctx.signal)
+  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+  let taskFut = ctx[].signal.wait()
+  self.tp.spawn runPutTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
+
+  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
   ?await fut
 
-  return ctx.result
+  return move ctx[].result
 
 method delete*(
     self: SQLiteKVStore, records: seq[KeyRecord]
@@ -283,21 +311,23 @@ method delete*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtx[seq[Key]](lock: addr self.lock, signal: signal)
+  var ctx = TaskCtxPtr[seq[Key]].new(signal)
   defer:
-    discard ctx.signal.close()
+    discard ctx[].signal.close()
+    freeTaskCtx(ctx)
 
-  self.tp.spawn runDeleteTask(
-    addr ctx, addr self.db, addr self.lock, records, self.readOnly
-  )
-  let fut = awaitSignal(ctx.signal)
+  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+  let taskFut = ctx[].signal.wait()
+  self.tp.spawn runDeleteTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
+
+  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
   ?await fut
 
-  return ctx.result
+  return move ctx[].result
 
 # =============================================================================
 # Atomic Batch API Implementation
@@ -322,21 +352,26 @@ method putAtomic*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtx[seq[Key]](lock: addr self.lock, signal: signal)
-  defer:
-    discard ctx.signal.close()
 
+  var ctx = TaskCtxPtr[seq[Key]].new(signal)
+  defer:
+    discard ctx[].signal.close()
+    freeTaskCtx(ctx)
+
+  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+  let taskFut = ctx[].signal.wait()
   self.tp.spawn runPutAtomicTask(
-    addr ctx, addr self.db, addr self.lock, records, self.readOnly
+    ctx, addr self.db, addr self.lock, records, self.readOnly
   )
-  let fut = awaitSignal(ctx.signal)
+
+  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
   ?await fut
 
-  return ctx.result
+  return move ctx[].result
 
 method deleteAtomic*(
     self: SQLiteKVStore, records: seq[KeyRecord]
@@ -352,21 +387,25 @@ method deleteAtomic*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtx[seq[Key]](lock: addr self.lock, signal: signal)
-  defer:
-    discard ctx.signal.close()
 
+  var ctx = TaskCtxPtr[seq[Key]].new(signal)
+  defer:
+    discard ctx[].signal.close()
+
+  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+  let taskFut = ctx[].signal.wait()
   self.tp.spawn runDeleteAtomicTask(
-    addr ctx, addr self.db, addr self.lock, records, self.readOnly
+    ctx, addr self.db, addr self.lock, records, self.readOnly
   )
-  let fut = awaitSignal(ctx.signal)
+
+  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
   ?await fut
 
-  return ctx.result
+  return move ctx[].result
 
 method close*(
     self: SQLiteKVStore
@@ -465,16 +504,18 @@ method query*(
 
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[?RawRecord](lock: addr state.lock, signal: signal)
+
+    var ctx = TaskCtxPtr[?RawRecord].new(signal)
     defer:
-      discard ctx.signal.close()
+      discard ctx[].signal.close()
+      freeTaskCtx(ctx)
 
     state.tp.spawn runNextTask(
-      addr ctx, addr state.stmt, addr state.lock, addr state.finished, state.queryValue
+      ctx, addr state.stmt, addr state.lock, addr state.finished, state.queryValue
     )
 
     # Wait for result - on cancellation, mark finished first then wait for worker
-    let taskFut = ctx.signal.wait()
+    let taskFut = ctx[].signal.wait()
 
     state.iterTasks.incl(taskFut)
     defer:
@@ -488,7 +529,7 @@ method query*(
         raise (ref CancelledError)(err)
       return failure(err)
 
-    return ctx.result
+    return move ctx[].result
 
   proc isFinished(): bool =
     state.finished.load()
