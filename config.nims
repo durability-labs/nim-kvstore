@@ -6,6 +6,7 @@
   usages
 --styleCheck:
   error
+--mm:orc
 
 when (NimMajor, NimMinor) == (1, 2):
   switch("hint", "Processing:off")

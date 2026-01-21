@@ -9,7 +9,7 @@ import std/strutils
 import std/options
 import std/random
 import std/times
-import std/atomics
+
 import std/sets
 import std/sequtils
 
@@ -29,6 +29,8 @@ const
   TokenBytes = sizeof(uint64)
   FileExt* = "dsobj"
   EmptyBytes* = newSeq[byte](0)
+  TimeSlotDuration* = chronos.milliseconds(1)
+    ## Duration of fairness time slot. If exceeded, operations yield.
 
 export kvstore
 
@@ -53,6 +55,7 @@ type
     iteratorDisposers: HashSet[IterDispose] # Track active iterators for close()
     tp: Taskpool
     closed: bool
+    timeSlot: Moment
 
   # Per-iterator state for query operations.
   # The walker is stepped on the async thread (single-threaded, no races).
@@ -188,23 +191,30 @@ proc writeVersioned*(
     discard closeFile(handle)
     discard io2.removeFile(tmp)
 
-  let header = token.toBytesLE()
-  let headerWritten = writeFile(handle, header).valueOr:
-    return failure newBackendError("Failed writing token")
+  let
+    header = token.toBytesLE()
+    headerWritten =
+      ?writeFile(handle, header).mapErr(
+        proc(err: IoErrorCode): ref CatchableError =
+          newBackendError("Failed writing token. Error: " & $err)
+      )
 
   if headerWritten != TokenBytes.uint:
     return failure newBackendError("Failed writing token")
 
   if value.len > 0:
-    let valueWritten = writeFile(handle, value).valueOr:
-      return failure newBackendError("Failed writing data")
+    let valueWritten =
+      ?writeFile(handle, value).mapErr(
+        proc(err: IoErrorCode): ref CatchableError =
+          newBackendError("Failed writing data" & $err)
+      )
+
     if valueWritten != value.len.uint:
       return failure newBackendError("Failed writing data")
 
   if fsync(handle).isErr:
     return failure newBackendError("Failed to sync file")
 
-  discard closeFile(handle)
   ?moveFile(tmp, path)
   syncParentDirectory(path)
   return success()
@@ -259,30 +269,32 @@ proc deleteSync*(path: string, record: KeyRecord): ?!void =
 # Task Workers (top-level procs for threadpool)
 # =============================================================================
 
-proc runHasTask(ctx: ptr TaskCtx[bool], path: string) {.gcsafe.} =
+proc runHasTask(ctx: TaskCtxPtr[bool], path: string) {.gcsafe.} =
   defer:
     discard ctx[].signal.fireSync()
+
   ctx[].result = success(isFile(path))
 
-proc runGetTask(ctx: ptr TaskCtx[RawRecord], path: string, key: Key) {.gcsafe.} =
+proc runGetTask(ctx: TaskCtxPtr[RawRecord], path: string, key: Key) {.gcsafe.} =
   defer:
     discard ctx[].signal.fireSync()
+
   ctx[].result = getSync(path, key)
 
-proc runPutTask(ctx: ptr TaskCtx[void], path: string, record: RawRecord) {.gcsafe.} =
+proc runPutTask(ctx: TaskCtxPtr[void], path: string, record: RawRecord) {.gcsafe.} =
   ## Returns true if successful, false if conflict
   defer:
     discard ctx[].signal.fireSync()
   ctx[].result = putSync(path, record)
 
-proc runDeleteTask(ctx: ptr TaskCtx[void], path: string, record: KeyRecord) {.gcsafe.} =
+proc runDeleteTask(ctx: TaskCtxPtr[void], path: string, record: KeyRecord) {.gcsafe.} =
   ## Returns true if successful, false if conflict/skip
   defer:
     discard ctx[].signal.fireSync()
   ctx[].result = deleteSync(path, record)
 
 proc runReadRecordTask(
-    ctx: ptr TaskCtx[RawRecord], path: string, key: Key, includeValue: bool
+    ctx: TaskCtxPtr[RawRecord], path: string, key: Key, includeValue: bool
 ) {.gcsafe.} =
   ## Task worker for reading a single record from disk.
   ## Walker stepping happens on the async thread; this only does file I/O.
@@ -324,6 +336,14 @@ proc release*(self: FSKVStore, key: Key, rcLock: RefCountedLock) {.raises: [].} 
   if rcLock.refCount == 0:
     self.locks.del(key)
 
+proc checkFairness(self: FSKVStore) {.async: (raises: [CancelledError]).} =
+  ## Yield if we've been hogging the event loop.
+  ## If timeSlot is in the past, the keeper hasn't had a chance to run.
+  let now = Moment.now()
+  if now > self.timeSlot:
+    await sleepAsync(TimeSlotDuration)
+  self.timeSlot += TimeSlotDuration
+
 # =============================================================================
 # Async Methods (public API)
 # =============================================================================
@@ -334,23 +354,28 @@ method has*(
   if self.closed:
     return failure newException(KVStoreError, "FSKVStore is closed")
 
+  await self.checkFairness()
+
   let p = ?self.path(key)
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtx[bool](signal: signal)
+
+  let ctx = TaskCtxPtr[bool].new(signal)
   defer:
     discard ctx.signal.close()
 
-  self.tp.spawn runHasTask(addr ctx, p)
-  let fut = awaitSignal(ctx.signal)
+  let taskFut = signal.wait()
+  self.tp.spawn runHasTask(ctx, p)
+
+  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
   ?await fut
 
-  return ctx.result
+  return move(ctx[].result)
 
 method get*(
     self: FSKVStore, keys: seq[Key]
@@ -361,16 +386,21 @@ method get*(
   var records: seq[RawRecord]
 
   for key in keys:
+    await self.checkFairness()
+
     let p = ?self.path(key)
 
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[RawRecord](signal: signal)
+    let ctx = TaskCtxPtr[RawRecord].new(signal)
     defer:
       discard ctx.signal.close()
+      freeTaskCtx(ctx)
 
-    self.tp.spawn runGetTask(addr ctx, p, key)
-    let fut = awaitSignal(ctx.signal)
+    let taskFut = signal.wait()
+    self.tp.spawn runGetTask(ctx, p, key)
+
+    let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
@@ -395,6 +425,8 @@ method put*(
   var conflicts: seq[Key]
 
   for record in records:
+    await self.checkFairness()
+
     let p = ?self.path(record.key)
 
     # Acquire per-key lock BEFORE spawning task
@@ -408,22 +440,26 @@ method put*(
 
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[void](signal: signal)
+
+    let ctx = TaskCtxPtr[void].new(signal)
     defer:
       discard ctx.signal.close()
+      freeTaskCtx(ctx)
 
-    self.tp.spawn runPutTask(addr ctx, p, record)
-    let fut = awaitSignal(ctx.signal)
+    let taskFut = signal.wait()
+    self.tp.spawn runPutTask(ctx, p, record)
+
+    let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
 
     ?await fut
 
-    if ctx.result.isErr and ctx.result.error of KVConflictError:
+    if ctx[].result.isErr and ctx[].result.error of KVConflictError:
       conflicts.add(record.key)
     else:
-      ?ctx.result
+      ?move(ctx[].result)
 
   return success conflicts
 
@@ -436,6 +472,8 @@ method delete*(
   var skipped: seq[Key]
 
   for record in records:
+    await self.checkFairness()
+
     let p = ?self.path(record.key)
 
     # Acquire per-key lock BEFORE spawning task
@@ -449,22 +487,26 @@ method delete*(
 
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtx[void](signal: signal)
-    defer:
-      discard ctx.signal.close()
 
-    self.tp.spawn runDeleteTask(addr ctx, p, record)
-    let fut = awaitSignal(ctx.signal)
+    let ctx = TaskCtxPtr[void].new(signal)
+    defer:
+      signal.close().get
+      freeTaskCtx(ctx)
+
+    let taskFut = signal.wait()
+    self.tp.spawn runDeleteTask(ctx, p, record)
+
+    let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
 
     ?await fut
 
-    if ctx.result.isErr and ctx.result.error of KVConflictError:
+    if ctx[].result.isErr and ctx[].result.error of KVConflictError:
       skipped.add(record.key)
     else:
-      ?ctx.result
+      ?move(ctx[].result)
 
   return success skipped
 
@@ -601,19 +643,20 @@ method query*(
       # Found a valid path - spawn worker to read the file
       let signal = ThreadSignalPtr.new().valueOr:
         return failure(newException(KVStoreError, error))
-      var ctx = TaskCtx[RawRecord](signal: signal)
+
+      let ctx = TaskCtxPtr[RawRecord].new(signal)
       defer:
-        discard ctx.signal.close()
+        signal.close().get
+        freeTaskCtx(ctx)
 
-      state.tp.spawn runReadRecordTask(addr ctx, absPath, key, state.queryValue)
-
-      # Wait for result - on cancellation, mark finished first then wait for worker
-      let taskFut = ctx.signal.wait()
-
+      let taskFut = signal.wait()
+      # Create wait Future BEFORE spawning to ensure it's pending when signal fires
+      state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
       state.iterTasks.incl(taskFut)
       defer:
         state.iterTasks.excl(taskFut)
 
+      # Wait for result - on cancellation, mark finished first then wait for worker
       if err =? catch(await taskFut.join()).errorOption:
         # Mark finished to stop further iteration, then wait for worker to complete
         state.finished = true
@@ -622,7 +665,7 @@ method query*(
           raise (ref CancelledError)(err)
         return failure(err)
 
-      let record = ?ctx.result
+      let record = ?move(ctx[].result)
       return success(record.some)
 
   proc isFinished(): bool =
@@ -669,8 +712,8 @@ method query*(
 # =============================================================================
 
 proc new*(
-    T: type FSKVStore, root: string, tp: Taskpool, depth = 2, ignoreProtected = false
-): ?!T =
+    _: type FSKVStore, root: string, tp: Taskpool, depth = 2, ignoreProtected = false
+): ?!FSKVStore =
   let root =
     ?(
       block:
@@ -682,10 +725,11 @@ proc new*(
   if not isDir(root):
     return failure "directory does not exist: " & root
 
-  success T(
+  success FSKVStore(
     root: root,
     ignoreProtected: ignoreProtected,
     depth: depth,
     locks: initTable[Key, RefCountedLock](),
+    timeSlot: Moment.now() + TimeSlotDuration,
     tp: tp,
   )
