@@ -80,7 +80,9 @@ proc moveFile(src, dst: string): ?!void {.gcsafe.} =
     os.moveFile(src, dst)
     success()
   except Exception as exc:
-    failure newBackendError("unable to move '" & src & "' to '" & dst & "': " & exc.msg)
+    failure newException(
+      KVStoreBackendError, "unable to move '" & src & "' to '" & dst & "': " & exc.msg
+    )
 
 proc syncParentDirectory(path: string) {.gcsafe.} =
   ## Sync parent directory to ensure rename/delete operations are durable.
@@ -105,20 +107,22 @@ proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
   ##
 
   if not self.validDepth(key):
-    return failure newBackendError("Path has invalid depth!")
+    return failure newException(KVStoreBackendError, "Path has invalid depth!")
 
   var segments: seq[string]
   for ns in key:
     let basename = ns.value.extractFilename
     if basename == "" or not basename.isValidFilename:
-      return failure newBackendError("Filename contains invalid chars!")
+      return
+        failure newException(KVStoreBackendError, "Filename contains invalid chars!")
 
     if ns.field == "":
       segments.add(ns.value)
     else:
       let basename = ns.field.extractFilename
       if basename == "" or not basename.isValidFilename:
-        return failure newBackendError("Filename contains invalid chars!")
+        return
+          failure newException(KVStoreBackendError, "Filename contains invalid chars!")
 
       # `:` are replaced with `/`
       segments.add(ns.field / ns.value)
@@ -127,7 +131,8 @@ proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
   let fullname = absolute.addFileExt(FileExt)
 
   if not self.isRootSubdir(fullname):
-    return failure newBackendError("Path is outside of `root` directory!")
+    return
+      failure newException(KVStoreBackendError, "Path is outside of `root` directory!")
 
   return success fullname
 
@@ -141,24 +146,30 @@ proc readVersioned*(
   if not isFile(path):
     return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
 
-  let handle = openFile(path, {OpenFlags.Read}).valueOr:
-    return failure newException(KVStoreBackendError, "unable to open file: " & path)
+  let handle =
+    ?openFile(path, {OpenFlags.Read}).toKVError(
+      context = "Unable to open file: " & path, errType = KVStoreBackendError
+    )
 
   defer:
     discard closeFile(handle)
 
-  let size = getFileSize(handle).valueOr:
-    return failure newBackendError("unable to get file size: " & path)
+  let size =
+    ?getFileSize(handle).toKVError(
+      context = "Unable to get file size: " & path, errType = KVStoreBackendError
+    )
 
   if size < TokenBytes:
-    return failure newCorruptionError("File too small for record: " & path)
+    return failure newException(KVStoreCorruption, "File too small for record: " & path)
 
   var header: array[TokenBytes, byte]
-  let headerRead = readFile(handle, header).valueOr:
-    return failure newBackendError("unable to read token header")
+  let headerRead =
+    ?readFile(handle, header).toKVError(
+      context = "Unable to read token header", errType = KVStoreBackendError
+    )
 
   if headerRead != TokenBytes.uint:
-    return failure newBackendError("unable to read token header")
+    return failure newException(KVStoreBackendError, "unable to read token header")
 
   let token = uint64.fromBytesLE(header)
   let payloadLen = size - TokenBytes
@@ -167,10 +178,12 @@ proc readVersioned*(
     if data:
       var value = newSeq[byte](payloadLen)
       if payloadLen > 0:
-        let payloadRead = readFile(handle, value).valueOr:
-          return failure newBackendError("unable to read payload")
+        let payloadRead =
+          ?readFile(handle, value).toKVError(
+            context = "Unable to read payload", errType = KVStoreBackendError
+          )
         if payloadRead != payloadLen.uint:
-          return failure newBackendError("unable to read payload")
+          return failure newException(KVStoreBackendError, "unable to read payload")
       value
     else:
       EmptyBytes
@@ -181,12 +194,16 @@ proc writeVersioned*(
     path: string, token: uint64, value: seq[byte]
 ): ?!void {.gcsafe, raises: [].} =
   if createPath(parentDir(path)).isErr:
-    return failure newBackendError("unable to create parent directory")
+    return
+      failure newException(KVStoreBackendError, "unable to create parent directory")
 
   let
     tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
-    handle = openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).valueOr:
-      return failure newBackendError("unable to open temporary file '" & tmp & "'")
+    handle =
+      ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
+        context = "Unable to open temporary file '" & tmp & "'",
+        errType = KVStoreBackendError,
+      )
 
   defer:
     discard io2.removeFile(tmp)
@@ -199,26 +216,25 @@ proc writeVersioned*(
 
     let
       header = token.toBytesLE()
-      headerWritten = writeFile(handle, header).valueOr:
-        discard io2.removeFile(tmp)
-        return failure newBackendError("Failed writing token. Error: " & $error)
+      headerWritten =
+        ?writeFile(handle, header).toKVError(
+          context = "Failed writing token", errType = KVStoreBackendError
+        )
 
     if headerWritten != TokenBytes.uint:
-      discard io2.removeFile(tmp)
-      return failure newBackendError("Failed writing token")
+      return failure newException(KVStoreBackendError, "Failed writing token")
 
     if value.len > 0:
-      let valueWritten = writeFile(handle, value).valueOr:
-        discard io2.removeFile(tmp)
-        return failure newBackendError("Failed writing data. Error: " & $error)
+      let valueWritten =
+        ?writeFile(handle, value).toKVError(
+          context = "Failed writing data", errType = KVStoreBackendError
+        )
 
       if valueWritten != value.len.uint:
-        discard io2.removeFile(tmp)
-        return failure newBackendError("Failed writing data")
+        return failure newException(KVStoreBackendError, "Failed writing data")
 
     if fsync(handle).isErr:
-      discard io2.removeFile(tmp)
-      return failure newBackendError("Failed to sync file")
+      return failure newException(KVStoreBackendError, "Failed to sync file")
 
   # Handle is now closed (block exited) - safe to rename on Windows
   ?moveFile(tmp, path)
@@ -228,7 +244,7 @@ proc writeVersioned*(
 
 proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
   if io2.removeFile(path).isErr:
-    return failure newBackendError("unable to delete file: " & path)
+    return failure newException(KVStoreBackendError, "unable to delete file: " & path)
   syncParentDirectory(path)
   success()
 
@@ -403,8 +419,8 @@ method has*(
 
   let p = ?self.path(key)
 
-  let signal = ThreadSignalPtr.new().valueOr:
-    return failure(newException(KVStoreError, error))
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
 
   let ctx = newSharedPtr(TaskCtx[bool])
   ctx[].signal = signal
@@ -438,8 +454,8 @@ method get*(
 
     let p = ?self.path(key)
 
-    let signal = ThreadSignalPtr.new().valueOr:
-      return failure(newException(KVStoreError, error))
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
     let ctx = newSharedPtr(TaskCtx[RawRecord])
     ctx[].signal = signal
@@ -490,8 +506,8 @@ method put*(
     if self.closed:
       return failure(newException(KVStoreError, "FSKVStore is closed"))
 
-    let signal = ThreadSignalPtr.new().valueOr:
-      return failure(newException(KVStoreError, error))
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
 
     let ctx = newSharedPtr(TaskCtx[void])
     ctx[].signal = signal
@@ -540,8 +556,8 @@ method delete*(
     if self.closed:
       return failure(newException(KVStoreError, "FSKVStore is closed"))
 
-    let signal = ThreadSignalPtr.new().valueOr:
-      return failure(newException(KVStoreError, error))
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
 
     let ctx = newSharedPtr(TaskCtx[void])
     ctx[].signal = signal
@@ -699,8 +715,8 @@ method query*(
       let absPath = absPathRes.get
 
       # Found a valid path - spawn worker to read the file
-      let signal = ThreadSignalPtr.new().valueOr:
-        return failure(newException(KVStoreError, error))
+      let signal =
+        ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
 
       let ctx = newSharedPtr(TaskCtx[RawRecord])
       ctx[].signal = signal
