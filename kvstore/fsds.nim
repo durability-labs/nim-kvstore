@@ -183,41 +183,47 @@ proc writeVersioned*(
   if createPath(parentDir(path)).isErr:
     return failure newBackendError("unable to create parent directory")
 
-  let tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
-
-  let handle = openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).valueOr:
-    return failure newBackendError("unable to open temporary file '" & tmp & "'")
+  let
+    tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
+    handle = openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).valueOr:
+      return failure newBackendError("unable to open temporary file '" & tmp & "'")
 
   defer:
-    discard closeFile(handle)
     discard io2.removeFile(tmp)
 
-  let
-    header = token.toBytesLE()
-    headerWritten =
-      ?writeFile(handle, header).mapErr(
-        proc(err: IoErrorCode): ref CatchableError =
-          newBackendError("Failed writing token. Error: " & $err)
-      )
+  # Write to temp file in a block so handle is closed before rename.
+  # Windows requires file handles to be closed before rename/move.
+  block:
+    defer:
+      discard closeFile(handle)
 
-  if headerWritten != TokenBytes.uint:
-    return failure newBackendError("Failed writing token")
+    let
+      header = token.toBytesLE()
+      headerWritten = writeFile(handle, header).valueOr:
+        discard io2.removeFile(tmp)
+        return failure newBackendError("Failed writing token. Error: " & $error)
 
-  if value.len > 0:
-    let valueWritten =
-      ?writeFile(handle, value).mapErr(
-        proc(err: IoErrorCode): ref CatchableError =
-          newBackendError("Failed writing data" & $err)
-      )
+    if headerWritten != TokenBytes.uint:
+      discard io2.removeFile(tmp)
+      return failure newBackendError("Failed writing token")
 
-    if valueWritten != value.len.uint:
-      return failure newBackendError("Failed writing data")
+    if value.len > 0:
+      let valueWritten = writeFile(handle, value).valueOr:
+        discard io2.removeFile(tmp)
+        return failure newBackendError("Failed writing data. Error: " & $error)
 
-  if fsync(handle).isErr:
-    return failure newBackendError("Failed to sync file")
+      if valueWritten != value.len.uint:
+        discard io2.removeFile(tmp)
+        return failure newBackendError("Failed writing data")
 
+    if fsync(handle).isErr:
+      discard io2.removeFile(tmp)
+      return failure newBackendError("Failed to sync file")
+
+  # Handle is now closed (block exited) - safe to rename on Windows
   ?moveFile(tmp, path)
   syncParentDirectory(path)
+
   return success()
 
 proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
