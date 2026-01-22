@@ -13,6 +13,7 @@ import std/times
 import std/sets
 import std/sequtils
 
+import pkg/chronicles
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
@@ -271,27 +272,54 @@ proc deleteSync*(path: string, record: KeyRecord): ?!void =
 
 proc runHasTask(ctx: TaskCtxPtr[bool], path: string) {.gcsafe.} =
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runHasTask", error = res.error
 
-  ctx[].result = success(isFile(path))
+  ctx[].result = isolate(success(isFile(path)))
 
 proc runGetTask(ctx: TaskCtxPtr[RawRecord], path: string, key: Key) {.gcsafe.} =
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runGetTask", error = res.error
 
-  ctx[].result = getSync(path, key)
+  let r = getSync(path, key)
+  if r.isOk:
+    ctx[].result = isolate(success(r.get))
+  elif r.error of KVStoreKeyNotFound:
+    ctx[].result =
+      isolate(RawRecord.failure(newException(KVStoreKeyNotFound, r.error.msg)))
+  else:
+    ctx[].result = isolate(RawRecord.failure(r.error.msg))
 
 proc runPutTask(ctx: TaskCtxPtr[void], path: string, record: RawRecord) {.gcsafe.} =
-  ## Returns true if successful, false if conflict
   defer:
-    discard ctx[].signal.fireSync()
-  ctx[].result = putSync(path, record)
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runPutTask", error = res.error
+
+  let r = putSync(path, record)
+  if r.isOk:
+    ctx[].result = isolate(success())
+  elif r.error of KVConflictError:
+    ctx[].result = isolate(void.failure(newException(KVConflictError, r.error.msg)))
+  else:
+    ctx[].result = isolate(void.failure(r.error.msg))
 
 proc runDeleteTask(ctx: TaskCtxPtr[void], path: string, record: KeyRecord) {.gcsafe.} =
-  ## Returns true if successful, false if conflict/skip
   defer:
-    discard ctx[].signal.fireSync()
-  ctx[].result = deleteSync(path, record)
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runDeleteTask", error = res.error
+
+  let r = deleteSync(path, record)
+  if r.isOk:
+    ctx[].result = isolate(success())
+  elif r.error of KVConflictError:
+    ctx[].result = isolate(void.failure(newException(KVConflictError, r.error.msg)))
+  else:
+    ctx[].result = isolate(void.failure(r.error.msg))
 
 proc runReadRecordTask(
     ctx: TaskCtxPtr[RawRecord], path: string, key: Key, includeValue: bool
@@ -299,8 +327,15 @@ proc runReadRecordTask(
   ## Task worker for reading a single record from disk.
   ## Walker stepping happens on the async thread; this only does file I/O.
   defer:
-    discard ctx[].signal.fireSync()
-  ctx[].result = readVersioned(path, key, includeValue)
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runReadRecordTask", error = res.error
+
+  let r = readVersioned(path, key, includeValue)
+  if r.isOk:
+    ctx[].result = isolate(success(r.get))
+  else:
+    ctx[].result = isolate(RawRecord.failure(r.error.msg))
 
 # =============================================================================
 # Per-Key Locking with Reference Counting
@@ -363,7 +398,9 @@ method has*(
 
   let ctx = TaskCtxPtr[bool].new(signal)
   defer:
-    discard ctx.signal.close()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in has", error = err
+    freeTaskCtx(ctx)
 
   let taskFut = signal.wait()
   self.tp.spawn runHasTask(ctx, p)
@@ -375,7 +412,7 @@ method has*(
 
   ?await fut
 
-  return move(ctx[].result)
+  return extract(ctx[].result)
 
 method get*(
     self: FSKVStore, keys: seq[Key]
@@ -394,7 +431,8 @@ method get*(
       return failure(newException(KVStoreError, error))
     let ctx = TaskCtxPtr[RawRecord].new(signal)
     defer:
-      discard ctx.signal.close()
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in get", error = err
       freeTaskCtx(ctx)
 
     let taskFut = signal.wait()
@@ -407,12 +445,13 @@ method get*(
 
     ?await fut
 
-    if ctx.result.isOk:
-      records.add(ctx.result.get)
-    elif ctx.result.error of KVStoreKeyNotFound:
+    let opResult = extract(ctx[].result)
+    if opResult.isOk:
+      records.add(opResult.get)
+    elif opResult.error of KVStoreKeyNotFound:
       discard # Skip keys that don't exist
     else:
-      return failure(ctx.result.error) # Propagate other errors
+      return failure(opResult.error)
 
   return success records
 
@@ -443,7 +482,8 @@ method put*(
 
     let ctx = TaskCtxPtr[void].new(signal)
     defer:
-      discard ctx.signal.close()
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in put", error = err
       freeTaskCtx(ctx)
 
     let taskFut = signal.wait()
@@ -456,10 +496,11 @@ method put*(
 
     ?await fut
 
-    if ctx[].result.isErr and ctx[].result.error of KVConflictError:
+    let opResult = extract(ctx[].result)
+    if opResult.isErr and opResult.error of KVConflictError:
       conflicts.add(record.key)
     else:
-      ?move(ctx[].result)
+      ?opResult
 
   return success conflicts
 
@@ -490,7 +531,8 @@ method delete*(
 
     let ctx = TaskCtxPtr[void].new(signal)
     defer:
-      signal.close().get
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in delete", error = err
       freeTaskCtx(ctx)
 
     let taskFut = signal.wait()
@@ -503,10 +545,11 @@ method delete*(
 
     ?await fut
 
-    if ctx[].result.isErr and ctx[].result.error of KVConflictError:
+    let opResult = extract(ctx[].result)
+    if opResult.isErr and opResult.error of KVConflictError:
       skipped.add(record.key)
     else:
-      ?move(ctx[].result)
+      ?opResult
 
   return success skipped
 
@@ -646,11 +689,11 @@ method query*(
 
       let ctx = TaskCtxPtr[RawRecord].new(signal)
       defer:
-        signal.close().get
+        if err =? signal.close().errorOption:
+          warn "signal.close failed in query next", error = err
         freeTaskCtx(ctx)
 
       let taskFut = signal.wait()
-      # Create wait Future BEFORE spawning to ensure it's pending when signal fires
       state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
       state.iterTasks.incl(taskFut)
       defer:
@@ -658,14 +701,13 @@ method query*(
 
       # Wait for result - on cancellation, mark finished first then wait for worker
       if err =? catch(await taskFut.join()).errorOption:
-        # Mark finished to stop further iteration, then wait for worker to complete
         state.finished = true
         ?catch(await noCancel taskFut)
         if err of CancelledError:
           raise (ref CancelledError)(err)
         return failure(err)
 
-      let record = ?move(ctx[].result)
+      let record = ?extract(ctx[].result)
       return success(record.some)
 
   proc isFinished(): bool =
