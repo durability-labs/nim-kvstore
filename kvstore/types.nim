@@ -53,21 +53,6 @@ proc init*[T](_: type Record[T], key: Key, val: T, token = 0'u64): Record[T] =
 proc init*[void](_: type Record[void], key: Key, token = 0'u64): Record[void] =
   Record[void](key: key, token: token)
 
-# =============================================================================
-# Error Constructors
-# =============================================================================
-
-proc newBackendError*(msg: string): ref KVStoreBackendError =
-  newException(KVStoreBackendError, msg)
-
-proc newCorruptionError*(msg: string): ref KVStoreCorruption =
-  newException(KVStoreCorruption, msg)
-
-proc newMaxRetriesError*(
-    msg: string = "Max retries reached"
-): ref KVStoreMaxRetriesError =
-  newException(KVStoreMaxRetriesError, msg)
-
 # Encoder/decoder requirements
 template requireDecoder*(T: typedesc): untyped =
   when not (compiles (let _: ?!T = T.decode(newSeq[byte]()))):
@@ -84,17 +69,17 @@ proc toRaw*[T](record: Record[T]): RawRecord =
   when T is seq[byte]:
     RawRecord.init(record.key, record.val, record.token)
   elif T is not void:
+    mixin encode
     RawRecord.init(record.key, encode(record.val), record.token)
   else:
     RawRecord.init(record.key, newSeq[byte](), record.token)
 
 template toRecord*[T](record: RawRecord): ?!Record[T] =
-  mixin decode
   when T is seq[byte]:
     success Record[T].init(record.key, record.val, record.token)
   elif T is not void:
-    let value = ?T.decode(record.val)
-    success Record[T].init(record.key, value, record.token)
+    mixin decode
+    success Record[T].init(record.key, ?T.decode(record.val), record.token)
   else:
     success KeyRecord.init(record.key, record.token)
 

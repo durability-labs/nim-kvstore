@@ -79,11 +79,15 @@ method putAtomic*(
   ##   - Success with empty seq: All records committed atomically
   ##   - Success with non-empty seq: These keys had conflicts; NOTHING committed
   ##   - Failure: Backend error or atomic not supported
-  return failure newBackendError("Atomic batch not supported by this backend")
+  return failure newException(
+    KVStoreBackendError, "Atomic batch not supported by this backend"
+  )
 
 method deleteAtomic*(
     self: KVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Delete records atomically (all-or-nothing).
   ## Same semantics as putAtomic().
-  return failure newBackendError("Atomic batch not supported by this backend")
+  return failure newException(
+    KVStoreBackendError, "Atomic batch not supported by this backend"
+  )

@@ -177,7 +177,7 @@ proc tryPut*[T](
 
   let results = ?(await self.tryPut(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(KVStoreError, "Unable to put record due to conflict")
+    return failure newException(KVConflictError, "Unable to put record due to conflict")
 
   return success()
 
@@ -226,7 +226,8 @@ proc tryDelete*[T](
   ## Single-record tryDelete
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(KVConflictError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*[T](

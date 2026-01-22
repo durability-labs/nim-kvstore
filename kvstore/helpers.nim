@@ -140,7 +140,7 @@ proc tryPut*(
 
   while true:
     if remaining == 0:
-      return failure newMaxRetriesError("tryPut max retries reached")
+      return failure newException(KVStoreMaxRetriesError, "tryPut max retries reached")
 
     let keys = ?(await self.put(records))
     records = records.filterIt(it.key in keys)
@@ -189,7 +189,8 @@ proc tryDelete*(
 
   while true:
     if remaining == 0:
-      return failure newMaxRetriesError("tryDelete max retries reached")
+      return
+        failure newException(KVStoreMaxRetriesError, "tryDelete max retries reached")
 
     let keys = ?(await self.delete(records))
     records = records.filterIt(it.key in keys)
@@ -235,7 +236,8 @@ proc tryDelete*(
 
   while true:
     if remaining == 0:
-      return failure newMaxRetriesError("tryDelete max retries reached")
+      return
+        failure newException(KVStoreMaxRetriesError, "tryDelete max retries reached")
 
     # Convert to KeyRecord ONLY for the delete call
     let keys = ?(await self.delete(records.toKeyRecord))
@@ -311,7 +313,9 @@ proc tryPutAtomic*(
     return success()
 
   if not self.supportsAtomicBatch():
-    return failure newBackendError("Atomic batch not supported by this backend")
+    return failure newException(
+      KVStoreBackendError, "Atomic batch not supported by this backend"
+    )
 
   var
     remaining = maxRetries
@@ -336,7 +340,8 @@ proc tryPutAtomic*(
 
     dec remaining
 
-  return failure newMaxRetriesError("tryPutAtomic max retries reached")
+  return
+    failure newException(KVStoreMaxRetriesError, "tryPutAtomic max retries reached")
 
 proc tryPutAtomic*(
     self: KVStore,
@@ -360,7 +365,9 @@ proc tryDeleteAtomic*(
     return success()
 
   if not self.supportsAtomicBatch():
-    return failure newBackendError("Atomic batch not supported by this backend")
+    return failure newException(
+      KVStoreBackendError, "Atomic batch not supported by this backend"
+    )
 
   var
     remaining = maxRetries
@@ -385,7 +392,8 @@ proc tryDeleteAtomic*(
 
     dec remaining
 
-  return failure newMaxRetriesError("tryDeleteAtomic max retries reached")
+  return
+    failure newException(KVStoreMaxRetriesError, "tryDeleteAtomic max retries reached")
 
 proc tryDeleteAtomic*(
     self: KVStore,

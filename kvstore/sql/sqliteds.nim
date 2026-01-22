@@ -235,8 +235,8 @@ method has*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal = ThreadSignalPtr.new().valueOr:
-    return failure(newException(KVStoreError, error))
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
 
   let ctx = newSharedPtr(TaskCtx[bool])
   ctx[].signal = signal
@@ -267,8 +267,8 @@ method get*(
     return success(newSeq[RawRecord]())
 
   if keys.len == 1:
-    let signal = ThreadSignalPtr.new().valueOr:
-      return failure(newException(KVStoreError, error))
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
     let ctx = newSharedPtr(TaskCtx[RawRecord])
     ctx[].signal = signal
@@ -295,8 +295,8 @@ method get*(
     else:
       return failure(opResult.error)
   else:
-    let signal = ThreadSignalPtr.new().valueOr:
-      return failure(newException(KVStoreError, error))
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
     let ctx = newSharedPtr(TaskCtx[seq[RawRecord]])
     ctx[].signal = signal
@@ -323,8 +323,8 @@ method put*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal = ThreadSignalPtr.new().valueOr:
-    return failure(newException(KVStoreError, error))
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
 
   let ctx = newSharedPtr(TaskCtx[seq[Key]])
   ctx[].signal = signal
@@ -354,8 +354,8 @@ method delete*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let signal = ThreadSignalPtr.new().valueOr:
-    return failure(newException(KVStoreError, error))
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
 
   let ctx = newSharedPtr(TaskCtx[seq[Key]])
   ctx[].signal = signal
@@ -396,8 +396,8 @@ method putAtomic*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let signal = ThreadSignalPtr.new().valueOr:
-    return failure(newException(KVStoreError, error))
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for putAtomic")
 
   let ctx = newSharedPtr(TaskCtx[seq[Key]])
   ctx[].signal = signal
@@ -432,8 +432,10 @@ method deleteAtomic*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let signal = ThreadSignalPtr.new().valueOr:
-    return failure(newException(KVStoreError, error))
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(
+      context = "Failed to create signal for deleteAtomic"
+    )
 
   let ctx = newSharedPtr(TaskCtx[seq[Key]])
   ctx[].signal = signal
@@ -551,8 +553,8 @@ method query*(
     if state.finished.load():
       return success(RawRecord.none)
 
-    let signal = ThreadSignalPtr.new().valueOr:
-      return failure(newException(KVStoreError, error))
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
 
     let ctx = newSharedPtr(TaskCtx[?RawRecord])
     ctx[].signal = signal

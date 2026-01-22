@@ -227,20 +227,6 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let res = await getOrPut[int](ds, gopKey, failingProducer)
     check res.isErr
 
-  test "newCorruptionError creates error with message":
-    let err = newCorruptionError("corruption detected")
-    check err.msg == "corruption detected"
-    check err of KVStoreCorruption
-
-  test "newMaxRetriesError creates error with default message":
-    let err = newMaxRetriesError()
-    check err.msg == "Max retries reached"
-    check err of KVStoreMaxRetriesError
-
-  test "newMaxRetriesError creates error with custom message":
-    let err = newMaxRetriesError("custom retry error")
-    check err.msg == "custom retry error"
-
   test "single put - conflict returns error":
     let conflictKey = (key / "single-put-conflict").tryGet()
     (await ds.put(conflictKey, 42)).tryGet()
