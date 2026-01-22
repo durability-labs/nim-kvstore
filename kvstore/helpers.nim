@@ -40,7 +40,7 @@ proc put*(
 
   let res = ?(await self.put(@[record]))
   if res.len > 0:
-    return failure newException(KVStoreError, "Unable to put record due to conflict")
+    return failure newException(KVConflictError, "Unable to put record due to conflict")
 
   return success()
 
@@ -60,7 +60,8 @@ proc delete*(
 
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(KVConflictError, "Unable to delete record due to conflict")
 
   success()
 
@@ -75,7 +76,8 @@ proc delete*(
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(KVConflictError, "Unable to delete record due to conflict")
   success()
 
 # =============================================================================
@@ -88,7 +90,7 @@ proc putAtomic*(
   ## Single record is trivially atomic - convenience wrapper.
   let res = ?(await self.putAtomic(@[record]))
   if res.len > 0:
-    return failure newException(KVStoreError, "Unable to put record due to conflict")
+    return failure newException(KVConflictError, "Unable to put record due to conflict")
   return success()
 
 proc deleteAtomic*(
@@ -97,7 +99,8 @@ proc deleteAtomic*(
   ## Single record delete - convenience wrapper.
   let skipped = ?(await self.deleteAtomic(@[record]))
   if skipped.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(KVConflictError, "Unable to delete record due to conflict")
   success()
 
 # RawRecord overloads for deleteAtomic
@@ -111,7 +114,8 @@ proc deleteAtomic*(
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.deleteAtomic(@[record]))
   if skipped.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return
+      failure newException(KVConflictError, "Unable to delete record due to conflict")
   success()
 
 # =============================================================================
@@ -163,7 +167,7 @@ proc tryPut*(
 
   let results = ?(await self.tryPut(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(KVStoreError, "Unable to put record due to conflict")
+    return failure newException(KVConflictError, "Unable to put record due to conflict")
 
   return success()
 
@@ -212,7 +216,7 @@ proc tryDelete*(
 
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return failure newException(KVConflictError, "Unable to delete record due to conflict")
 
   return success()
 
@@ -255,7 +259,7 @@ proc tryDelete*(
   ## Single-record tryDelete - value is ignored (no encode/decode)
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(KVStoreError, "Unable to delete record due to conflict")
+    return failure newException(KVConflictError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*(
