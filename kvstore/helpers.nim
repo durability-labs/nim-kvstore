@@ -216,7 +216,8 @@ proc tryDelete*(
 
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(KVConflictError, "Unable to delete record due to conflict")
+    return
+      failure newException(KVConflictError, "Unable to delete record due to conflict")
 
   return success()
 
@@ -259,7 +260,8 @@ proc tryDelete*(
   ## Single-record tryDelete - value is ignored (no encode/decode)
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
-    return failure newException(KVConflictError, "Unable to delete record due to conflict")
+    return
+      failure newException(KVConflictError, "Unable to delete record due to conflict")
   return success()
 
 proc getOrPut*(
