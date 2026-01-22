@@ -10,6 +10,7 @@ import std/atomics
 import std/sequtils
 import std/strutils
 
+import pkg/chronicles
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
@@ -63,100 +64,131 @@ proc `readOnly=`*(
 # =============================================================================
 
 proc runHasTask(
-    ctx: ptr TaskCtx[bool], db: ptr SQLiteDsDb, lock: ptr Lock, keyId: string
+    ctx: TaskCtxPtr[bool], db: ptr SQLiteDsDb, lock: ptr Lock, keyId: string
 ) {.gcsafe.} =
-  ## Task worker for has() operation
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runHasTask", error = res.error
 
   withLock(lock[]):
-    let res = hasSync(db[], keyId)
-    ctx[].result = move res
+    let r = hasSync(db[], keyId)
+    if r.isOk:
+      ctx[].result = isolate(success(r.get))
+    else:
+      ctx[].result = isolate(bool.failure(r.error.msg))
 
 proc runGetTask(
-    ctx: ptr TaskCtx[RawRecord], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
+    ctx: TaskCtxPtr[RawRecord], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
 ) {.gcsafe.} =
-  ## Task worker for get() operation
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runGetTask", error = res.error
 
   withLock(lock[]):
-    let res = getSync(db[], key)
-    ctx[].result = move res
+    let r = getSync(db[], key)
+    if r.isOk:
+      ctx[].result = isolate(success(r.get))
+    elif r.error of KVStoreKeyNotFound:
+      ctx[].result =
+        isolate(RawRecord.failure(newException(KVStoreKeyNotFound, r.error.msg)))
+    else:
+      ctx[].result = isolate(RawRecord.failure(r.error.msg))
 
 proc runGetManyTask(
-    ctx: ptr TaskCtx[seq[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, keys: seq[Key]
+    ctx: TaskCtxPtr[seq[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, keys: seq[Key]
 ) {.gcsafe.} =
-  ## Task worker for get(keys) operation
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runGetManyTask", error = res.error
 
   withLock(lock[]):
-    let res = getManySync(db[], keys)
-    ctx[].result = move res
+    let r = getManySync(db[], keys)
+    if r.isOk:
+      ctx[].result = isolate(success(r.get))
+    else:
+      ctx[].result = isolate(seq[RawRecord].failure(r.error.msg))
 
 proc runPutTask(
-    ctx: ptr TaskCtx[seq[Key]],
+    ctx: TaskCtxPtr[seq[Key]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[RawRecord],
     readOnly: bool,
 ) {.gcsafe.} =
-  ## Task worker for put() operation
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runPutTask", error = res.error
 
   withLock(lock[]):
-    let res = putSync(db[], records, readOnly)
-    ctx[].result = move res
+    let r = putSync(db[], records, readOnly)
+    if r.isOk:
+      ctx[].result = isolate(success(r.get))
+    else:
+      ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runDeleteTask(
-    ctx: ptr TaskCtx[seq[Key]],
+    ctx: TaskCtxPtr[seq[Key]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[KeyRecord],
     readOnly: bool,
 ) {.gcsafe.} =
-  ## Task worker for delete() operation
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runDeleteTask", error = res.error
 
   withLock(lock[]):
-    let res = deleteSync(db[], records, readOnly)
-    ctx[].result = move res
+    let r = deleteSync(db[], records, readOnly)
+    if r.isOk:
+      ctx[].result = isolate(success(r.get))
+    else:
+      ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runPutAtomicTask(
-    ctx: ptr TaskCtx[seq[Key]],
+    ctx: TaskCtxPtr[seq[Key]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[RawRecord],
     readOnly: bool,
 ) {.gcsafe.} =
-  ## Task worker for putAtomic() operation
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runPutAtomicTask", error = res.error
 
   withLock(lock[]):
-    let res = putAtomicSync(db[], records, readOnly)
-    ctx[].result = move res
+    let r = putAtomicSync(db[], records, readOnly)
+    if r.isOk:
+      ctx[].result = isolate(success(r.get))
+    else:
+      ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runDeleteAtomicTask(
-    ctx: ptr TaskCtx[seq[Key]],
+    ctx: TaskCtxPtr[seq[Key]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[KeyRecord],
     readOnly: bool,
 ) {.gcsafe.} =
-  ## Task worker for deleteAtomic() operation
   defer:
-    discard ctx[].signal.fireSync()
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runDeleteAtomicTask", error = res.error
 
   withLock(lock[]):
-    let res = deleteAtomicSync(db[], records, readOnly)
-    ctx[].result = move res
+    let r = deleteAtomicSync(db[], records, readOnly)
+    if r.isOk:
+      ctx[].result = isolate(success(r.get))
+    else:
+      ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runNextTask(
-    ctx: ptr TaskCtx[?RawRecord],
+    ctx: TaskCtxPtr[?RawRecord],
     stmt: ptr RawStmtPtr,
     lock: ptr Lock,
     finished: ptr Atomic[bool],
@@ -165,33 +197,30 @@ proc runNextTask(
   ## Task worker for query iterator next() operation.
   ## Uses per-iterator lock, not store-wide lock.
   defer:
-    discard ctx[].signal.fireSync()
-
-  # Type alias for explicit Result construction (needed inside withLock)
-  type R = ?!(?RawRecord)
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runNextTask", error = res.error
 
   # Check finished atomically before acquiring lock
-  # Return none instead of error - it's valid to call next() after finishing
   if finished[].load():
-    ctx[].result = R.ok(RawRecord.none)
+    ctx[].result = isolate(success(RawRecord.none))
     return
 
   withLock(lock[]):
     # Double-check after acquiring lock
     if finished[].load():
-      ctx[].result = R.ok(RawRecord.none)
+      ctx[].result = isolate(success(RawRecord.none))
       return
 
-    let res = nextSync(stmt[], queryValue)
-    if res.isErr:
+    let r = nextSync(stmt[], queryValue)
+    if r.isOk:
+      let val = r.get
+      if val.isNone:
+        finished[].store(true)
+      ctx[].result = isolate(success(val))
+    else:
       finished[].store(true)
-      ctx[].result = R.err(res.error)
-      return
-
-    let recordOpt = res.get
-    if recordOpt.isNone:
-      finished[].store(true)
-    ctx[].result = R.ok(recordOpt)
+      ctx[].result = isolate((?RawRecord).failure(r.error.msg))
 
 # =============================================================================
 # Async Methods (public API)
@@ -207,11 +236,11 @@ method has*(
     return failure(newException(KVStoreError, error))
   let ctx = TaskCtxPtr[bool].new(signal)
   defer:
-    discard ctx[].signal.close()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in has", error = err
     freeTaskCtx(ctx)
 
-  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
-  let taskFut = ctx[].signal.wait()
+  let taskFut = signal.wait()
   self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, key.id)
 
   let fut = awaitSignal(taskFut)
@@ -221,7 +250,7 @@ method has*(
 
   ?await fut
 
-  return move ctx[].result
+  return extract(ctx[].result)
 
 method get*(
     self: SQLiteKVStore, keys: seq[Key]
@@ -233,17 +262,16 @@ method get*(
     return success(newSeq[RawRecord]())
 
   if keys.len == 1:
-    # Optimize single-key get to avoid extra allocation
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
 
-    var ctx = TaskCtxPtr[RawRecord].new(signal = signal)
+    let ctx = TaskCtxPtr[RawRecord].new(signal)
     defer:
-      discard ctx[].signal.close()
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in get", error = err
       freeTaskCtx(ctx)
 
-    # Create wait Future BEFORE spawning to ensure it's pending when signal fires
-    let taskFut = ctx[].signal.wait()
+    let taskFut = signal.wait()
     self.tp.spawn runGetTask(ctx, addr self.db, addr self.lock, keys[0])
 
     let fut = awaitSignal(taskFut)
@@ -253,16 +281,23 @@ method get*(
 
     ?await fut
 
-    return success @[?ctx[].result]
+    let opResult = extract(ctx[].result)
+    if opResult.isOk:
+      return success @[opResult.get]
+    elif opResult.error of KVStoreKeyNotFound:
+      return success newSeq[RawRecord]() # Key not found
+    else:
+      return failure(opResult.error)
   else:
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    var ctx = TaskCtxPtr[seq[RawRecord]].new(signal)
+    let ctx = TaskCtxPtr[seq[RawRecord]].new(signal)
     defer:
-      discard ctx[].signal.close()
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in get", error = err
+      freeTaskCtx(ctx)
 
-    # Create wait Future BEFORE spawning to ensure it's pending when signal fires
-    let taskFut = ctx[].signal.wait()
+    let taskFut = signal.wait()
     self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, keys)
 
     let fut = awaitSignal(taskFut)
@@ -272,7 +307,7 @@ method get*(
 
     ?await fut
 
-    return move ctx[].result
+    return extract(ctx[].result)
 
 method put*(
     self: SQLiteKVStore, records: seq[RawRecord]
@@ -282,13 +317,13 @@ method put*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtxPtr[seq[Key]].new(signal)
+  let ctx = TaskCtxPtr[seq[Key]].new(signal)
   defer:
-    discard ctx[].signal.close()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in put", error = err
     freeTaskCtx(ctx)
 
-  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
-  let taskFut = ctx[].signal.wait()
+  let taskFut = signal.wait()
   self.tp.spawn runPutTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
 
   let fut = awaitSignal(taskFut)
@@ -298,7 +333,7 @@ method put*(
 
   ?await fut
 
-  return move ctx[].result
+  return extract(ctx[].result)
 
 method delete*(
     self: SQLiteKVStore, records: seq[KeyRecord]
@@ -311,13 +346,13 @@ method delete*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  var ctx = TaskCtxPtr[seq[Key]].new(signal)
+  let ctx = TaskCtxPtr[seq[Key]].new(signal)
   defer:
-    discard ctx[].signal.close()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in delete", error = err
     freeTaskCtx(ctx)
 
-  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
-  let taskFut = ctx[].signal.wait()
+  let taskFut = signal.wait()
   self.tp.spawn runDeleteTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
 
   let fut = awaitSignal(taskFut)
@@ -327,7 +362,7 @@ method delete*(
 
   ?await fut
 
-  return move ctx[].result
+  return extract(ctx[].result)
 
 # =============================================================================
 # Atomic Batch API Implementation
@@ -340,7 +375,6 @@ method putAtomic*(
     self: SQLiteKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch put with CAS.
-  ##
   ## If ANY record has a CAS conflict, NO records are committed.
   ## Returns conflict keys on rollback, empty seq on success.
 
@@ -353,13 +387,13 @@ method putAtomic*(
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
 
-  var ctx = TaskCtxPtr[seq[Key]].new(signal)
+  let ctx = TaskCtxPtr[seq[Key]].new(signal)
   defer:
-    discard ctx[].signal.close()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in putAtomic", error = err
     freeTaskCtx(ctx)
 
-  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
-  let taskFut = ctx[].signal.wait()
+  let taskFut = signal.wait()
   self.tp.spawn runPutAtomicTask(
     ctx, addr self.db, addr self.lock, records, self.readOnly
   )
@@ -371,7 +405,7 @@ method putAtomic*(
 
   ?await fut
 
-  return move ctx[].result
+  return extract(ctx[].result)
 
 method deleteAtomic*(
     self: SQLiteKVStore, records: seq[KeyRecord]
@@ -388,12 +422,13 @@ method deleteAtomic*(
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
 
-  var ctx = TaskCtxPtr[seq[Key]].new(signal)
+  let ctx = TaskCtxPtr[seq[Key]].new(signal)
   defer:
-    discard ctx[].signal.close()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in deleteAtomic", error = err
+    freeTaskCtx(ctx)
 
-  # Create wait Future BEFORE spawning to ensure it's pending when signal fires
-  let taskFut = ctx[].signal.wait()
+  let taskFut = signal.wait()
   self.tp.spawn runDeleteAtomicTask(
     ctx, addr self.db, addr self.lock, records, self.readOnly
   )
@@ -405,7 +440,7 @@ method deleteAtomic*(
 
   ?await fut
 
-  return move ctx[].result
+  return extract(ctx[].result)
 
 method close*(
     self: SQLiteKVStore
@@ -505,31 +540,29 @@ method query*(
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
 
-    var ctx = TaskCtxPtr[?RawRecord].new(signal)
+    let ctx = TaskCtxPtr[?RawRecord].new(signal)
     defer:
-      discard ctx[].signal.close()
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in query next", error = err
       freeTaskCtx(ctx)
 
+    let taskFut = signal.wait()
     state.tp.spawn runNextTask(
       ctx, addr state.stmt, addr state.lock, addr state.finished, state.queryValue
     )
-
-    # Wait for result - on cancellation, mark finished first then wait for worker
-    let taskFut = ctx[].signal.wait()
 
     state.iterTasks.incl(taskFut)
     defer:
       state.iterTasks.excl(taskFut)
 
     if err =? catch(await taskFut.join()).errorOption:
-      # Mark finished to stop further iteration, then wait for worker to complete
       state.finished.store(true)
       ?catch(await noCancel taskFut)
       if err of CancelledError:
         raise (ref CancelledError)(err)
       return failure(err)
 
-    return move ctx[].result
+    return extract(ctx[].result)
 
   proc isFinished(): bool =
     state.finished.load()

@@ -9,9 +9,10 @@ description = "Simple, unified API for multiple data stores with optimistic conc
 license = "Apache License 2.0 or MIT"
 
 requires "nim >= 2.0.14",
-  "asynctest >= 0.5.2 & < 0.6.0", "chronos >= 4.0.4 & < 5.0.0",
-  "questionable >= 0.10.15 & < 0.11.0", "sqlite3_abi >= 3.47.0.0 & < 4.0.0.0",
-  "stew >= 0.2.0 & < 0.5.0", "taskpools >= 0.0.5", "threading",
+  "asynctest >= 0.5.2 & < 0.6.0", "chronicles >= 0.12.0 & < 0.13.0",
+  "chronos >= 4.0.4 & < 5.0.0", "questionable >= 0.10.15 & < 0.11.0",
+  "sqlite3_abi >= 3.47.0.0 & < 4.0.0.0", "stew >= 0.2.0 & < 0.5.0",
+  "taskpools >= 0.0.5", "threading >= 0.2.1 & < 0.3.0",
   "unittest2 >= 0.2.3 & < 0.3.0"
 
 task coverage, "generates code coverage report":
