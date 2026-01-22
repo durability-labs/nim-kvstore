@@ -64,7 +64,7 @@ proc `readOnly=`*(
 # =============================================================================
 
 proc runHasTask(
-    ctx: TaskCtxPtr[bool], db: ptr SQLiteDsDb, lock: ptr Lock, keyId: string
+    ctx: SharedPtr[TaskCtx[bool]], db: ptr SQLiteDsDb, lock: ptr Lock, keyId: string
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -79,7 +79,7 @@ proc runHasTask(
       ctx[].result = isolate(bool.failure(r.error.msg))
 
 proc runGetTask(
-    ctx: TaskCtxPtr[RawRecord], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
+    ctx: SharedPtr[TaskCtx[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -97,7 +97,10 @@ proc runGetTask(
       ctx[].result = isolate(RawRecord.failure(r.error.msg))
 
 proc runGetManyTask(
-    ctx: TaskCtxPtr[seq[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, keys: seq[Key]
+    ctx: SharedPtr[TaskCtx[seq[RawRecord]]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    keys: seq[Key],
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -112,7 +115,7 @@ proc runGetManyTask(
       ctx[].result = isolate(seq[RawRecord].failure(r.error.msg))
 
 proc runPutTask(
-    ctx: TaskCtxPtr[seq[Key]],
+    ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[RawRecord],
@@ -131,7 +134,7 @@ proc runPutTask(
       ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runDeleteTask(
-    ctx: TaskCtxPtr[seq[Key]],
+    ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[KeyRecord],
@@ -150,7 +153,7 @@ proc runDeleteTask(
       ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runPutAtomicTask(
-    ctx: TaskCtxPtr[seq[Key]],
+    ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[RawRecord],
@@ -169,7 +172,7 @@ proc runPutAtomicTask(
       ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runDeleteAtomicTask(
-    ctx: TaskCtxPtr[seq[Key]],
+    ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: seq[KeyRecord],
@@ -188,7 +191,7 @@ proc runDeleteAtomicTask(
       ctx[].result = isolate(seq[Key].failure(r.error.msg))
 
 proc runNextTask(
-    ctx: TaskCtxPtr[?RawRecord],
+    ctx: SharedPtr[TaskCtx[?RawRecord]],
     stmt: ptr RawStmtPtr,
     lock: ptr Lock,
     finished: ptr Atomic[bool],
@@ -234,11 +237,13 @@ method has*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  let ctx = TaskCtxPtr[bool].new(signal)
+
+  let ctx = newSharedPtr(TaskCtx[bool])
+  ctx[].signal = signal
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in has", error = err
-    freeTaskCtx(ctx)
+    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, key.id)
@@ -265,11 +270,12 @@ method get*(
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
 
-    let ctx = TaskCtxPtr[RawRecord].new(signal)
+    let ctx = newSharedPtr(TaskCtx[RawRecord])
+    ctx[].signal = signal
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
-      freeTaskCtx(ctx)
+      # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
     self.tp.spawn runGetTask(ctx, addr self.db, addr self.lock, keys[0])
@@ -291,11 +297,13 @@ method get*(
   else:
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    let ctx = TaskCtxPtr[seq[RawRecord]].new(signal)
+
+    let ctx = newSharedPtr(TaskCtx[seq[RawRecord]])
+    ctx[].signal = signal
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
-      freeTaskCtx(ctx)
+      # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
     self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, keys)
@@ -317,11 +325,13 @@ method put*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  let ctx = TaskCtxPtr[seq[Key]].new(signal)
+
+  let ctx = newSharedPtr(TaskCtx[seq[Key]])
+  ctx[].signal = signal
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in put", error = err
-    freeTaskCtx(ctx)
+    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runPutTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
@@ -346,11 +356,13 @@ method delete*(
 
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
-  let ctx = TaskCtxPtr[seq[Key]].new(signal)
+
+  let ctx = newSharedPtr(TaskCtx[seq[Key]])
+  ctx[].signal = signal
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in delete", error = err
-    freeTaskCtx(ctx)
+    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runDeleteTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
@@ -387,11 +399,12 @@ method putAtomic*(
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
 
-  let ctx = TaskCtxPtr[seq[Key]].new(signal)
+  let ctx = newSharedPtr(TaskCtx[seq[Key]])
+  ctx[].signal = signal
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in putAtomic", error = err
-    freeTaskCtx(ctx)
+    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runPutAtomicTask(
@@ -422,11 +435,12 @@ method deleteAtomic*(
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
 
-  let ctx = TaskCtxPtr[seq[Key]].new(signal)
+  let ctx = newSharedPtr(TaskCtx[seq[Key]])
+  ctx[].signal = signal
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in deleteAtomic", error = err
-    freeTaskCtx(ctx)
+    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runDeleteAtomicTask(
@@ -540,11 +554,12 @@ method query*(
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
 
-    let ctx = TaskCtxPtr[?RawRecord].new(signal)
+    let ctx = newSharedPtr(TaskCtx[?RawRecord])
+    ctx[].signal = signal
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in query next", error = err
-      freeTaskCtx(ctx)
+      # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
     state.tp.spawn runNextTask(

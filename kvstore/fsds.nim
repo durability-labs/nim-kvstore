@@ -270,7 +270,7 @@ proc deleteSync*(path: string, record: KeyRecord): ?!void =
 # Task Workers (top-level procs for threadpool)
 # =============================================================================
 
-proc runHasTask(ctx: TaskCtxPtr[bool], path: string) {.gcsafe.} =
+proc runHasTask(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
@@ -278,7 +278,7 @@ proc runHasTask(ctx: TaskCtxPtr[bool], path: string) {.gcsafe.} =
 
   ctx[].result = isolate(success(isFile(path)))
 
-proc runGetTask(ctx: TaskCtxPtr[RawRecord], path: string, key: Key) {.gcsafe.} =
+proc runGetTask(ctx: SharedPtr[TaskCtx[RawRecord]], path: string, key: Key) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
@@ -293,7 +293,9 @@ proc runGetTask(ctx: TaskCtxPtr[RawRecord], path: string, key: Key) {.gcsafe.} =
   else:
     ctx[].result = isolate(RawRecord.failure(r.error.msg))
 
-proc runPutTask(ctx: TaskCtxPtr[void], path: string, record: RawRecord) {.gcsafe.} =
+proc runPutTask(
+    ctx: SharedPtr[TaskCtx[void]], path: string, record: RawRecord
+) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
@@ -307,7 +309,9 @@ proc runPutTask(ctx: TaskCtxPtr[void], path: string, record: RawRecord) {.gcsafe
   else:
     ctx[].result = isolate(void.failure(r.error.msg))
 
-proc runDeleteTask(ctx: TaskCtxPtr[void], path: string, record: KeyRecord) {.gcsafe.} =
+proc runDeleteTask(
+    ctx: SharedPtr[TaskCtx[void]], path: string, record: KeyRecord
+) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
@@ -322,7 +326,7 @@ proc runDeleteTask(ctx: TaskCtxPtr[void], path: string, record: KeyRecord) {.gcs
     ctx[].result = isolate(void.failure(r.error.msg))
 
 proc runReadRecordTask(
-    ctx: TaskCtxPtr[RawRecord], path: string, key: Key, includeValue: bool
+    ctx: SharedPtr[TaskCtx[RawRecord]], path: string, key: Key, includeValue: bool
 ) {.gcsafe.} =
   ## Task worker for reading a single record from disk.
   ## Walker stepping happens on the async thread; this only does file I/O.
@@ -396,11 +400,12 @@ method has*(
   let signal = ThreadSignalPtr.new().valueOr:
     return failure(newException(KVStoreError, error))
 
-  let ctx = TaskCtxPtr[bool].new(signal)
+  let ctx = newSharedPtr(TaskCtx[bool])
+  ctx[].signal = signal
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in has", error = err
-    freeTaskCtx(ctx)
+    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runHasTask(ctx, p)
@@ -429,11 +434,13 @@ method get*(
 
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
-    let ctx = TaskCtxPtr[RawRecord].new(signal)
+
+    let ctx = newSharedPtr(TaskCtx[RawRecord])
+    ctx[].signal = signal
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
-      freeTaskCtx(ctx)
+      # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
     self.tp.spawn runGetTask(ctx, p, key)
@@ -480,11 +487,12 @@ method put*(
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
 
-    let ctx = TaskCtxPtr[void].new(signal)
+    let ctx = newSharedPtr(TaskCtx[void])
+    ctx[].signal = signal
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in put", error = err
-      freeTaskCtx(ctx)
+      # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
     self.tp.spawn runPutTask(ctx, p, record)
@@ -529,11 +537,12 @@ method delete*(
     let signal = ThreadSignalPtr.new().valueOr:
       return failure(newException(KVStoreError, error))
 
-    let ctx = TaskCtxPtr[void].new(signal)
+    let ctx = newSharedPtr(TaskCtx[void])
+    ctx[].signal = signal
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in delete", error = err
-      freeTaskCtx(ctx)
+      # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
     self.tp.spawn runDeleteTask(ctx, p, record)
@@ -687,11 +696,12 @@ method query*(
       let signal = ThreadSignalPtr.new().valueOr:
         return failure(newException(KVStoreError, error))
 
-      let ctx = TaskCtxPtr[RawRecord].new(signal)
+      let ctx = newSharedPtr(TaskCtx[RawRecord])
+      ctx[].signal = signal
       defer:
         if err =? signal.close().errorOption:
           warn "signal.close failed in query next", error = err
-        freeTaskCtx(ctx)
+        # SharedPtr handles TaskCtx cleanup automatically
 
       let taskFut = signal.wait()
       state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
