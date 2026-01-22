@@ -56,6 +56,74 @@
         "sha1": "928e82cb8d2f554e8f10feb2349ee9c32fee3a8c"
       }
     },
+    "faststreams": {
+      "version": "0.5.0",
+      "vcsRevision": "ce27581a3e881f782f482cb66dc5b07a02bd615e",
+      "url": "https://github.com/status-im/nim-faststreams",
+      "downloadMethod": "git",
+      "dependencies": [
+        "stew",
+        "unittest2"
+      ],
+      "checksums": {
+        "sha1": "ee61e507b805ae1df7ec936f03f2d101b0d72383"
+      }
+    },
+    "serialization": {
+      "version": "0.4.9",
+      "vcsRevision": "b5193007a49639b21b2b80cd8ef8cbe0df6b0e48",
+      "url": "https://github.com/status-im/nim-serialization",
+      "downloadMethod": "git",
+      "dependencies": [
+        "faststreams",
+        "unittest2",
+        "stew"
+      ],
+      "checksums": {
+        "sha1": "ab0812a7e16ae39ee68f4a6b1938a1b83dee34be"
+      }
+    },
+    "json_serialization": {
+      "version": "0.4.2",
+      "vcsRevision": "e076cb9a2dff30e13aad0bb4a13049da86d07967",
+      "url": "https://github.com/status-im/nim-json-serialization",
+      "downloadMethod": "git",
+      "dependencies": [
+        "serialization",
+        "stew",
+        "results"
+      ],
+      "checksums": {
+        "sha1": "2b26a9e0fc79638dbb9272fb4ab5a1d79264f938"
+      }
+    },
+    "testutils": {
+      "version": "0.8.0",
+      "vcsRevision": "e4d37dc1652d5c63afb89907efb5a5e812261797",
+      "url": "https://github.com/status-im/nim-testutils",
+      "downloadMethod": "git",
+      "dependencies": [
+        "unittest2"
+      ],
+      "checksums": {
+        "sha1": "d1678f50aa47d113b4e77d41eec2190830b523fa"
+      }
+    },
+    "chronicles": {
+      "version": "0.12.3",
+      "vcsRevision": "e7f87336d2fa47b7752b42f0be4cabd5663a5e5c",
+      "url": "https://github.com/status-im/nim-chronicles",
+      "downloadMethod": "git",
+      "dependencies": [
+        "faststreams",
+        "serialization",
+        "json_serialization",
+        "testutils"
+      ],
+      "checksums": {
+        "sha1": "3dab9aabf9c8bd53cfc4b6ecd956b90e5988defd"
+      }
+    },
     "httputils": {
       "version": "0.3.0",
       "vcsRevision": "79cbab1460f4c0cdde2084589d017c43a3d7b4f1",
