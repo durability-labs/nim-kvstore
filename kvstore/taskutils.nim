@@ -15,10 +15,12 @@ import std/hashes
 import pkg/chronos
 import pkg/chronos/threadsync
 import pkg/questionable/results
+import pkg/threading/smartptrs
 
 export isolation
 export locks
 export threadsync
+export smartptrs
 
 type TaskCtx*[T] = object
   ## Bundles per-task state for cross-thread communication.
@@ -26,27 +28,19 @@ type TaskCtx*[T] = object
   ## - signal: Completion notification (per-task)
   ## - result: Output value wrapped in Isolated for thread-safe transfer
   ##
-  ## Error messages are preserved but exception types become generic CatchableError.
+  ## Workers must manually unpack results and recreate exceptions with their
+  ## original types to satisfy Isolated's compile-time isolation check.
+  ## This preserves both error messages and exception types (e.g., KVConflictError).
+  ##
+  ## Memory management: Use SharedPtr[TaskCtx[T]] for automatic cleanup via
+  ## atomic reference counting. SharedPtr handles cross-thread ownership safely.
   signal*: ThreadSignalPtr
   result*: Isolated[?!T]
 
-# NOTE: No =destroy hook - we manage memory manually with allocShared/deallocShared
-# Adding a destructor interferes with ORC when TaskCtx is used with raw pointers.
-
-type TaskCtxPtr*[T] = ptr TaskCtx[T]
-
-proc new*[T](_: type TaskCtxPtr[T], signal: ThreadSignalPtr): TaskCtxPtr[T] =
-  ## Allocate a TaskCtx on the shared heap.
-  ## MUST be freed with freeTaskCtx after use.
-  let res = cast[TaskCtxPtr[T]](allocShared0(sizeof(TaskCtx[T])))
-  res.signal = signal
-
-  res
-
-proc freeTaskCtx*[T](ctx: TaskCtxPtr[T]) =
-  ## Free a heap-allocated TaskCtx.
-  if ctx != nil:
-    deallocShared(ctx)
+proc `=destroy`*[T](ctx: var TaskCtx[T]) =
+  ## Destructor cleans up Isolated result field.
+  ## Called automatically when SharedPtr's refcount drops to zero.
+  `=destroy`(ctx.result)
 
 proc awaitSignal*(
     taskFut: Future[void].Raising([AsyncError, CancelledError])
