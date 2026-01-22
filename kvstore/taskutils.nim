@@ -17,7 +17,10 @@ import pkg/chronos/threadsync
 import pkg/questionable/results
 import pkg/threading/smartptrs
 
+import ./types
+
 export isolation
+export types
 export locks
 export threadsync
 export smartptrs
@@ -66,3 +69,36 @@ proc awaitSignal*(
 proc hash*[T](fut: Future[T]): Hash =
   ## Hash a chronos Future by its pointer address.
   hash(cast[pointer](fut))
+
+template toKVError*[T, E](
+    self: Result[T, E], context: string = "Error", errType: typedesc = KVStoreError
+): ?!T =
+  ## Convert any error to a KVStore error.
+  ##
+  ## If the error is already a KVStoreError subtype at runtime, it is preserved
+  ## as-is to avoid flattening the error hierarchy (context is not added).
+  ##
+  ## Usage:
+  ##   let signal = ?ThreadSignalPtr.new().toKVError()
+  ##   let signal = ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal")
+  ##   let handle = ?openFile(path, flags).toKVError(errType = KVStoreBackendError)
+  ##
+  when E is ref CatchableError:
+    self.mapErr(
+      proc(e: E): ref CatchableError =
+        # Preserve existing KVStoreError subtypes at runtime
+        if e of KVStoreError:
+          e
+        else:
+          newException(errType, context & ": " & e.msg, parentException = e)
+    )
+  elif E is string:
+    self.mapErr(
+      proc(e: string): ref CatchableError =
+        newException(errType, context & ": " & e)
+    )
+  else:
+    self.mapErr(
+      proc(e: E): ref CatchableError =
+        newException(errType, context & ": " & $e)
+    )

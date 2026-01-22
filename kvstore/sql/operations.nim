@@ -17,6 +17,7 @@ import pkg/sqlite3_abi
 import ../key
 import ../query
 import ../kvstore
+import ../taskutils
 import ./sqlitedsdb
 import ./sqliteutils
 
@@ -49,12 +50,12 @@ proc newRollbackError*(
 
 proc boundedToken*(token: uint64): ?!int64 =
   if token > uint64(high(int64)):
-    return failure(newCorruptionError("SQLite token overflow"))
+    return failure(newException(KVStoreCorruption, "SQLite token overflow"))
   success token.int64
 
 proc checkWritable*(readOnly: bool): ?!void =
   if readOnly:
-    return failure(newBackendError("SQLite store opened read-only"))
+    return failure(newException(KVStoreBackendError, "SQLite store opened read-only"))
   success()
 
 # =============================================================================
@@ -182,8 +183,9 @@ proc putSync*(
     let changes = ?db.checkChanges()
     if changes > 1:
       return failure(
-        newCorruptionError(
-          "Multiple rows affected by CAS operation on key: " & record.key.id
+        newException(
+          KVStoreCorruption,
+          "Multiple rows affected by CAS operation on key: " & record.key.id,
         )
       )
 
@@ -238,9 +240,10 @@ proc deleteSync*(
 
   if totalChanges > records.len:
     return failure(
-      newCorruptionError(
+      newException(
+        KVStoreCorruption,
         "Delete affected more rows (" & $totalChanges & ") than records (" & $records.len &
-          ")"
+          ")",
       )
     )
 
@@ -394,8 +397,8 @@ proc prepareQueryStmt*(env: SQLite, query: Query): ?!RawStmtPtr {.gcsafe.} =
   ## Prepare and bind a query statement.
   let
     queryStr = buildQueryString(query)
-    queryStmt = QueryStmt.prepare(env, queryStr).valueOr:
-      return failure(newException(KVStoreError, "Query prepare failed: " & error.msg))
+    queryStmt =
+      ?QueryStmt.prepare(env, queryStr).toKVError(context = "Query prepare failed")
     s = RawStmtPtr(queryStmt)
 
   var v = sqlite3_bind_text(
@@ -428,8 +431,8 @@ proc nextSync*(stmt: RawStmtPtr, queryValue: bool): ?!Option[RawRecord] {.gcsafe
   case v
   of SQLITE_ROW:
     let keyStr = $sqlite3_column_text_not_null(stmt, QueryStmtIdCol)
-    let key = Key.init(keyStr).valueOr:
-      return failure(newException(KVStoreError, "Invalid key in database: " & keyStr))
+    let key =
+      ?Key.init(keyStr).toKVError(context = "Invalid key in database: " & keyStr)
 
     var data: seq[byte] = @[]
 
