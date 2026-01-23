@@ -35,7 +35,7 @@ type
     lock: Lock # Serializes access to shared prepared statements
     tp: Taskpool # Injected threadpool for async operations
     tasks: HashSet[Future[?!void]] # Track outstanding tasks for close()
-    iteratorDisposers: HashSet[IterDispose] # Track active iterators for close()
+    disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
     closed: bool
 
   # Per-iterator state for query operations
@@ -48,8 +48,7 @@ type
     finished*: Atomic[bool]
     isDisposed*: bool
     tp*: Taskpool # For spawning next() workers
-    iterTasks*: HashSet[Future[void].Raising([AsyncError, CancelledError])]
-      # Track outstanding iterator tasks
+    iterTaskHandle*: Future[?!void] # Track outstanding iterator tasks
     queryValue*: bool # Whether to include value in results
 
 proc path*(self: SQLiteKVStore): string =
@@ -193,6 +192,9 @@ proc runNextTask(
 method has*(
     self: SQLiteKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  # don't move after closed, every await introduces concurrency
+  await checkFairness()
+
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -220,6 +222,9 @@ method has*(
 method get*(
     self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+  # don't move after closed, every await introduces concurrency
+  await checkFairness()
+
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -272,6 +277,9 @@ method get*(
 method put*(
     self: SQLiteKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  # don't move after closed, every await introduces concurrency
+  await checkFairness()
+
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -299,6 +307,9 @@ method put*(
 method delete*(
     self: SQLiteKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  # don't move after closed, every await introduces concurrency
+  await checkFairness()
+
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -340,6 +351,9 @@ method putAtomic*(
   ## If ANY record has a CAS conflict, NO records are committed.
   ## Returns conflict keys on rollback, empty seq on success.
 
+  # don't move after closed, every await introduces concurrency
+  await checkFairness()
+
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -374,6 +388,9 @@ method deleteAtomic*(
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch delete with CAS.
   ## Same semantics as putAtomic().
+
+  # don't move after closed, every await introduces concurrency
+  await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
@@ -417,46 +434,13 @@ method close*(
   defer:
     deinitLock(self.lock) # don't leak resources
 
-  let
-    disposers = (self.iteratorDisposers).toSeq().mapIt(it())
-    tasks = self.tasks.toSeq()
+  let tasks = self.tasks.toSeq().mapIt(it.cancelAndWait())
+  await noCancel allFutures(tasks)
 
-  await noCancel allFutures(
-    @[
-      # Dispose all active iterators first (copy set since dispose modifies it)
-      noCancel allFutures(disposers),
-      # Dispose all active tasks
-      noCancel allFutures(tasks),
-    ]
-  )
+  # Wait for dispose calls to finish (don't cancel them)
+  await noCancel allFutures(self.disposeHandles.toSeq())
 
-  let
-    dispErrors = disposers.filterIt(catch(it.read).flatten().isErr).mapIt(
-        catch(it.read).flatten().error.msg
-      )
-
-    taskErrors = tasks.filterIt(catch(it.read).flatten().isErr).mapIt(
-        catch(it.read).flatten().error.msg
-      )
-
-  var
-    errMsg: string
-    failed = false
-
-  if dispErrors.len > 0 or taskErrors.len > 0:
-    failed = true
-    if dispErrors.len > 0:
-      errMsg &= "\nDisposer errors:\n  - " & dispErrors.join("\n  - ")
-    if taskErrors.len > 0:
-      errMsg &= "\nTask errors:\n  - " & taskErrors.join("\n  - ")
-
-  if err =? self.db.close().errorOption:
-    failed = true
-    errMsg &= "\nDatabase close error: " & err.msg
-
-  if failed:
-    errMsg = "Error closing SQLiteKVStore:\n" & errMsg
-    return failure(newException(KVStoreError, errMsg))
+  ?self.db.close()
 
   return success()
 
@@ -477,6 +461,9 @@ method query*(
 
   let asyncLock = newAsyncLock()
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
+    # don't move after closed, every await introduces concurrency
+    await checkFairness()
+
     if self.closed or state.isDisposed or state.finished.load():
       return failure newException(
         KVStoreError, "SQLiteKVStore is closed or iterator disposed/finished"
@@ -515,16 +502,20 @@ method query*(
       ctx, addr state.stmt, addr state.lock, addr state.finished, state.queryValue
     )
 
-    state.iterTasks.incl(taskFut)
-    defer:
-      state.iterTasks.excl(taskFut)
+    let fut = awaitSignal(
+      taskFut,
+      onError = proc() {.async: (raises: [CancelledError]).} =
+        state.finished.store(true),
+    )
 
-    if err =? catch(await taskFut.join()).errorOption:
-      state.finished.store(true)
-      ?catch(await noCancel taskFut)
-      if err of CancelledError:
-        raise (ref CancelledError)(err)
-      return failure(err)
+    # disposer task handle for graceful dispose
+    state.iterTaskHandle = fut
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
+      state.iterTaskHandle = nil
+
+    ?await fut
 
     let r = extract(ctx[].result)
     if r.isErr or (r.isOk and r.get.isNone):
@@ -542,6 +533,15 @@ method query*(
     # Signal workers to stop accepting new work
     state.finished.store(true)
 
+    # Register with store so close() waits for us
+    self.disposeHandles.incl(handle)
+    defer:
+      self.disposeHandles.excl(handle)
+
+    # Cancel iter task before acquiring lock (so next() can release it)
+    if not state.iterTaskHandle.isNil:
+      await state.iterTaskHandle.cancelAndWait()
+
     await asyncLock.acquire()
     defer:
       if asyncLock.locked:
@@ -556,23 +556,14 @@ method query*(
     state.isDisposed = true
 
     defer:
-      # Unregister from store
-      self.iteratorDisposers.excl(dispose)
-
-    defer:
       # don't leak resources
       discard disposeStmtSync(state.stmt)
       deinitLock(state.lock)
 
-    # wait for iter tasks to finish
-    await noCancel allFutures(state.iterTasks.toSeq())
     if not handle.finished:
       handle.complete(success())
 
     return ?catch(await handle)
-
-  # Register dispose proc with store for tracking
-  self.iteratorDisposers.incl(dispose)
 
   return success QueryIter.new(next, isFinished, isDisposed, dispose)
 
