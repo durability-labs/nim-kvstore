@@ -217,11 +217,13 @@ proc serializationTests*(factory: StoreFactory, key: Key) =
     var futures: seq[Future[?!void]]
     for i in 0 ..< 5:
       let record = RawRecord.init(testKey, ("update" & $i).toBytes, initial.token)
-      futures.add((
-        proc(r: RawRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
-          await event.wait()
-          await ds.put(r)
-      )(record))
+      futures.add(
+        (
+          proc(r: RawRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
+            await event.wait()
+            await ds.put(r)
+        )(record)
+      )
 
     event.fire()
     await allFutures(futures)
@@ -256,11 +258,13 @@ proc serializationTests*(factory: StoreFactory, key: Key) =
     var futures: seq[Future[?!void]]
     for i in 0 ..< 3:
       let record = KeyRecord.init(testKey, current.token)
-      futures.add((
-        proc(r: KeyRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
-          await event.wait()
-          await ds.delete(r)
-      )(record))
+      futures.add(
+        (
+          proc(r: KeyRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
+            await event.wait()
+            await ds.delete(r)
+        )(record)
+      )
 
     event.fire()
     await allFutures(futures)
@@ -343,11 +347,13 @@ proc iteratorThreadingTests*(factory: StoreFactory, key: Key) =
     # This ensures all 10 next() calls race simultaneously
     var futures: seq[Future[?!Option[RawRecord]]]
     for i in 0 ..< 10:
-      futures.add((
-        proc(): Future[?!Option[RawRecord]] {.async: (raises: [CancelledError]).} =
-          await event.wait()
-          await iter.next()
-      )())
+      futures.add(
+        (
+          proc(): Future[?!Option[RawRecord]] {.async: (raises: [CancelledError]).} =
+            await event.wait()
+            await iter.next()
+        )()
+      )
 
     event.fire()
     await allFutures(futures)
@@ -597,11 +603,13 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
     var futures: seq[Future[?!void]]
     for i in 0 ..< numTasks:
       let record = RawRecord.init(testKey, makeValue("update" & $i), initial.token)
-      futures.add((
-        proc(): Future[?!void] {.async: (raises: [CancelledError]).} =
-          await event.wait()
-          await ds.put(record)
-      )())
+      futures.add(
+        (
+          proc(): Future[?!void] {.async: (raises: [CancelledError]).} =
+            await event.wait()
+            await ds.put(record)
+        )()
+      )
 
     # Release all tasks simultaneously
     event.fire()
