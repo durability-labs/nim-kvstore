@@ -489,17 +489,16 @@ let fsDs = FSKVStore.new(
 
 ### Closing a Store
 
-The `close()` method performs graceful shutdown:
+The `close()` method shuts down the store and releases resources:
 
 ```nim
 (await ds.close()).tryGet()
 ```
 
 **Close behavior:**
-1. **Waits for in-flight operations** - All pending `get`, `put`, `delete` operations complete before close returns
-2. **Auto-disposes active iterators** - Any iterators not explicitly disposed are automatically cleaned up
-3. **Releases resources** - Database connections, file handles, and locks are released
-4. **Idempotent** - Calling `close()` multiple times is safe (subsequent calls return immediately)
+1. **Cancels in-flight operations** - Outstanding `get`, `put`, `delete`, and iterator operations are cancelled
+2. **Releases resources** - Database connections, file handles, and locks are released
+3. **Idempotent** - Calling `close()` multiple times is safe (subsequent calls return immediately)
 
 **After close:**
 - All operations (`get`, `put`, `delete`, `query`, etc.) return a failure
@@ -512,15 +511,34 @@ let result = await ds.get(key)
 assert result.isErr  # Returns failure, doesn't crash
 ```
 
-**Best practice:** While `close()` auto-disposes iterators, explicitly disposing them is recommended for deterministic resource cleanup:
+### Iterator Lifecycle
+
+**Iterators are must-dispose resources.** Always call `dispose()` when done:
 
 ```nim
 let iter = (await ds.query(q)).tryGet()
-defer: discard await iter.dispose()  # Explicit dispose
+defer: discard await iter.dispose()  # Always dispose
 # ... use iterator ...
-
-(await ds.close()).tryGet()  # Will still work if you forget dispose
 ```
+
+Failing to dispose iterators before `close()` may cause `close()` to fail (e.g., SQLite cannot close with open statements).
+
+### Handling Close Failures
+
+**Close failures should be treated as fatal.** If `close()` returns an error, the application should initiate shutdown:
+
+```nim
+if err =? (await ds.close()).errorOption:
+  # Fatal: resources may be leaked, trigger application shutdown
+  fatal "Store close failed", error = err.msg
+  quit(1)
+```
+
+Close can fail if:
+- Iterators were not disposed (SQLite: open prepared statements)
+- Backend resources cannot be released
+
+Once `close()` fails, the store is in an undefined state and cannot be recovered.
 
 ## Query API
 
@@ -552,7 +570,7 @@ let records = (await iter2.fetchAll()).tryGet()
 discard await iter2.dispose()
 ```
 
-**Important:** Iterator `dispose()` is async and should always be called to release resources.
+**Important:** Iterators are must-dispose resources. Always call `dispose()` to release backend resources (prepared statements, locks). Failing to dispose before `close()` may cause close to fail.
 
 ## Error Types
 

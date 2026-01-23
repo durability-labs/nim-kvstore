@@ -30,8 +30,6 @@ const
   TokenBytes = sizeof(uint64)
   FileExt* = "dsobj"
   EmptyBytes* = newSeq[byte](0)
-  TimeSlotDuration* = chronos.milliseconds(1)
-    ## Duration of fairness time slot. If exceeded, operations yield.
 
 export kvstore
 
@@ -53,10 +51,9 @@ type
     depth: int
     locks: Table[Key, RefCountedLock]
     tasks: HashSet[Future[?!void]]
-    iteratorDisposers: HashSet[IterDispose] # Track active iterators for close()
+    disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
     tp: Taskpool
     closed: bool
-    timeSlot: Moment
 
   # Per-iterator state for query operations.
   # The walker is stepped on the async thread (single-threaded, no races).
@@ -69,7 +66,7 @@ type
     queryValue: bool
     finished: bool
     isDisposed: bool
-    iterTasks: HashSet[Future[void].Raising([AsyncError, CancelledError])]
+    iterTaskHandle: Future[?!void]
     lock: AsyncLock
     tp: Taskpool
 
@@ -374,14 +371,6 @@ proc release*(self: FSKVStore, key: Key, rcLock: RefCountedLock) {.raises: [].} 
   if rcLock.refCount == 0:
     self.locks.del(key)
 
-proc checkFairness(self: FSKVStore) {.async: (raises: [CancelledError]).} =
-  ## Yield if we've been hogging the event loop.
-  ## If timeSlot is in the past, the keeper hasn't had a chance to run.
-  let now = Moment.now()
-  if now > self.timeSlot:
-    await sleepAsync(TimeSlotDuration)
-  self.timeSlot += TimeSlotDuration
-
 # =============================================================================
 # Async Methods (public API)
 # =============================================================================
@@ -389,10 +378,11 @@ proc checkFairness(self: FSKVStore) {.async: (raises: [CancelledError]).} =
 method has*(
     self: FSKVStore, key: Key
 ): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  # don't move after closed, every await introduces concurrency
+  await checkFairness()
+
   if self.closed:
     return failure newException(KVStoreError, "FSKVStore is closed")
-
-  await self.checkFairness()
 
   let p = ?self.path(key)
 
@@ -420,13 +410,13 @@ method has*(
 method get*(
     self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
-  if self.closed:
-    return failure newException(KVStoreError, "FSKVStore is closed")
-
   var records: seq[RawRecord]
 
   for key in keys:
-    await self.checkFairness()
+    await checkFairness()
+
+    if self.closed:
+      return failure newException(KVStoreError, "FSKVStore is closed")
 
     let p = ?self.path(key)
 
@@ -468,7 +458,7 @@ method put*(
   var conflicts: seq[Key]
 
   for record in records:
-    await self.checkFairness()
+    await checkFairness()
 
     let p = ?self.path(record.key)
 
@@ -511,13 +501,13 @@ method put*(
 method delete*(
     self: FSKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  if self.closed:
-    return failure newException(KVStoreError, "FSKVStore is closed")
-
   var skipped: seq[Key]
 
   for record in records:
-    await self.checkFairness()
+    await checkFairness()
+
+    if self.closed:
+      return failure newException(KVStoreError, "FSKVStore is closed")
 
     let p = ?self.path(record.key)
 
@@ -562,36 +552,13 @@ method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError
     return success()
 
   self.closed = true
+  let tasks = (self.tasks).toSeq().mapIt(it.cancelAndWait())
 
-  let
-    disposers = (self.iteratorDisposers).toSeq().mapIt(it())
-    tasks = self.tasks.toSeq()
+  # Cancel all active tasks
+  await noCancel allFutures(tasks)
 
-  await noCancel allFutures(
-    @[
-      # Dispose all active iterators first (copy set since dispose modifies it)
-      noCancel allFutures(disposers),
-      # Dispose all active tasks
-      noCancel allFutures(tasks),
-    ]
-  )
-
-  let
-    dispErrors = disposers.filterIt(catch(it.read).flatten().isErr).mapIt(
-        catch(it.read).flatten().error.msg
-      )
-
-    taskErrors = tasks.filterIt(catch(it.read).flatten().isErr).mapIt(
-        catch(it.read).flatten().error.msg
-      )
-
-  if dispErrors.len > 0 or taskErrors.len > 0:
-    var msg = "Errors occurred during FSKVStore close()"
-    if dispErrors.len > 0:
-      msg &= "\nDisposer errors:\n  - " & dispErrors.join("\n  - ")
-    if taskErrors.len > 0:
-      msg &= "\nTask errors:\n  - " & taskErrors.join("\n  - ")
-    return failure(newException(KVStoreBackendError, msg))
+  # Wait for dispose calls to finish (don't cancel them)
+  await noCancel allFutures(self.disposeHandles.toSeq())
 
   return success()
 
@@ -639,6 +606,9 @@ method query*(
   state.isDisposed = false
 
   proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
+    # don't move to after close/disposed/finished checks due to concurrency
+    await checkFairness()
+
     if self.closed or state.isDisposed or state.finished:
       return failure newException(
         KVStoreError, "FSKVStore is closed or iterator disposed/finished"
@@ -699,17 +669,20 @@ method query*(
 
       let taskFut = signal.wait()
       state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
-      state.iterTasks.incl(taskFut)
-      defer:
-        state.iterTasks.excl(taskFut)
+      let fut = awaitSignal(
+        taskFut,
+        onError = proc() {.async: (raises: [CancelledError]).} =
+          state.finished = true,
+      )
 
-      # Wait for result - on cancellation, mark finished first then wait for worker
-      if err =? catch(await taskFut.join()).errorOption:
-        state.finished = true
-        ?catch(await noCancel taskFut)
-        if err of CancelledError:
-          raise (ref CancelledError)(err)
-        return failure(err)
+      # disposer task handle for graceful dispose
+      state.iterTaskHandle = fut
+      self.tasks.incl(fut)
+      defer:
+        self.tasks.excl(fut)
+        state.iterTaskHandle = nil
+
+      ?await fut
 
       let record = ?extract(ctx[].result)
       return success(record.some)
@@ -724,6 +697,15 @@ method query*(
   proc dispose(): Future[?!void] {.async: (raises: [CancelledError]), gcsafe.} =
     state.finished = true
 
+    # Register with store so close() waits for us
+    self.disposeHandles.incl(handle)
+    defer:
+      self.disposeHandles.excl(handle)
+
+    # Cancel iter task before acquiring lock (so next() can release it)
+    if not state.iterTaskHandle.isNil:
+      await state.iterTaskHandle.cancelAndWait()
+
     await state.lock.acquire()
     defer:
       if state.lock.locked:
@@ -737,19 +719,10 @@ method query*(
 
     state.isDisposed = true
 
-    defer:
-      # Unregister from store
-      self.iteratorDisposers.excl(dispose)
-
-    # wait for all iter tasks to finish
-    await noCancel allFutures(state.iterTasks.toSeq())
     if not handle.finished:
       handle.complete(success())
 
     return ?catch(await handle)
-
-  # Register dispose proc with store for tracking
-  self.iteratorDisposers.incl(dispose)
 
   return success QueryIter.new(next, isFinished, isDisposed, dispose)
 
@@ -776,6 +749,5 @@ proc new*(
     ignoreProtected: ignoreProtected,
     depth: depth,
     locks: initTable[Key, RefCountedLock](),
-    timeSlot: Moment.now() + TimeSlotDuration,
     tp: tp,
   )
