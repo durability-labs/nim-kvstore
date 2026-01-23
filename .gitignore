@@ -14,3 +14,6 @@ nimble.paths
 nimbledeps
 .claude
 AGENTS.md
+bin/
+*.log
+*.dSYM
