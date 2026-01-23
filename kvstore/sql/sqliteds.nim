@@ -529,7 +529,10 @@ method query*(
         raise (ref CancelledError)(err)
       return failure(err)
 
-    return extract(ctx[].result)
+    let r = extract(ctx[].result)
+    if r.isOk and r.get.isNone:
+      state.finished.store(true)
+    return r
 
   proc isFinished(): bool =
     state.finished.load()
@@ -585,9 +588,9 @@ proc new*(T: type SQLiteKVStore, path: string, tp: Taskpool, readOnly = false): 
   ##   - readOnly: Open in read-only mode
   let flags =
     if readOnly:
-      SQLITE_OPEN_READONLY
+      SQLITE_OPEN_READONLY or SQLITE_OPEN_FULLMUTEX
     else:
-      SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE
+      SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE or SQLITE_OPEN_FULLMUTEX
 
   var store = T(db: ?SQLiteDsDb.open(path, flags), readOnly: readOnly, tp: tp)
   initLock(store.lock)
