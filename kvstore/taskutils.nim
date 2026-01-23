@@ -40,11 +40,6 @@ type TaskCtx*[T] = object
   signal*: ThreadSignalPtr
   result*: Isolated[?!T]
 
-proc `=destroy`*[T](ctx: var TaskCtx[T]) =
-  ## Destructor cleans up Isolated result field.
-  ## Called automatically when SharedPtr's refcount drops to zero.
-  `=destroy`(ctx.result)
-
 proc awaitSignal*(
     taskFut: Future[void].Raising([AsyncError, CancelledError])
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
