@@ -27,6 +27,7 @@ export smartptrs
 
 const
   ## Duration of fairness time slot. If exceeded, operations yield.
+  ## Set high enough to batch multiple operations before yielding.
   TimeSlotDuration = 1.milliseconds
   LastCalledInterval = 10.milliseconds
 
@@ -110,24 +111,33 @@ template toKVError*[T, E](
         newException(errType, context & ": " & $e)
     )
 
+var
+  fairnessTimeSlot {.global.}: Moment
+  fairnessLastCalled {.global.}: Moment
+  fairnessInitialized {.global.}: bool = false
+
 proc checkFairness*() {.async: (raises: [CancelledError]).} =
   ## Yield to prevent event loop starvation during bursty operations.
   ##
   ## Only yields when calls are frequent (bursty). Sparse calls reset the
   ## time slot without yielding, so occasional operations don't pay the cost.
+  ##
+  ## Uses sleepAsync(0) for minimal yielding - just processes pending callbacks.
 
-  var
-    timeSlot {.global.}: Moment = Moment.now() + TimeSlotDuration
-    lastCalled {.global.}: Moment = Moment.now()
+  if not fairnessInitialized:
+    fairnessTimeSlot = Moment.now() + TimeSlotDuration
+    fairnessLastCalled = Moment.now()
+    fairnessInitialized = true
 
   let now = Moment.now()
 
-  if (now - lastCalled) >= LastCalledInterval:
+  if (now - fairnessLastCalled) >= LastCalledInterval:
     # Sparse call - new burst starting, reset deadline
-    timeSlot = now + TimeSlotDuration
-  elif now >= timeSlot:
+    fairnessTimeSlot = now + TimeSlotDuration
+  elif now >= fairnessTimeSlot:
     # Bursty and past deadline - yield and set next deadline
-    await sleepAsync(TimeSlotDuration)
-    timeSlot = Moment.now() + TimeSlotDuration
+    # sleepAsync(0) just yields without timer overhead
+    await sleepAsync(0)
+    fairnessTimeSlot = Moment.now() + TimeSlotDuration
 
-  lastCalled = now
+  fairnessLastCalled = now
