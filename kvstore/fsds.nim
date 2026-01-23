@@ -306,14 +306,7 @@ proc runGetTask(ctx: SharedPtr[TaskCtx[RawRecord]], path: string, key: Key) {.gc
     if res.isErr:
       warn "fireSync failed in runGetTask", error = res.error
 
-  let r = getSync(path, key)
-  if r.isOk:
-    ctx[].result = isolate(success(r.get))
-  elif r.error of KVStoreKeyNotFound:
-    ctx[].result =
-      isolate(RawRecord.failure(newException(KVStoreKeyNotFound, r.error.msg)))
-  else:
-    ctx[].result = isolate(RawRecord.failure(r.error.msg))
+  ctx[].result = unsafeIsolate(getSync(path, key))
 
 proc runPutTask(
     ctx: SharedPtr[TaskCtx[void]], path: string, record: RawRecord
@@ -323,13 +316,7 @@ proc runPutTask(
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
 
-  let r = putSync(path, record)
-  if r.isOk:
-    ctx[].result = isolate(success())
-  elif r.error of KVConflictError:
-    ctx[].result = isolate(void.failure(newException(KVConflictError, r.error.msg)))
-  else:
-    ctx[].result = isolate(void.failure(r.error.msg))
+  ctx[].result = unsafeIsolate(putSync(path, record))
 
 proc runDeleteTask(
     ctx: SharedPtr[TaskCtx[void]], path: string, record: KeyRecord
@@ -339,13 +326,7 @@ proc runDeleteTask(
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
 
-  let r = deleteSync(path, record)
-  if r.isOk:
-    ctx[].result = isolate(success())
-  elif r.error of KVConflictError:
-    ctx[].result = isolate(void.failure(newException(KVConflictError, r.error.msg)))
-  else:
-    ctx[].result = isolate(void.failure(r.error.msg))
+  ctx[].result = unsafeIsolate(deleteSync(path, record))
 
 proc runReadRecordTask(
     ctx: SharedPtr[TaskCtx[RawRecord]], path: string, key: Key, includeValue: bool
@@ -357,11 +338,7 @@ proc runReadRecordTask(
     if res.isErr:
       warn "fireSync failed in runReadRecordTask", error = res.error
 
-  let r = readVersioned(path, key, includeValue)
-  if r.isOk:
-    ctx[].result = isolate(success(r.get))
-  else:
-    ctx[].result = isolate(RawRecord.failure(r.error.msg))
+  ctx[].result = unsafeIsolate(readVersioned(path, key, includeValue))
 
 # =============================================================================
 # Per-Key Locking with Reference Counting
@@ -422,8 +399,7 @@ method has*(
   let signal =
     ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
 
-  let ctx = newSharedPtr(TaskCtx[bool])
-  ctx[].signal = signal
+  let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in has", error = err
@@ -457,8 +433,7 @@ method get*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
-    let ctx = newSharedPtr(TaskCtx[RawRecord])
-    ctx[].signal = signal
+    let ctx = newSharedPtr(TaskCtx[RawRecord](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
@@ -474,13 +449,13 @@ method get*(
 
     ?await fut
 
-    let opResult = extract(ctx[].result)
-    if opResult.isOk:
-      records.add(opResult.get)
-    elif opResult.error of KVStoreKeyNotFound:
-      discard # Skip keys that don't exist
-    else:
-      return failure(opResult.error)
+    without record =? extract(ctx[].result), err:
+      if err of KVStoreKeyNotFound:
+        continue
+      else:
+        return failure(err)
+
+    records.add(record)
 
   return success records
 
@@ -509,8 +484,7 @@ method put*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
 
-    let ctx = newSharedPtr(TaskCtx[void])
-    ctx[].signal = signal
+    let ctx = newSharedPtr(TaskCtx[void](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in put", error = err
@@ -526,11 +500,11 @@ method put*(
 
     ?await fut
 
-    let opResult = extract(ctx[].result)
-    if opResult.isErr and opResult.error of KVConflictError:
-      conflicts.add(record.key)
-    else:
-      ?opResult
+    if err =? extract(ctx[].result).errorOption:
+      if err of KVConflictError:
+        conflicts.add(record.key)
+      else:
+        return failure(err)
 
   return success conflicts
 
@@ -559,8 +533,7 @@ method delete*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
 
-    let ctx = newSharedPtr(TaskCtx[void])
-    ctx[].signal = signal
+    let ctx = newSharedPtr(TaskCtx[void](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in delete", error = err
@@ -718,8 +691,7 @@ method query*(
       let signal =
         ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
 
-      let ctx = newSharedPtr(TaskCtx[RawRecord])
-      ctx[].signal = signal
+      let ctx = newSharedPtr(TaskCtx[RawRecord](signal: signal))
       defer:
         if err =? signal.close().errorOption:
           warn "signal.close failed in query next", error = err

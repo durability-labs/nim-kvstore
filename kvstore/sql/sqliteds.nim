@@ -72,11 +72,7 @@ proc runHasTask(
       warn "fireSync failed in runHasTask", error = res.error
 
   withLock(lock[]):
-    let r = hasSync(db[], keyId)
-    if r.isOk:
-      ctx[].result = isolate(success(r.get))
-    else:
-      ctx[].result = isolate(bool.failure(r.error.msg))
+    ctx[].result = unsafeIsolate(hasSync(db[], keyId))
 
 proc runGetTask(
     ctx: SharedPtr[TaskCtx[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
@@ -87,14 +83,7 @@ proc runGetTask(
       warn "fireSync failed in runGetTask", error = res.error
 
   withLock(lock[]):
-    let r = getSync(db[], key)
-    if r.isOk:
-      ctx[].result = isolate(success(r.get))
-    elif r.error of KVStoreKeyNotFound:
-      ctx[].result =
-        isolate(RawRecord.failure(newException(KVStoreKeyNotFound, r.error.msg)))
-    else:
-      ctx[].result = isolate(RawRecord.failure(r.error.msg))
+    ctx[].result = unsafeIsolate(getSync(db[], key))
 
 proc runGetManyTask(
     ctx: SharedPtr[TaskCtx[seq[RawRecord]]],
@@ -108,11 +97,7 @@ proc runGetManyTask(
       warn "fireSync failed in runGetManyTask", error = res.error
 
   withLock(lock[]):
-    let r = getManySync(db[], keys)
-    if r.isOk:
-      ctx[].result = isolate(success(r.get))
-    else:
-      ctx[].result = isolate(seq[RawRecord].failure(r.error.msg))
+    ctx[].result = unsafeIsolate(getManySync(db[], keys))
 
 proc runPutTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -127,11 +112,7 @@ proc runPutTask(
       warn "fireSync failed in runPutTask", error = res.error
 
   withLock(lock[]):
-    let r = putSync(db[], records, readOnly)
-    if r.isOk:
-      ctx[].result = isolate(success(r.get))
-    else:
-      ctx[].result = isolate(seq[Key].failure(r.error.msg))
+    ctx[].result = unsafeIsolate(putSync(db[], records, readOnly))
 
 proc runDeleteTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -146,11 +127,7 @@ proc runDeleteTask(
       warn "fireSync failed in runDeleteTask", error = res.error
 
   withLock(lock[]):
-    let r = deleteSync(db[], records, readOnly)
-    if r.isOk:
-      ctx[].result = isolate(success(r.get))
-    else:
-      ctx[].result = isolate(seq[Key].failure(r.error.msg))
+    ctx[].result = unsafeIsolate(deleteSync(db[], records, readOnly))
 
 proc runPutAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -165,11 +142,7 @@ proc runPutAtomicTask(
       warn "fireSync failed in runPutAtomicTask", error = res.error
 
   withLock(lock[]):
-    let r = putAtomicSync(db[], records, readOnly)
-    if r.isOk:
-      ctx[].result = isolate(success(r.get))
-    else:
-      ctx[].result = isolate(seq[Key].failure(r.error.msg))
+    ctx[].result = unsafeIsolate(putAtomicSync(db[], records, readOnly))
 
 proc runDeleteAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -184,11 +157,7 @@ proc runDeleteAtomicTask(
       warn "fireSync failed in runDeleteAtomicTask", error = res.error
 
   withLock(lock[]):
-    let r = deleteAtomicSync(db[], records, readOnly)
-    if r.isOk:
-      ctx[].result = isolate(success(r.get))
-    else:
-      ctx[].result = isolate(seq[Key].failure(r.error.msg))
+    ctx[].result = unsafeIsolate(deleteAtomicSync(db[], records, readOnly))
 
 proc runNextTask(
     ctx: SharedPtr[TaskCtx[?RawRecord]],
@@ -215,15 +184,7 @@ proc runNextTask(
       ctx[].result = isolate(success(RawRecord.none))
       return
 
-    let r = nextSync(stmt[], queryValue)
-    if r.isOk:
-      let val = r.get
-      if val.isNone:
-        finished[].store(true)
-      ctx[].result = isolate(success(val))
-    else:
-      finished[].store(true)
-      ctx[].result = isolate((?RawRecord).failure(r.error.msg))
+    ctx[].result = unsafeIsolate(nextSync(stmt[], queryValue))
 
 # =============================================================================
 # Async Methods (public API)
@@ -238,8 +199,7 @@ method has*(
   let signal =
     ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
 
-  let ctx = newSharedPtr(TaskCtx[bool])
-  ctx[].signal = signal
+  let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in has", error = err
@@ -270,8 +230,7 @@ method get*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
-    let ctx = newSharedPtr(TaskCtx[RawRecord])
-    ctx[].signal = signal
+    let ctx = newSharedPtr(TaskCtx[RawRecord](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
@@ -287,19 +246,12 @@ method get*(
 
     ?await fut
 
-    let opResult = extract(ctx[].result)
-    if opResult.isOk:
-      return success @[opResult.get]
-    elif opResult.error of KVStoreKeyNotFound:
-      return success newSeq[RawRecord]() # Key not found
-    else:
-      return failure(opResult.error)
+    return success @[?extract(ctx[].result)]
   else:
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
-    let ctx = newSharedPtr(TaskCtx[seq[RawRecord]])
-    ctx[].signal = signal
+    let ctx = newSharedPtr(TaskCtx[seq[RawRecord]](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
@@ -326,8 +278,7 @@ method put*(
   let signal =
     ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
 
-  let ctx = newSharedPtr(TaskCtx[seq[Key]])
-  ctx[].signal = signal
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in put", error = err
@@ -357,8 +308,7 @@ method delete*(
   let signal =
     ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
 
-  let ctx = newSharedPtr(TaskCtx[seq[Key]])
-  ctx[].signal = signal
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in delete", error = err
@@ -399,8 +349,7 @@ method putAtomic*(
   let signal =
     ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for putAtomic")
 
-  let ctx = newSharedPtr(TaskCtx[seq[Key]])
-  ctx[].signal = signal
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in putAtomic", error = err
@@ -437,8 +386,7 @@ method deleteAtomic*(
       context = "Failed to create signal for deleteAtomic"
     )
 
-  let ctx = newSharedPtr(TaskCtx[seq[Key]])
-  ctx[].signal = signal
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in deleteAtomic", error = err
@@ -556,8 +504,10 @@ method query*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
 
-    let ctx = newSharedPtr(TaskCtx[?RawRecord])
-    ctx[].signal = signal
+    # CRITICAL: Must pass constructed object to initialize ALL fields.
+    # SharedPtr(Type) does NOT zero memory - result field would be garbage,
+    # causing ORC to crash when it tries to destroy/assign to it.
+    let ctx = newSharedPtr(TaskCtx[?RawRecord](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in query next", error = err
