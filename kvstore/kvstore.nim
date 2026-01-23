@@ -46,9 +46,7 @@ method delete*(
   ##
   raiseAssert("Not implemented!")
 
-method close*(
-    self: KVStore
-): Future[?!void] {.base, async: (raises: [CancelledError]).} =
+method close*(self: KVStore): Future[?!void] {.base, async: (raises: []).} =
   raiseAssert("Not implemented!")
 
 method query*(
