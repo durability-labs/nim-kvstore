@@ -119,10 +119,15 @@ proc query*[T](
   proc isFinished(): bool =
     dsIter.finished
 
+  proc isDisposed(): bool =
+    dsIter.disposed
+
   proc dispose(): Future[?!void] {.async: (raises: [], raw: true), gcsafe.} =
     dsIter.dispose()
 
-  success QueryIter[T].new(next = next, finished = isFinished, dispose = dispose)
+  success QueryIter[T].new(
+    next = next, finished = isFinished, disposed = isDisposed, dispose = dispose
+  )
 
 # =============================================================================
 # Typed Retry Helpers
