@@ -504,9 +504,6 @@ method query*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
 
-    # CRITICAL: Must pass constructed object to initialize ALL fields.
-    # SharedPtr(Type) does NOT zero memory - result field would be garbage,
-    # causing ORC to crash when it tries to destroy/assign to it.
     let ctx = newSharedPtr(TaskCtx[?RawRecord](signal: signal))
     defer:
       if err =? signal.close().errorOption:
@@ -530,7 +527,7 @@ method query*(
       return failure(err)
 
     let r = extract(ctx[].result)
-    if r.isOk and r.get.isNone:
+    if r.isErr or (r.isOk and r.get.isNone):
       state.finished.store(true)
     return r
 
