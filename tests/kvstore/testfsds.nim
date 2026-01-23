@@ -16,6 +16,7 @@ import ./typedcommontests
 import ./querycommontests
 import ./closecommontests
 import ./threadingcommontests
+import ./cancellationcommontests
 
 suite "Test Basic FSKVStore":
   let
@@ -275,3 +276,33 @@ suite "Test Threading":
     FSKVStore.new(root = subDir, tp = tp, depth = 16).tryGet()
 
   threadingTests(fsThreadingFactory, key)
+
+suite "Test Cancellation":
+  let
+    path = currentSourcePath()
+    basePath = "tests_data_cancel"
+    basePathAbs = path.parentDir / basePath
+    key = Key.init("/cancel/test").tryGet()
+
+  var
+    tp: Taskpool
+    factoryCounter: int
+
+  setupAll:
+    tp = Taskpool.new(numThreads = 4)
+    factoryCounter = 0
+
+  teardownAll:
+    tp.shutdown()
+    removeDir(basePathAbs)
+
+  proc fsCancellationFactory(): Future[KVStore] {.
+      async: (raises: [CancelledError, CatchableError])
+  .} =
+    let subDir = basePathAbs / $factoryCounter
+    factoryCounter.inc
+    removeDir(subDir)
+    createDir(subDir)
+    FSKVStore.new(root = subDir, tp = tp, depth = 16).tryGet()
+
+  cancellationTests(fsCancellationFactory, key)
