@@ -25,23 +25,32 @@ export locks
 export threadsync
 export smartptrs
 
-type TaskCtx*[T] = object
-  ## Bundles per-task state for cross-thread communication.
-  ##
-  ## - signal: Completion notification (per-task)
-  ## - result: Output value wrapped in Isolated for thread-safe transfer
-  ##
-  ## Workers must manually unpack results and recreate exceptions with their
-  ## original types to satisfy Isolated's compile-time isolation check.
-  ## This preserves both error messages and exception types (e.g., KVConflictError).
-  ##
-  ## Memory management: Use SharedPtr[TaskCtx[T]] for automatic cleanup via
-  ## atomic reference counting. SharedPtr handles cross-thread ownership safely.
-  signal*: ThreadSignalPtr
-  result*: Isolated[?!T]
+const
+  ## Duration of fairness time slot. If exceeded, operations yield.
+  TimeSlotDuration = 1.milliseconds
+  LastCalledInterval = 10.milliseconds
+
+type
+  TaskCtx*[T] = object
+    ## Bundles per-task state for cross-thread communication.
+    ##
+    ## - signal: Completion notification (per-task)
+    ## - result: Output value wrapped in Isolated for thread-safe transfer
+    ##
+    ## Workers must manually unpack results and recreate exceptions with their
+    ## original types to satisfy Isolated's compile-time isolation check.
+    ## This preserves both error messages and exception types (e.g., KVConflictError).
+    ##
+    ## Memory management: Use SharedPtr[TaskCtx[T]] for automatic cleanup via
+    ## atomic reference counting. SharedPtr handles cross-thread ownership safely.
+    signal*: ThreadSignalPtr
+    result*: Isolated[?!T]
+
+  TaskFut* = Future[void].Raising([AsyncError, CancelledError])
+  OnError* = proc() {.async: (raises: [CancelledError]).}
 
 proc awaitSignal*(
-    taskFut: Future[void].Raising([AsyncError, CancelledError])
+    taskFut: TaskFut, onError: OnError = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Cancellation-safe wait for task completion.
   ##
@@ -53,6 +62,9 @@ proc awaitSignal*(
   let joinFut = taskFut.join()
 
   if err =? catch(await joinFut).errorOption:
+    if not onError.isNil:
+      await noCancel onError()
+
     # Must wait for worker to finish - without this we'd write to freed memory
     ?catch(await noCancel taskFut)
     if err of CancelledError:
@@ -97,3 +109,25 @@ template toKVError*[T, E](
       proc(e: E): ref CatchableError =
         newException(errType, context & ": " & $e)
     )
+
+proc checkFairness*() {.async: (raises: [CancelledError]).} =
+  ## Yield to prevent event loop starvation during bursty operations.
+  ##
+  ## Only yields when calls are frequent (bursty). Sparse calls reset the
+  ## time slot without yielding, so occasional operations don't pay the cost.
+
+  var
+    timeSlot {.global.}: Moment = Moment.now() + TimeSlotDuration
+    lastCalled {.global.}: Moment = Moment.now()
+
+  let now = Moment.now()
+
+  if (now - lastCalled) >= LastCalledInterval:
+    # Sparse call - new burst starting, reset deadline
+    timeSlot = now + TimeSlotDuration
+  elif now >= timeSlot:
+    # Bursty and past deadline - yield and set next deadline
+    await sleepAsync(TimeSlotDuration)
+    timeSlot = Moment.now() + TimeSlotDuration
+
+  lastCalled = now

@@ -161,7 +161,7 @@ proc exec*[P](s: SQLiteStmt[P, void], params: P = ()): ?!void =
     else:
       success()
 
-  # release implicit transaction
+  # release implicit transaction - discard to preserve original error in res
   discard sqlite3_reset(s) # same return information as step
   discard sqlite3_clear_bindings(s) # no errors possible
 
@@ -231,7 +231,7 @@ proc query*[P](s: SQLiteStmt[P, void], params: P, onData: DataProc): ?!bool =
       res = failure $sqlite3_errstr(v)
       break
 
-  # release implict transaction
+  # release implicit transaction - discard to preserve original error in res
   discard sqlite3_reset(s) # same return information as step
   discard sqlite3_clear_bindings(s) # no errors possible
 
@@ -257,7 +257,7 @@ proc queryWithStrings*(
   for i, param in params:
     let v = sqlite3_bind_text(s, (i + 1).cint, param.cstring, -1.cint, SQLITE_TRANSIENT)
     if v != SQLITE_OK:
-      discard sqlite3_finalize(s)
+      discard sqlite3_finalize(s) # discard to preserve bind error
       return failure $sqlite3_errstr(v)
 
   var res = success false
@@ -274,7 +274,7 @@ proc queryWithStrings*(
       res = failure $sqlite3_errstr(v)
       break
 
-  discard sqlite3_finalize(s)
+  checkErr sqlite3_finalize(s)
   res
 
 proc queryWithIdVersionPairs*(
@@ -290,13 +290,13 @@ proc queryWithIdVersionPairs*(
   for (id, version) in pairs:
     var v = sqlite3_bind_text(s, paramIdx.cint, id.cstring, -1.cint, SQLITE_TRANSIENT)
     if v != SQLITE_OK:
-      discard sqlite3_finalize(s)
+      discard sqlite3_finalize(s) # discard to preserve bind error
       return failure $sqlite3_errstr(v)
     inc paramIdx
 
     v = sqlite3_bind_int64(s, paramIdx.cint, version)
     if v != SQLITE_OK:
-      discard sqlite3_finalize(s)
+      discard sqlite3_finalize(s) # discard to preserve bind error
       return failure $sqlite3_errstr(v)
     inc paramIdx
 
@@ -314,7 +314,7 @@ proc queryWithIdVersionPairs*(
       res = failure $sqlite3_errstr(v)
       break
 
-  discard sqlite3_finalize(s)
+  checkErr sqlite3_finalize(s)
   res
 
 proc execPragma(env: SQLite, pragma: string): ?!void =
@@ -331,7 +331,7 @@ proc execPragma(env: SQLite, pragma: string): ?!void =
     of SQLITE_DONE:
       break
     else:
-      discard sqlite3_finalize(s)
+      discard sqlite3_finalize(s) # discard to preserve step error
       return failure $sqlite3_errstr(v)
 
   let finalizeResult = sqlite3_finalize(s)
