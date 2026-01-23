@@ -547,7 +547,7 @@ method delete*(
 
   return success skipped
 
-method close*(self: FSKVStore): Future[?!void] {.async: (raises: [CancelledError]).} =
+method close*(self: FSKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
     return success()
 
@@ -694,7 +694,7 @@ method query*(
     state.isDisposed
 
   let handle = newFuture[?!void]()
-  proc dispose(): Future[?!void] {.async: (raises: [CancelledError]), gcsafe.} =
+  proc dispose(): Future[?!void] {.async: (raises: []), gcsafe.} =
     state.finished = true
 
     # Register with store so close() waits for us
@@ -704,9 +704,9 @@ method query*(
 
     # Cancel iter task before acquiring lock (so next() can release it)
     if not state.iterTaskHandle.isNil:
-      await state.iterTaskHandle.cancelAndWait()
+      await noCancel state.iterTaskHandle.cancelAndWait()
 
-    await state.lock.acquire()
+    await noCancel state.lock.acquire()
     defer:
       if state.lock.locked:
         if err =? catch(state.lock.release()).errorOption:
@@ -715,7 +715,7 @@ method query*(
 
     # Lock serializes dispose calls - if already disposed, first dispose completed
     if state.isDisposed:
-      return ?catch(await handle)
+      return ?catch(await noCancel handle)
 
     state.isDisposed = true
 
