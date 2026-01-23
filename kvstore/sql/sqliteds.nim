@@ -423,9 +423,7 @@ method deleteAtomic*(
 
   return extract(ctx[].result)
 
-method close*(
-    self: SQLiteKVStore
-): Future[?!void] {.async: (raises: [CancelledError]).} =
+method close*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
     return success()
 
@@ -529,7 +527,7 @@ method query*(
     state.isDisposed
 
   let handle = newFuture[?!void]()
-  proc dispose(): Future[?!void] {.async: (raises: [CancelledError]).} =
+  proc dispose(): Future[?!void] {.async: (raises: []).} =
     # Signal workers to stop accepting new work
     state.finished.store(true)
 
@@ -540,9 +538,9 @@ method query*(
 
     # Cancel iter task before acquiring lock (so next() can release it)
     if not state.iterTaskHandle.isNil:
-      await state.iterTaskHandle.cancelAndWait()
+      await noCancel state.iterTaskHandle.cancelAndWait()
 
-    await asyncLock.acquire()
+    await noCancel asyncLock.acquire()
     defer:
       if asyncLock.locked:
         if err =? catch(asyncLock.release()).errorOption:
@@ -551,7 +549,7 @@ method query*(
 
     # Lock serializes dispose calls - if already disposed, first dispose completed
     if state.isDisposed:
-      return ?catch(await handle)
+      return ?catch(await noCancel handle)
 
     state.isDisposed = true
 

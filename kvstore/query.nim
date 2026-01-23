@@ -23,8 +23,7 @@ type
 
   IterFinished* = proc(): bool {.closure, gcsafe, raises: [].}
   IterDisposed* = proc(): bool {.closure, gcsafe, raises: [].}
-  IterDispose* =
-    proc(): Future[?!void] {.closure, async: (raises: [CancelledError]), gcsafe.}
+  IterDispose* = proc(): Future[?!void] {.closure, async: (raises: []), gcsafe.}
   GetNext*[T] = proc(): Future[?!(?Record[T])] {.
     closure, async: (raises: [CancelledError]), gcsafe
   .}
@@ -51,9 +50,7 @@ proc next*[T](
 ): Future[?!(?Record[T])] {.async: (raises: [CancelledError]).} =
   await iter.nextImpl()
 
-proc dispose*[T](
-    iter: QueryIter[T]
-): Future[?!void] {.async: (raises: [CancelledError]).} =
+proc dispose*[T](iter: QueryIter[T]): Future[?!void] {.async: (raises: []).} =
   ## Async dispose - properly waits for in-flight workers to complete.
   if not iter.disposed and iter.disposeImpl != nil:
     return await iter.disposeImpl()
@@ -63,7 +60,7 @@ iterator items*[T](q: QueryIter[T]): Future[?!(?Record[T])] =
   while not q.finished:
     yield q.next()
 
-proc defaultDispose*[T](): Future[?!void] {.async: (raises: [CancelledError]).} =
+proc defaultDispose*[T](): Future[?!void] {.async: (raises: []).} =
   return success()
 
 proc defaultDisposed*(): bool =
