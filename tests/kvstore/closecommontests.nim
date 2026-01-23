@@ -175,7 +175,7 @@ proc iteratorTrackingTests*(factory: StoreFactory, key: Key) =
   ## Tests for iterator tracking in the store.
   ## These tests close the store, so they need fresh stores per test.
 
-  test "close disposes active iterators automatically":
+  test "close cancels active iterators (caller must dispose)":
     let ds = await factory()
     let k1 = (key / "tracking" / "auto1").tryGet()
     let k2 = (key / "tracking" / "auto2").tryGet()
@@ -262,7 +262,7 @@ proc concurrentCloseTests*(factory: StoreFactory, key: Key) =
   ## Tests for concurrent close and iterator behavior.
   ## These tests close the store, so they need fresh stores per test.
 
-  test "close waits for in-flight iterator operations":
+  test "close cancels in-flight iterator operations":
     let ds = await factory()
     let testKey = (key / "concurrent" / "inflight").tryGet()
     (await ds.put(testKey, "value".toBytes)).tryGet()
@@ -276,6 +276,76 @@ proc concurrentCloseTests*(factory: StoreFactory, key: Key) =
     # Close while next() is in progress
     let closeFut = ds.close()
 
-    # Both should complete (close waits for next)
-    discard await nextFut
+    # Both should complete (close cancels next)
+    if err =? catch(await nextFut).errorOption and not (err of CancelledError):
+      raise err
+
     (await closeFut).tryGet()
+
+  test "dispose cancels in-flight next":
+    let ds = await factory()
+    let testKey = (key / "concurrent" / "dispose_cancel").tryGet()
+    (await ds.put(testKey, "value".toBytes)).tryGet()
+
+    let iter = (
+      await ds.query(Query.init((key / "concurrent" / "dispose_cancel").tryGet()))
+    ).tryGet()
+
+    # Start a next() call
+    let nextFut = iter.next()
+
+    # Dispose while next() is in progress - should cancel the next()
+    let disposeFut = iter.dispose()
+
+    # next should be cancelled or return error
+    if err =? catch(await nextFut).errorOption and not (err of CancelledError):
+      raise err
+
+    # dispose should succeed
+    (await disposeFut).tryGet()
+    (await ds.close()).tryGet()
+
+  test "close waits for in-progress dispose":
+    let ds = await factory()
+    let testKey = (key / "concurrent" / "close_waits_dispose").tryGet()
+    (await ds.put(testKey, "value".toBytes)).tryGet()
+
+    let iter = (
+      await ds.query(Query.init((key / "concurrent" / "close_waits_dispose").tryGet()))
+    ).tryGet()
+
+    # Start dispose
+    let disposeFut = iter.dispose()
+
+    # Close while dispose is in progress - should wait for dispose to complete
+    let closeFut = ds.close()
+
+    # Both should complete without error
+    (await disposeFut).tryGet()
+    (await closeFut).tryGet()
+
+  test "concurrent dispose and close - no race":
+    let ds = await factory()
+
+    # Create multiple keys for multiple iterators
+    for i in 0 ..< 5:
+      let k = (key / "concurrent" / "race" / $i).tryGet()
+      (await ds.put(k, ("value" & $i).toBytes)).tryGet()
+
+    # Create multiple iterators and start dispose immediately
+    var futures: seq[Future[?!void]]
+    for i in 0 ..< 3:
+      let iter =
+        (await ds.query(Query.init((key / "concurrent" / "race").tryGet()))).tryGet()
+      futures.add(iter.dispose())
+
+    # Add close to run concurrently with disposes
+    futures.add(ds.close())
+
+    # Wait for all to complete
+    await allFutures(futures)
+
+    # All should succeed (no crashes, no hangs)
+    for fut in futures:
+      let res = catch(fut.read).flatten()
+      check res.isOk
