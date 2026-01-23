@@ -719,10 +719,11 @@ method query*(
 
     state.isDisposed = true
 
-    if not handle.finished:
-      handle.complete(success())
+    defer:
+      if not handle.finished:
+        handle.complete(success())
 
-    return ?catch(await handle)
+    return success()
 
   return success QueryIter.new(next, isFinished, isDisposed, dispose)
 

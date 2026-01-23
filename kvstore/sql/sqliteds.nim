@@ -559,11 +559,11 @@ method query*(
       # don't leak resources
       discard disposeStmtSync(state.stmt)
       deinitLock(state.lock)
+      # Complete handle AFTER cleanup so close() waits for full cleanup
+      if not handle.finished:
+        handle.complete(success())
 
-    if not handle.finished:
-      handle.complete(success())
-
-    return ?catch(await handle)
+    return success()
 
   return success QueryIter.new(next, isFinished, isDisposed, dispose)
 

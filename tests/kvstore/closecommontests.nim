@@ -189,10 +189,10 @@ proc iteratorTrackingTests*(factory: StoreFactory, key: Key) =
     # Consume some items from iter1
     discard (await iter1.next()).tryGet()
 
-    # Close should dispose both iterators
+    # Close cancels in-flight ops - iterators become unusable but are NOT auto-disposed
     (await ds.close()).tryGet()
 
-    # Iterators should be disposed (next fails)
+    # next() fails after close (store is closed)
     check (await iter1.next()).isErr
     check (await iter2.next()).isErr
 
