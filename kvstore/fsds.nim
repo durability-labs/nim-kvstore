@@ -69,6 +69,7 @@ type
     iterTaskHandle: Future[?!void]
     lock: AsyncLock
     tp: Taskpool
+    signal: ThreadSignalPtr
 
 randomize() # TODO: We should probably use a stronger rng here?
 
@@ -593,6 +594,10 @@ method query*(
     else:
       p.changeFileExt("")
 
+  # Found a valid path - spawn worker to read the file
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
+
   var state = FsQueryIterState(
     basePath: basePath,
     walker: dirWalker(basePath),
@@ -600,6 +605,7 @@ method query*(
     queryKey: query.key,
     queryValue: query.value,
     tp: self.tp,
+    signal: signal,
     lock: newAsyncLock(),
   )
   state.finished = false
@@ -657,15 +663,7 @@ method query*(
 
       let absPath = absPathRes.get
 
-      # Found a valid path - spawn worker to read the file
-      let signal =
-        ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
-
-      let ctx = newSharedPtr(TaskCtx[RawRecord](signal: signal))
-      defer:
-        if err =? signal.close().errorOption:
-          warn "signal.close failed in query next", error = err
-        # SharedPtr handles TaskCtx cleanup automatically
+      let ctx = newSharedPtr(TaskCtx[RawRecord](signal: state.signal))
 
       let taskFut = signal.wait()
       state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
@@ -693,24 +691,31 @@ method query*(
   proc isDisposed(): bool =
     state.isDisposed
 
-  let handle = newFuture[?!void]()
+  proc disposeImpl(): Future[?!void] {.async: (raises: []).} =
+    try:
+      # Cancel iter task before acquiring lock (so next() can release it)
+      if not state.iterTaskHandle.isNil:
+        await noCancel state.iterTaskHandle.cancelAndWait()
+    finally:
+      if err =? state.signal.close().errorOption:
+        warn "signal.close failed in query next", error = err
+        # SharedPtr handles TaskCtx cleanup automatically
+
+      if state.lock.locked:
+        if err =? catch(state.lock.release()).errorOption:
+          state.finished = true
+          warn "Unable to release state lock", error = err
+
+    return success()
+
+  var handle: Future[?!void].Raising([])
   proc dispose(): Future[?!void] {.async: (raises: []), gcsafe.} =
     state.finished = true
-
-    # Register with store so close() waits for us
-    self.disposeHandles.incl(handle)
-    defer:
-      self.disposeHandles.excl(handle)
-
-    # Cancel iter task before acquiring lock (so next() can release it)
-    if not state.iterTaskHandle.isNil:
-      await noCancel state.iterTaskHandle.cancelAndWait()
 
     await noCancel state.lock.acquire()
     defer:
       if state.lock.locked:
         if err =? catch(state.lock.release()).errorOption:
-          state.finished = true
           return failure(err)
 
     # Lock serializes dispose calls - if already disposed, first dispose completed
@@ -718,12 +723,14 @@ method query*(
       return ?catch(await noCancel handle)
 
     state.isDisposed = true
+    handle = disposeImpl()
 
+    # Register with store so close() waits for us
+    self.disposeHandles.incl(handle)
     defer:
-      if not handle.finished:
-        handle.complete(success())
+      self.disposeHandles.excl(handle)
 
-    return success()
+    return ?catch(await noCancel handle)
 
   return success QueryIter.new(next, isFinished, isDisposed, dispose)
 
