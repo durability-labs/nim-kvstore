@@ -48,6 +48,7 @@ type
     finished*: Atomic[bool]
     isDisposed*: bool
     tp*: Taskpool # For spawning next() workers
+    signal: ThreadSignalPtr
     iterTaskHandle*: Future[?!void] # Track outstanding iterator tasks
     queryValue*: bool # Whether to include value in results
 
@@ -449,10 +450,14 @@ method query*(
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
   # Prepare private statement (no store lock needed - SQLite FULLMUTEX handles it)
-  let s = ?prepareQueryStmt(self.db.env, query)
+  let
+    s = ?prepareQueryStmt(self.db.env, query)
+    signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
 
   # Create per-iterator state using module-level type
-  var state = QueryIterState(stmt: s, tp: self.tp, queryValue: query.value)
+  var state =
+    QueryIterState(stmt: s, tp: self.tp, queryValue: query.value, signal: signal)
   state.finished.store(false)
   state.isDisposed = false
   initLock(state.lock)
@@ -486,14 +491,7 @@ method query*(
     if state.finished.load():
       return success(RawRecord.none)
 
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
-
-    let ctx = newSharedPtr(TaskCtx[?RawRecord](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in query next", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
+    let ctx = newSharedPtr(TaskCtx[?RawRecord](signal: state.signal))
 
     let taskFut = signal.wait()
     state.tp.spawn runNextTask(
@@ -526,19 +524,27 @@ method query*(
   proc isDisposed(): bool =
     state.isDisposed
 
-  let handle = newFuture[?!void]()
+  proc disposeImpl(): Future[?!void] {.async: (raises: []).} =
+    try:
+      # Cancel iter task before acquiring lock (so next() can release it)
+      if not state.iterTaskHandle.isNil:
+        await noCancel state.iterTaskHandle.cancelAndWait()
+
+    finally:
+      if err =? state.signal.close().errorOption:
+        warn "signal.close failed in query next", error = err
+        # SharedPtr handles TaskCtx cleanup automatically
+
+      # don't leak resources
+      discard disposeStmtSync(state.stmt)
+      deinitLock(state.lock)
+
+    return success()
+
+  var handle: Future[?!void].Raising([])
   proc dispose(): Future[?!void] {.async: (raises: []).} =
     # Signal workers to stop accepting new work
     state.finished.store(true)
-
-    # Register with store so close() waits for us
-    self.disposeHandles.incl(handle)
-    defer:
-      self.disposeHandles.excl(handle)
-
-    # Cancel iter task before acquiring lock (so next() can release it)
-    if not state.iterTaskHandle.isNil:
-      await noCancel state.iterTaskHandle.cancelAndWait()
 
     await noCancel asyncLock.acquire()
     defer:
@@ -552,16 +558,14 @@ method query*(
       return ?catch(await noCancel handle)
 
     state.isDisposed = true
+    handle = disposeImpl()
 
+    # Register with store so close() waits for us
+    self.disposeHandles.incl(handle)
     defer:
-      # don't leak resources
-      discard disposeStmtSync(state.stmt)
-      deinitLock(state.lock)
-      # Complete handle AFTER cleanup so close() waits for full cleanup
-      if not handle.finished:
-        handle.complete(success())
+      self.disposeHandles.excl(handle)
 
-    return success()
+    return ?catch(await noCancel handle)
 
   return success QueryIter.new(next, isFinished, isDisposed, dispose)
 
