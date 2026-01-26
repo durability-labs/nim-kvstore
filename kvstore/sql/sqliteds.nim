@@ -529,7 +529,6 @@ method query*(
       # Cancel iter task before acquiring lock (so next() can release it)
       if not state.iterTaskHandle.isNil:
         await noCancel state.iterTaskHandle.cancelAndWait()
-
     finally:
       if err =? state.signal.close().errorOption:
         warn "signal.close failed in query next", error = err
