@@ -89,14 +89,14 @@ proc doSomething(): ?!void =
 **`?` operator** - Early return on error (idiomatic, use this):
 
 ```nim
-proc process(): ?!Result =
+proc process(): ?!int =
   let a = ?getValue()      # Returns failure if getValue fails
   let b = ?transform(a)    # Returns failure if transform fails
   success(b)
 
-proc processAsync(): Future[?!Data] {.async.} =
-  let data = ?(await fetchData())  # Works with await too
-  success(transform(data))
+proc processAsync(): Future[?!RawRecord] {.async.} =
+  let record = ?(await ds.get(key))  # Works with await too
+  success(record)
 ```
 
 **`.tryGet()`** - Unwrap or raise exception (acceptable in tests/scripts):
@@ -306,11 +306,14 @@ let record2 = (await ds.get(key)).tryGet()  # token = 5
 let update1 = RawRecord.init(key, newValue1, record1.token)
 (await ds.put(update1)).tryGet()  # Success! Token is now 6
 
-# Client 2's update fails - stale token
+# Client 2's update fails - stale token (single-record put raises error)
 let update2 = RawRecord.init(key, newValue2, record2.token)
 let result = await ds.put(update2)
-# result contains the key in skipped list - conflict detected!
+if result.isErr:
+  echo "Conflict detected: ", result.error.msg  # KVConflictError
 ```
+
+**Note:** Single-record operations (`put(record)`, `delete(record)`) return errors on conflict. Batch operations (`put(@[records])`, `delete(@[records])`) return a list of skipped keys instead.
 
 ### Bulk Operations
 
@@ -376,17 +379,20 @@ if ds.supportsAtomicBatch():
 
 ### Middleware for Conflict Resolution
 
-The `tryPut` and `tryDelete` helpers accept a middleware function to resolve conflicts:
+The `tryPut` and `tryDelete` helpers accept a middleware function to resolve conflicts. Pass `nil` for no middleware (conflicts will be retried with the same records).
 
 ```nim
+import std/sequtils
+
 # Middleware receives failed records and returns updated records to retry
-let middleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]] {.async.} =
+let middleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]]
+    {.async: (raises: [CancelledError]).} =
   # Refetch current tokens
   let fresh = (await ds.get(failed.mapIt(it.key))).tryGet()
 
   # Update records with fresh tokens
   var updated: seq[RawRecord]
-  for i, record in failed:
+  for record in failed:
     for f in fresh:
       if f.key == record.key:
         updated.add(RawRecord.init(record.key, record.val, f.token))
@@ -395,6 +401,9 @@ let middleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]] {.async.
   success(updated)
 
 let result = await ds.tryPut(records, maxRetries = 3, middleware = middleware)
+
+# Or without middleware (nil):
+let result2 = await ds.tryPut(records, maxRetries = 3, middleware = nil)
 ```
 
 ## Typed Records
@@ -402,6 +411,7 @@ let result = await ds.tryPut(records, maxRetries = 3, middleware = middleware)
 nim-kvstore supports automatic type conversion with custom encoder/decoder procs:
 
 ```nim
+import std/strutils
 import pkg/stew/byteutils
 import pkg/questionable/results
 
@@ -483,7 +493,10 @@ let fsDs = FSKVStore.new(
 - Parent directory fsync for crash safety (POSIX)
 - Per-key locking for write ordering
 
-**Note:** FSKVStore uses `uint64` for tokens, supporting the full range. Does not support atomic batch operations.
+**Limitations:**
+- Does not support atomic batch operations (`putAtomic`, `deleteAtomic`)
+- Query only supports key prefix filtering and `value` flag; `sort`, `offset`, and `limit` are ignored (filesystem walk order)
+- Uses `uint64` for tokens (full range supported)
 
 ## Store Lifecycle
 
@@ -521,24 +534,23 @@ defer: discard await iter.dispose()  # Always dispose
 # ... use iterator ...
 ```
 
-Failing to dispose iterators before `close()` may cause `close()` to fail (e.g., SQLite cannot close with open statements).
+**Important:** `close()` does **not** auto-dispose iterators. Failing to call `dispose()` will leak iterator resources (signals, prepared statements, locks). While `close()` cancels in-flight operations, undisposed iterators may delay final resource cleanup.
 
 ### Handling Close Failures
 
-**Close failures should be treated as fatal.** If `close()` returns an error, the application should initiate shutdown:
+If `close()` returns an error, resources may have leaked:
 
 ```nim
 if err =? (await ds.close()).errorOption:
-  # Fatal: resources may be leaked, trigger application shutdown
-  fatal "Store close failed", error = err.msg
-  quit(1)
+  warn "Store close had errors", error = err.msg
+  # Resources may be leaked but store is closed
 ```
 
-Close can fail if:
-- Iterators were not disposed (SQLite: open prepared statements)
-- Backend resources cannot be released
+Close can return errors if:
+- Backend resources cannot be released cleanly
+- In-flight operations failed during cancellation
 
-Once `close()` fails, the store is in an undefined state and cannot be recovered.
+After `close()` (success or failure), the store cannot be used - create a new instance instead.
 
 ## Query API
 
@@ -578,11 +590,12 @@ discard await iter2.dispose()
 KVStoreError                  # Base error type
 ├── KVConflictError           # CAS conflict on single-record operations
 ├── KVStoreMaxRetriesError    # tryPut/tryDelete exhausted retries
-├── QueryEndedError           # Iterator accessed after completion
 └── KVStoreBackendError       # Backend-specific errors
     ├── KVStoreKeyNotFound    # Key doesn't exist
     └── KVStoreCorruption     # Data corruption detected
 ```
+
+**Note:** Accessing an iterator after it's finished or disposed returns a generic `KVStoreError` with a descriptive message, not a specialized error type.
 
 ## Threading
 
