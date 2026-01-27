@@ -342,3 +342,125 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
   test "tryDeleteAtomic - empty batch succeeds":
     let result = await ds.tryDeleteAtomic(newSeq[KeyRecord]())
     check result.isOk
+
+proc hasBatchTests*(ds: KVStore, key: Key) =
+  ## Tests for batch has operations.
+
+  suite "Test Batch Has":
+    test "has batch - all exist":
+      let k1 = (key / "hasbatch" / "all1").tryGet()
+      let k2 = (key / "hasbatch" / "all2").tryGet()
+      let k3 = (key / "hasbatch" / "all3").tryGet()
+
+      # Create keys
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
+      (await ds.put(RawRecord.init(k3, @[3'u8], 0))).tryGet()
+
+      # Check all exist
+      let existing = (await ds.has(@[k1, k2, k3])).tryGet()
+      check existing.len == 3
+      check k1 in existing
+      check k2 in existing
+      check k3 in existing
+
+    test "has batch - none exist":
+      let k1 = (key / "hasbatch" / "none1").tryGet()
+      let k2 = (key / "hasbatch" / "none2").tryGet()
+      let k3 = (key / "hasbatch" / "none3").tryGet()
+
+      # Don't create any keys, just check
+      let existing = (await ds.has(@[k1, k2, k3])).tryGet()
+      check existing.len == 0
+
+    test "has batch - partial exist":
+      let k1 = (key / "hasbatch" / "partial1").tryGet()
+      let k2 = (key / "hasbatch" / "partial2").tryGet()
+      let k3 = (key / "hasbatch" / "partial3").tryGet()
+
+      # Create only k1 and k3
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawRecord.init(k3, @[3'u8], 0))).tryGet()
+
+      # Check all three, only k1 and k3 should exist
+      let existing = (await ds.has(@[k1, k2, k3])).tryGet()
+      check existing.len == 2
+      check k1 in existing
+      check k2 notin existing
+      check k3 in existing
+
+    test "has batch - empty input":
+      let existing = (await ds.has(newSeq[Key]())).tryGet()
+      check existing.len == 0
+
+    test "has batch - single key exists":
+      let k1 = (key / "hasbatch" / "single1").tryGet()
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+
+      let existing = (await ds.has(@[k1])).tryGet()
+      check existing.len == 1
+      check k1 in existing
+
+    test "has batch - single key missing":
+      let k1 = (key / "hasbatch" / "singlemiss").tryGet()
+
+      let existing = (await ds.has(@[k1])).tryGet()
+      check existing.len == 0
+
+    test "has single-key helper - exists":
+      let k1 = (key / "hasbatch" / "helper1").tryGet()
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+
+      let exists = (await ds.has(k1)).tryGet()
+      check exists == true
+
+    test "has single-key helper - missing":
+      let k1 = (key / "hasbatch" / "helpermiss").tryGet()
+
+      let exists = (await ds.has(k1)).tryGet()
+      check exists == false
+
+    test "has batch - preserves Key identity":
+      # Verify the returned keys are equal to the input keys
+      let k1 = (key / "hasbatch" / "identity1").tryGet()
+      let k2 = (key / "hasbatch" / "identity2").tryGet()
+
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
+
+      let existing = (await ds.has(@[k1, k2])).tryGet()
+      check existing.len == 2
+      # Check keys are equal (by value comparison)
+      for e in existing:
+        check (e == k1 or e == k2)
+
+    test "has batch - deduplicates input keys":
+      # Duplicate keys in input should be deduplicated in result
+      let k1 = (key / "hasbatch" / "dedup1").tryGet()
+      let k2 = (key / "hasbatch" / "dedup2").tryGet()
+
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
+
+      # Input has duplicates
+      let existing = (await ds.has(@[k1, k2, k1, k2, k1])).tryGet()
+      check existing.len == 2 # Should deduplicate
+      check k1 in existing
+      check k2 in existing
+
+    test "has batch - preserves input order":
+      # Result should be in input order
+      let k1 = (key / "hasbatch" / "order1").tryGet()
+      let k2 = (key / "hasbatch" / "order2").tryGet()
+      let k3 = (key / "hasbatch" / "order3").tryGet()
+
+      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
+      (await ds.put(RawRecord.init(k3, @[3'u8], 0))).tryGet()
+
+      # Request in specific order: k3, k1, k2
+      let existing = (await ds.has(@[k3, k1, k2])).tryGet()
+      check existing.len == 3
+      check existing[0] == k3
+      check existing[1] == k1
+      check existing[2] == k2

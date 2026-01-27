@@ -377,36 +377,52 @@ proc release*(self: FSKVStore, key: Key, rcLock: RefCountedLock) {.raises: [].} 
 # =============================================================================
 
 method has*(
-    self: FSKVStore, key: Key
-): Future[?!bool] {.async: (raises: [CancelledError]).} =
-  # don't move after closed, every await introduces concurrency
-  await checkFairness()
+    self: FSKVStore, keys: seq[Key]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## Check existence of multiple keys.
+  ## Returns the subset of input keys that exist in the store, in input order.
+  ## Duplicate keys in input are deduplicated (first occurrence wins).
+  ## Note: FS backend checks each file independently (no batching optimization).
+  var existing: seq[Key]
+  var seen = initHashSet[string]()
 
-  if self.closed:
-    return failure newException(KVStoreError, "FSKVStore is closed")
+  for key in keys:
+    # Skip duplicates
+    if key.id in seen:
+      continue
+    seen.incl(key.id)
 
-  let p = ?self.path(key)
+    # don't move after closed, every await introduces concurrency
+    await checkFairness()
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
+    if self.closed:
+      return failure newException(KVStoreError, "FSKVStore is closed")
 
-  let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in has", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
+    let p = ?self.path(key)
 
-  let taskFut = signal.wait()
-  self.tp.spawn runHasTask(ctx, p)
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
 
-  let fut = awaitSignal(taskFut)
-  self.tasks.incl(fut)
-  defer:
-    self.tasks.excl(fut)
+    let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
+    defer:
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in has", error = err
+      # SharedPtr handles TaskCtx cleanup automatically
 
-  ?await fut
+    let taskFut = signal.wait()
+    self.tp.spawn runHasTask(ctx, p)
 
-  return extract(ctx[].result)
+    let fut = awaitSignal(taskFut)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
+
+    ?await fut
+
+    if ?extract(ctx[].result):
+      existing.add(key)
+
+  return success(existing)
 
 method get*(
     self: FSKVStore, keys: seq[Key]

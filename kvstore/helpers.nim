@@ -18,6 +18,14 @@ export query
 # Single Record Convenience Wrappers
 # =============================================================================
 
+proc has*(
+    self: KVStore, key: Key
+): Future[?!bool] {.async: (raises: [CancelledError]).} =
+  ## Check if a single key exists.
+  ## Convenience wrapper around batch has().
+  let existing = ?(await self.has(@[key]))
+  success(key in existing)
+
 proc get*(
     self: KVStore, key: Key
 ): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
