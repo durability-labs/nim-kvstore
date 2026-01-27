@@ -14,8 +14,14 @@ export types
 # =============================================================================
 
 method has*(
-    self: KVStore, key: Key
-): Future[?!bool] {.base, gcsafe, async: (raises: [CancelledError]).} =
+    self: KVStore, keys: seq[Key]
+): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
+  ## Check existence of multiple keys.
+  ## Returns the subset of input keys that exist in the store.
+  ##
+  ## Semantics:
+  ## - Result preserves input order (first-seen order)
+  ## - Duplicate keys in input are deduplicated (first occurrence wins)
   raiseAssert("Not implemented!")
 
 method get*(
