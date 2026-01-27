@@ -74,6 +74,20 @@ proc runHasTask(
   withLock(lock[]):
     ctx[].result = unsafeIsolate(hasSync(db[], keyId))
 
+proc runHasManyTask(
+    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    keys: seq[Key],
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runHasManyTask", error = res.error
+
+  withLock(lock[]):
+    ctx[].result = unsafeIsolate(hasManySync(db[], keys))
+
 proc runGetTask(
     ctx: SharedPtr[TaskCtx[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
 ) {.gcsafe.} =
@@ -191,34 +205,71 @@ proc runNextTask(
 # =============================================================================
 
 method has*(
-    self: SQLiteKVStore, key: Key
-): Future[?!bool] {.async: (raises: [CancelledError]).} =
+    self: SQLiteKVStore, keys: seq[Key]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## Check existence of multiple keys.
+  ## Returns the subset of input keys that exist in the store.
+  ## Result preserves input order; duplicates are deduplicated (first occurrence wins).
+
   # don't move after closed, every await introduces concurrency
   await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
+  if keys.len == 0:
+    return success(newSeq[Key]())
 
-  let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in has", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
+  if keys.len == 1:
+    # Single-key optimization: use existing runHasTask
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
 
-  let taskFut = signal.wait()
-  self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, key.id)
+    let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
+    defer:
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in has", error = err
+      # SharedPtr handles TaskCtx cleanup automatically
 
-  let fut = awaitSignal(taskFut)
-  self.tasks.incl(fut)
-  defer:
-    self.tasks.excl(fut)
+    let taskFut = signal.wait()
+    self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, keys[0].id)
 
-  ?await fut
+    let fut = awaitSignal(taskFut)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
 
-  return extract(ctx[].result)
+    ?await fut
+
+    let exists = ?extract(ctx[].result)
+    return success(
+      if exists:
+        @[keys[0]]
+      else:
+        newSeq[Key]()
+    )
+  else:
+    # Multi-key path
+    let signal =
+      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
+
+    let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
+    defer:
+      if err =? signal.close().errorOption:
+        warn "signal.close failed in has", error = err
+      # SharedPtr handles TaskCtx cleanup automatically
+
+    let taskFut = signal.wait()
+    self.tp.spawn runHasManyTask(ctx, addr self.db, addr self.lock, keys)
+
+    let fut = awaitSignal(taskFut)
+    self.tasks.incl(fut)
+    defer:
+      self.tasks.excl(fut)
+
+    ?await fut
+
+    return extract(ctx[].result)
 
 method get*(
     self: SQLiteKVStore, keys: seq[Key]

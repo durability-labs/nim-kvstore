@@ -142,6 +142,15 @@ const
     WHERE {IdColName} IN ($1)
   """
 
+  # NOTE: Similar to GetMany but only returns id for existence check
+  HasManyStmtStr* =
+    fmt"""
+    SELECT {IdColName} FROM {TableName}
+    WHERE {IdColName} IN ($1)
+  """
+
+  HasManyStmtIdCol* = 0
+
   UpsertStmtDataCol* = 0
   UpsertStmtVersionCol* = 1
 
@@ -248,6 +257,18 @@ proc makeGetManyParamQuery*(count: int): string {.raises: [].} =
   except ValueError:
     # Should never happen with controlled placeholders
     raiseAssert("Invalid GetManyStmtStr format")
+
+# Build parameterized HAS MANY query with ? placeholders
+# Returns sql_string - only selects id column for existence check
+proc makeHasManyParamQuery*(count: int): string {.raises: [].} =
+  if count == 0:
+    return ""
+  let placeholders = newSeqWith(count, "?").join(", ")
+  try:
+    HasManyStmtStr % placeholders
+  except ValueError:
+    # Should never happen with controlled placeholders
+    raiseAssert("Invalid HasManyStmtStr format")
 
 # Build parameterized DELETE MANY query with ? placeholders
 # Each record needs 2 params: (id, version), using VALUES clause for tuples

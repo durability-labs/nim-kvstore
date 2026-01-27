@@ -41,6 +41,7 @@ suite "Test Basic SQLiteKVStore":
   typedHelperTests(ds, key)
   atomicBatchTests(ds, key, supportsAtomic = true)
   atomicRetryHelperTests(ds, key)
+  hasBatchTests(ds, key)
 
 suite "Test Read Only SQLiteKVStore":
   let
@@ -418,6 +419,44 @@ suite "Test Large Batch Operations":
     for r in records:
       seen.incl(r.key.id)
     check seen.len == count
+
+  test "has with >1000 keys chunks correctly":
+    # Create 1100 records (exceeds 999 param limit)
+    let count = 1100
+    var keys: seq[Key]
+    for i in 0 ..< count:
+      let k = Key.init("/largebatch/has/" & $i).tryGet()
+      keys.add(k)
+      (await ds.put(k, ($i).toBytes)).tryGet()
+
+    # Check all keys in one call - should be chunked internally
+    let existing = (await ds.has(keys)).tryGet()
+    check existing.len == count
+
+    # Verify result is in input order
+    for i in 0 ..< count:
+      check existing[i] == keys[i]
+
+  test "has with >1000 keys deduplicates across chunks":
+    # Test that duplicate keys across chunk boundaries are handled
+    let count = 500
+    var keys: seq[Key]
+    for i in 0 ..< count:
+      let k = Key.init("/largebatch/hasdedup/" & $i).tryGet()
+      keys.add(k)
+      (await ds.put(k, ($i).toBytes)).tryGet()
+
+    # Create input with duplicates - each key appears 3 times
+    # This ensures duplicates span chunk boundaries (500 * 3 = 1500 > 999)
+    var keysWithDupes: seq[Key]
+    for k in keys:
+      keysWithDupes.add(k)
+      keysWithDupes.add(k)
+      keysWithDupes.add(k)
+
+    # Should deduplicate and return only 500 unique keys
+    let existing = (await ds.has(keysWithDupes)).tryGet()
+    check existing.len == count
 
   test "delete with >500 records chunks correctly":
     # Create 600 records (exceeds 495 param limit for delete - 2 params per record)
