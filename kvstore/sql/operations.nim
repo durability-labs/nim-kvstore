@@ -8,6 +8,7 @@
 import std/times
 import std/sequtils
 import std/sets
+import std/tables
 import std/options
 
 import pkg/questionable
@@ -92,6 +93,36 @@ proc hasSync*(db: SQLiteDsDb, keyId: string): ?!bool {.gcsafe.} =
 
   discard ?db.containsStmt.query((keyId), onRow)
   success exists
+
+proc hasManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
+  ## Synchronous check for multiple keys.
+  ## Returns the subset of input keys that exist in the store, in input order.
+  ## Duplicate keys in input are deduplicated (first occurrence wins).
+  ## Automatically chunks large batches to stay within SQLite parameter limits.
+  if keys.len == 0:
+    return success(newSeq[Key]())
+
+  # Build unique IDs list in first-seen order (deduplicates query params)
+  let uniqueIds = keys.deduplicate()
+
+  # Collect ids that exist in DB
+  var foundIds = initHashSet[Key]()
+  proc onRow(s: RawStmtPtr) =
+    let keyId = idCol(s, HasManyStmtIdCol)()
+    foundIds.incl(Key.init(keyId).expect("Invalid key from DB"))
+
+  # Chunk unique IDs to stay within SQLite parameter limits
+  var offset = 0
+  while offset < uniqueIds.len:
+    let
+      chunkSize = min(MaxSqliteParams, uniqueIds.len - offset)
+      chunk = uniqueIds[offset ..< offset + chunkSize]
+      queryStr = makeHasManyParamQuery(chunk.len)
+
+    discard ?db.env.queryWithStrings(queryStr, chunk.mapIt($it), onRow)
+    offset += chunkSize
+
+  success uniqueIds.filterIt(it in foundIds)
 
 proc getSync*(db: SQLiteDsDb, key: Key): ?!RawRecord {.gcsafe.} =
   ## Synchronous get single record
