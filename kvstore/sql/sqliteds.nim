@@ -303,7 +303,13 @@ method get*(
 
     ?await fut
 
-    return success @[?extract(ctx[].result)]
+    # Match batch get semantics: return empty seq for missing key, not error
+    without extracted =? extract(ctx[].result), err:
+      if err of KVStoreKeyNotFound:
+        return success(newSeq[RawRecord]())
+      return failure(err)
+
+    return success(@[extracted])
   else:
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
