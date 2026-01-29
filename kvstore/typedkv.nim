@@ -233,6 +233,73 @@ proc tryDelete*[T](
       failure newException(KVConflictError, "Unable to delete record due to conflict")
   return success()
 
+# =============================================================================
+# Typed Atomic Operations
+# =============================================================================
+
+proc putAtomic*[T](
+    self: KVStore, records: seq[Record[T]]
+): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
+  ## Typed atomic batch put - all succeed or all fail
+  helpers.putAtomic(self, records.mapIt(it.toRaw))
+
+proc putAtomic*[T](
+    self: KVStore, record: Record[T]
+): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
+  ## Typed single-record atomic put
+  helpers.putAtomic(self, record.toRaw)
+
+proc deleteAtomic*[T](
+    self: KVStore, records: seq[Record[T]]
+): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
+  ## Typed atomic batch delete - all succeed or all fail
+  helpers.deleteAtomic(self, records.toKeyRecord)
+
+proc deleteAtomic*[T](
+    self: KVStore, record: Record[T]
+): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
+  ## Typed single-record atomic delete
+  helpers.deleteAtomic(self, record.toKeyRecord)
+
+# =============================================================================
+# Typed Atomic Retry Helpers
+# =============================================================================
+
+proc tryPutAtomic*[T](
+    self: KVStore,
+    records: seq[Record[T]],
+    maxRetries = 3,
+    middleware: AtomicMiddleware[Record[T]] = nil,
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Typed atomic batch put with retry on conflicts.
+  ##
+  ## Unlike tryPut (partial commit), this uses all-or-nothing semantics.
+  ## Middleware receives the full batch + conflict keys to refresh tokens.
+
+  if records.len == 0:
+    return success()
+
+  # Convert to raw
+  let rawRecords = records.mapIt(it.toRaw)
+
+  # Wrap typed AtomicMiddleware if provided
+  var rawMiddleware: RawAtomicMiddleware = nil
+  if not middleware.isNil:
+    rawMiddleware = proc(
+        allRecords: seq[RawRecord], conflicts: seq[Key]
+    ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      # Convert raw to typed for user middleware
+      let typedRecords = allRecords.mapIt(?toRecord[T](it))
+
+      # Call typed middleware with full batch + conflicts
+      let resolved = ?(await middleware(typedRecords, conflicts))
+
+      # Convert back to raw
+      success resolved.mapIt(it.toRaw)
+
+  # Call raw helper
+  return await helpers.tryPutAtomic(self, rawRecords, maxRetries, rawMiddleware)
+
 proc getOrPut*[T](
     self: KVStore, key: Key, producer: ValueProducer[T], maxRetries = 3
 ): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
