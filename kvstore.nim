@@ -30,14 +30,3 @@ import ./kvstore/types
 import ./kvstore/query
 
 export helpers, fsds, sql, types, query, key
-
-# =============================================================================
-# Convenience Helpers
-# =============================================================================
-
-proc contains*(
-    self: KVStore, key: Key
-): Future[bool] {.async: (raises: [CancelledError]).} =
-  ## Check if a key exists in the store
-  ## Errors are treated as "not found" to support `key in store` syntax.
-  (await has(self, key)).valueOr: false
