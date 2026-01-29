@@ -67,7 +67,7 @@ template requireEncoder*(T: typedesc): untyped =
 
 proc toRaw*[T](record: Record[T]): RawRecord =
   when T is seq[byte]:
-    RawRecord.init(record.key, record.val, record.token)
+    record
   elif T is not void:
     mixin encode
     RawRecord.init(record.key, encode(record.val), record.token)
@@ -76,7 +76,7 @@ proc toRaw*[T](record: Record[T]): RawRecord =
 
 template toRecord*[T](record: RawRecord): ?!Record[T] =
   when T is seq[byte]:
-    success Record[T].init(record.key, record.val, record.token)
+    success record
   elif T is not void:
     mixin decode
     success Record[T].init(record.key, ?T.decode(record.val), record.token)
