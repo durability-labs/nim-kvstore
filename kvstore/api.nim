@@ -18,8 +18,8 @@ import ./query
 proc has*(
     self: KVStore, keys: seq[Key]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
-  ## Check if a single key exists.
-  ## Convenience wrapper around batch has().
+  ## Check which keys exist.
+  ## Returns a seq of keys that exist in the store.
   self.hasImpl(keys)
 
 proc has*(
@@ -33,8 +33,8 @@ proc has*(
 proc get*(
     self: KVStore, keys: seq[Key], T: type = seq[byte]
 ): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
-  ## Get a single record
-  ##
+  ## Get multiple records by keys.
+  ## Returns only records that exist (missing keys are silently skipped).
 
   let records = ?(await self.getImpl(keys))
   when T is seq[byte]:
@@ -56,14 +56,14 @@ proc get*(
 
 proc put*[T](
     self: KVStore, records: seq[Record[T]]
-): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  let records =
+): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
+  let rawRecords =
     when T isnot seq[byte]:
       records.mapIt(it.toRaw)
     else:
       records
 
-  success ?await self.putImpl(records)
+  self.putImpl(rawRecords)
 
 proc put*[T](
     self: KVStore, record: Record[T]
@@ -73,8 +73,8 @@ proc put*[T](
   ## Errors if conflict occurs
   ##
 
-  let res = ?(await self.putImpl(@[record.toRaw]))
-  if res.len > 0:
+  let skipped = ?(await self.put(@[record]))
+  if skipped.len > 0:
     return failure newException(KVConflictError, "Unable to put record due to conflict")
 
   return success()
@@ -114,9 +114,9 @@ proc delete*(
 proc delete*[T](
     self: KVStore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
-  let records = when T is void: records else: records.toKeyRecord
+  let keyRecords = when T is void: records else: records.toKeyRecord
 
-  self.deleteImpl(records)
+  self.deleteImpl(keyRecords)
 
 proc delete*[T](
     self: KVStore, record: Record[T]
@@ -142,22 +142,34 @@ proc putAtomic*[T](
     self: KVStore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
   ## Atomic batch put - all succeed or all fail
-  let records =
+  let rawRecords =
     when T isnot seq[byte]:
       records.mapIt(it.toRaw)
     else:
       records
 
-  self.putAtomicImpl(records)
+  self.putAtomicImpl(rawRecords)
 
 proc putAtomic*[T](
     self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single record is trivially atomic - convenience wrapper.
-  let res = ?(await self.putAtomicImpl(@[record.toRaw]))
-  if res.len > 0:
+  let skipped = ?(await self.putAtomic(@[record]))
+  if skipped.len > 0:
     return failure newException(KVConflictError, "Unable to put record due to conflict")
   return success()
+
+proc putAtomic*[T](
+    self: KVStore, key: Key, val: T
+): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
+  ## Convenience: atomically insert or update a typed value at key
+  self.putAtomic(Record[T].init(key, val))
+
+proc putAtomic*(
+    self: KVStore, key: Key, value: seq[byte]
+): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
+  ## Convenience: atomically insert or update raw bytes at key (token=0, insert-only semantics)
+  self.putAtomic(RawRecord.init(key, value))
 
 proc deleteAtomic*(
     self: KVStore, record: KeyRecord
@@ -173,12 +185,13 @@ proc deleteAtomic*(
 proc deleteAtomic*[T](
     self: KVStore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
-  self.deleteAtomicImpl(records.toKeyRecord)
+  let keyRecords = when T is void: records else: records.toKeyRecord
+  self.deleteAtomicImpl(keyRecords)
 
 proc deleteAtomic*[T](
     self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
-  let skipped = ?(await self.deleteAtomic[T](@[record]))
+  let skipped = ?(await self.deleteAtomic(@[record]))
   if skipped.len > 0:
     return
       failure newException(KVConflictError, "Unable to delete record due to conflict")
@@ -313,7 +326,7 @@ proc tryDelete*[T](
         failure newException(KVStoreMaxRetriesError, "tryDelete max retries reached")
 
     # Convert to KeyRecord ONLY for the delete call
-    let keys = ?(await self.delete[T](records))
+    let keys = ?(await self.delete(records))
     records = records.filterIt(it.key in keys)
     if records.len == 0:
       break
@@ -333,7 +346,7 @@ proc tryDelete*[T](
     self: KVStore, record: Record[T], maxRetries = 3, middleware: Middleware[T] = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record tryDelete - value is ignored (no encode/decode)
-  let results = ?(await self.tryDelete[T](@[record], maxRetries, middleware))
+  let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
   if results.len > 0:
     return
       failure newException(KVConflictError, "Unable to delete record due to conflict")
