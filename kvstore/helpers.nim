@@ -11,12 +11,16 @@ import ./types
 import ./kvstore
 import ./query
 
-export kvstore
-export query
-
 # =============================================================================
 # Single Record Convenience Wrappers
 # =============================================================================
+
+proc has*(
+    self: KVStore, keys: seq[Key]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
+  ## Check if a single key exists.
+  ## Convenience wrapper around batch has().
+  self.hasImpl(keys)
 
 proc has*(
     self: KVStore, key: Key
@@ -27,30 +31,63 @@ proc has*(
   success(key in existing)
 
 proc get*(
-    self: KVStore, key: Key
-): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+    self: KVStore, keys: seq[Key], T: type = seq[byte]
+): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
   ## Get a single record
   ##
 
-  let records = ?(await self.get(@[key]))
+  let records = ?(await self.getImpl(keys))
+  when T is seq[byte]:
+    success records
+  else:
+    success records.mapIt(?toRecord[T](it))
+
+proc get*(
+    self: KVStore, key: Key, T: type = seq[byte]
+): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
+  ## Get a single record
+  ##
+
+  let records = ?(await get(self, @[key], T))
   if records.len == 0:
     return failure newException(KVStoreKeyNotFound, "Key not found: " & $key)
 
-  return success records[0]
+  success records[0]
 
-proc put*(
-    self: KVStore, record: RawRecord
+proc put*[T](
+    self: KVStore, records: seq[Record[T]]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  let records =
+    when T isnot seq[byte]:
+      records.mapIt(it.toRaw)
+    else:
+      records
+
+  success ?await self.putImpl(records)
+
+proc put*[T](
+    self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Insert or update a single record
   ##
   ## Errors if conflict occurs
   ##
 
-  let res = ?(await self.put(@[record]))
+  let res = ?(await self.putImpl(@[record.toRaw]))
   if res.len > 0:
     return failure newException(KVConflictError, "Unable to put record due to conflict")
 
   return success()
+
+proc put*[T](
+    self: KVStore, key: Key, val: T
+): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
+  ## Insert or update a single record
+  ##
+  ## Errors if conflict occurs
+  ##
+
+  self.put(Record[T].init(key, val))
 
 proc put*(
     self: KVStore, key: Key, value: seq[byte]
@@ -66,7 +103,7 @@ proc delete*(
   ## Errors if conflict occurs
   ##
 
-  let skipped = ?(await self.delete(@[record]))
+  let skipped = ?(await self.deleteImpl(@[record]))
   if skipped.len > 0:
     return
       failure newException(KVConflictError, "Unable to delete record due to conflict")
@@ -74,13 +111,15 @@ proc delete*(
   success()
 
 # RawRecord convenience overloads - just extract key+token, no conversion
-proc delete*(
-    self: KVStore, records: seq[RawRecord]
+proc delete*[T](
+    self: KVStore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
-  self.delete(records.toKeyRecord)
+  let records = when T is void: records else: records.toKeyRecord
 
-proc delete*(
-    self: KVStore, record: RawRecord
+  self.deleteImpl(records)
+
+proc delete*[T](
+    self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
@@ -99,11 +138,23 @@ proc contains*(
 # Atomic Single Record Wrappers
 # =============================================================================
 
-proc putAtomic*(
-    self: KVStore, record: RawRecord
+proc putAtomic*[T](
+    self: KVStore, records: seq[Record[T]]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
+  ## Atomic batch put - all succeed or all fail
+  let records =
+    when T isnot seq[byte]:
+      records.mapIt(it.toRaw)
+    else:
+      records
+
+  self.putAtomicImpl(records)
+
+proc putAtomic*[T](
+    self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single record is trivially atomic - convenience wrapper.
-  let res = ?(await self.putAtomic(@[record]))
+  let res = ?(await self.putAtomicImpl(@[record.toRaw]))
   if res.len > 0:
     return failure newException(KVConflictError, "Unable to put record due to conflict")
   return success()
@@ -112,34 +163,38 @@ proc deleteAtomic*(
     self: KVStore, record: KeyRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single record delete - convenience wrapper.
-  let skipped = ?(await self.deleteAtomic(@[record]))
+  let skipped = ?(await self.deleteAtomicImpl(@[record]))
   if skipped.len > 0:
     return
       failure newException(KVConflictError, "Unable to delete record due to conflict")
   success()
 
 # RawRecord overloads for deleteAtomic
-proc deleteAtomic*(
-    self: KVStore, records: seq[RawRecord]
+proc deleteAtomic*[T](
+    self: KVStore, records: seq[Record[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
-  self.deleteAtomic(records.toKeyRecord)
+  self.deleteAtomicImpl(records.toKeyRecord)
 
-proc deleteAtomic*(
-    self: KVStore, record: RawRecord
+proc deleteAtomic*[T](
+    self: KVStore, record: Record[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
-  let skipped = ?(await self.deleteAtomic(@[record]))
+  let skipped = ?(await self.deleteAtomic[T](@[record]))
   if skipped.len > 0:
     return
       failure newException(KVConflictError, "Unable to delete record due to conflict")
+
   success()
 
 # =============================================================================
 # Retry Helpers
 # =============================================================================
 
-proc tryPut*(
-    self: KVStore, records: seq[RawRecord], maxRetries = 3, middleware: RawMiddleware
-): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+proc tryPut*[T](
+    self: KVStore,
+    records: seq[Record[T]],
+    maxRetries = 3,
+    middleware: Middleware[T] = nil,
+): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
   ## Bulk put with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
   ##
@@ -147,7 +202,7 @@ proc tryPut*(
   ##
 
   if records.len == 0:
-    return success(newSeq[RawRecord]())
+    return success(newSeq[Record[T]]())
 
   var
     remaining = maxRetries
@@ -174,8 +229,8 @@ proc tryPut*(
 
   return success records
 
-proc tryPut*(
-    self: KVStore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
+proc tryPut*[T](
+    self: KVStore, record: Record[T], maxRetries = 3, middleware: Middleware[T] = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryPut
   ##
@@ -187,7 +242,10 @@ proc tryPut*(
   return success()
 
 proc tryDelete*(
-    self: KVStore, records: seq[KeyRecord], maxRetries = 3, middleware: KeyMiddleware
+    self: KVStore,
+    records: seq[KeyRecord],
+    maxRetries = 3,
+    middleware: KeyMiddleware = nil,
 ): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
@@ -238,12 +296,12 @@ proc tryDelete*(
   return success()
 
 # RawRecord tryDelete - middleware works with RawRecord, no conversion
-proc tryDelete*(
-    self: KVStore, records: seq[RawRecord], maxRetries = 3, middleware: RawMiddleware
-): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
-  ## Bulk delete with retry - value passes through untouched (no encode/decode)
+proc tryDelete*[T](
+    self: KVStore, records: seq[Record[T]], maxRetries = 3, middleware: Middleware[T]
+): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+  ## Bulk delete with retry
   if records.len == 0:
-    return success(newSeq[RawRecord]())
+    return success(newSeq[Record[T]]())
 
   var
     remaining = maxRetries
@@ -255,7 +313,7 @@ proc tryDelete*(
         failure newException(KVStoreMaxRetriesError, "tryDelete max retries reached")
 
     # Convert to KeyRecord ONLY for the delete call
-    let keys = ?(await self.delete(records.toKeyRecord))
+    let keys = ?(await self.delete[T](records))
     records = records.filterIt(it.key in keys)
     if records.len == 0:
       break
@@ -271,26 +329,26 @@ proc tryDelete*(
 
   return success records
 
-proc tryDelete*(
-    self: KVStore, record: RawRecord, maxRetries = 3, middleware: RawMiddleware = nil
+proc tryDelete*[T](
+    self: KVStore, record: Record[T], maxRetries = 3, middleware: Middleware[T] = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record tryDelete - value is ignored (no encode/decode)
-  let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
+  let results = ?(await self.tryDelete[T](@[record], maxRetries, middleware))
   if results.len > 0:
     return
       failure newException(KVConflictError, "Unable to delete record due to conflict")
   return success()
 
-proc getOrPut*(
-    self: KVStore, key: Key, producer: RawValueProducer, maxRetries = 3
-): Future[?!RawRecord] {.async: (raises: [CancelledError]).} =
+proc getOrPut*[T](
+    self: KVStore, key: Key, producer: ValueProducer[T], maxRetries = 3
+): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
   ## Get existing record or lazily insert using producer
   ## Producer is only called if key is missing
   ## Errors if backend fails or retries exhausted
   ##
 
   # Try to get first
-  let existing = await self.get(key)
+  let existing = await self.get(key, T)
   if existing.isOk:
     return existing
 
@@ -300,20 +358,20 @@ proc getOrPut*(
 
   # Key doesn't exist - produce value and try to insert
   let value = ?(await producer())
-  ?(await self.tryPut(RawRecord.init(key, value), maxRetries))
+  ?(await self.tryPut(Record[T].init(key, value), maxRetries))
 
   # Fetch the record to get the actual token
-  return await self.get(key)
+  return await self.get(key, T)
 
 # =============================================================================
 # Atomic Retry Helpers
 # =============================================================================
 
-proc tryPutAtomic*(
+proc tryPutAtomic*[T](
     self: KVStore,
-    records: seq[RawRecord],
+    records: seq[Record[T]],
     maxRetries = 3,
-    middleware: RawAtomicMiddleware = nil,
+    middleware: AtomicMiddleware[T] = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Atomic batch put with retry on conflicts.
   ##
@@ -358,11 +416,11 @@ proc tryPutAtomic*(
   return
     failure newException(KVStoreMaxRetriesError, "tryPutAtomic max retries reached")
 
-proc tryPutAtomic*(
+proc tryPutAtomic*[T](
     self: KVStore,
-    record: RawRecord,
+    record: Record[T],
     maxRetries = 3,
-    middleware: RawAtomicMiddleware = nil,
+    middleware: AtomicMiddleware[T] = nil,
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Single-record wrapper for tryPutAtomic
   self.tryPutAtomic(@[record], maxRetries, middleware)
@@ -420,8 +478,36 @@ proc tryDeleteAtomic*(
   self.tryDeleteAtomic(@[record], maxRetries, middleware)
 
 # =============================================================================
-# Query Iterator Helpers
+# Query Helpers
 # =============================================================================
+
+proc query*(
+    self: KVStore, q: Query, T: type = seq[byte]
+): Future[?!QueryIter[T]] {.async: (raises: [CancelledError]).} =
+  when T is seq[byte]:
+    await self.queryImpl(q)
+  else:
+    let dsIter = ?(await self.queryImpl(q))
+    proc next(): Future[?!(?Record[T])] {.async: (raises: [CancelledError]).} =
+      let rawOpt = ?(await dsIter.next())
+      without raw =? rawOpt:
+        return success Record[T].none
+
+      let decoded = ?(toRecord[T](raw))
+      success decoded.some
+
+    proc isFinished(): bool =
+      dsIter.finished
+
+    proc isDisposed(): bool =
+      dsIter.disposed
+
+    proc dispose(): Future[?!void] {.async: (raises: [], raw: true), gcsafe.} =
+      dsIter.dispose()
+
+    success QueryIter[T].new(
+      next = next, finished = isFinished, disposed = isDisposed, dispose = dispose
+    )
 
 proc fetchAll*[T](
     iter: QueryIter[T]
@@ -444,3 +530,6 @@ proc fetchAll*[T](
     else:
       break # End of stream
   return success(res)
+
+proc close*(self: KVStore): Future[?!void] {.async: (raises: [], raw: true).} =
+  self.closeImpl()

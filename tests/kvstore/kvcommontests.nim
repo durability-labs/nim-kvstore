@@ -6,6 +6,7 @@ import pkg/stew/byteutils
 import pkg/questionable/results
 
 import pkg/kvstore
+import pkg/kvstore/kvstore
 
 proc basicStoreTests*(ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[byte]) =
   var record: RawRecord

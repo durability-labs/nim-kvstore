@@ -17,7 +17,6 @@
 ##
 ## For typed records with automatic encoding/decoding, also import:
 ## .. code-block:: Nim
-##   import pkg/kvstore/typedkv
 
 import pkg/chronos
 import pkg/questionable/results
