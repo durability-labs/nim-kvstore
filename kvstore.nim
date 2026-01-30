@@ -22,10 +22,10 @@ import pkg/chronos
 import pkg/questionable/results
 
 import ./kvstore/key
-import ./kvstore/helpers
+import ./kvstore/api
 import ./kvstore/fsds
 import ./kvstore/sql
 import ./kvstore/types
 import ./kvstore/query
 
-export helpers, fsds, sql, types, query, key
+export api, fsds, sql, types, query, key

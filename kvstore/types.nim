@@ -31,10 +31,7 @@ type
   RawRecord* = Record[seq[byte]]
   KeyRecord* = Record[void]
   KeyMiddleware* = Middleware[void]
-  # RawMiddleware* = Middleware[RawRecord]
-  # RawAtomicMiddleware* = AtomicMiddleware[RawRecord]
   KeyAtomicMiddleware* = AtomicMiddleware[void]
-  # RawValueProducer* = ValueProducer[seq[byte]]
 
   # Error types
   KVStoreError* = object of CatchableError
