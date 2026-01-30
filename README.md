@@ -337,13 +337,17 @@ let skipped = (await ds.put(records)).tryGet()
 | Method | Description |
 | ------ | ----------- |
 | `has(key)` | Check if key exists |
-| `get(key)` | Get single record |
-| `get(keys)` | Get multiple records |
+| `get(key)` | Get single record as `RawRecord` (raw bytes) |
+| `get(key, T)` | Get single record as `Record[T]` (auto-decode) |
+| `get(keys)` | Get multiple records as `seq[RawRecord]` |
+| `get(keys, T)` | Get multiple records as `seq[Record[T]]` |
 | `put(record)` | Insert/update single record (errors on conflict) |
 | `put(records)` | Insert/update multiple records (returns skipped keys) |
+| `put(key, val)` | Convenience: insert raw bytes or typed value at key |
 | `delete(record)` | Delete single record (errors on conflict) |
 | `delete(records)` | Delete multiple records (returns skipped keys) |
-| `query(query)` | Query records by key prefix |
+| `query(query)` | Query records by key prefix as `QueryIter[RawRecord]` |
+| `query(query, T)` | Query records by key prefix as `QueryIter[T]` |
 | `close()` | Close the store |
 
 ### Atomic Batch Operations
@@ -435,10 +439,32 @@ let person = Person(name: "Alice", age: 30)
 # Store typed record
 (await ds.put(key, person)).tryGet()
 
-# Retrieve typed record
-let record = (await ds.get[Person](key)).tryGet()
+# Retrieve typed record - pass type as second argument
+let record = (await ds.get(key, Person)).tryGet()
 echo record.val.name  # "Alice"
 echo record.val.age   # 30
+
+# Query with typed results
+let query = Query.init(Key.init("/people").tryGet())
+let iter = (await ds.query(query, Person)).tryGet()
+while not iter.finished:
+  let recordOpt = (await iter.next()).tryGet()
+  if record =? recordOpt:
+    echo record.val.name
+discard await iter.dispose()
+```
+
+### Type Inference
+
+The type parameter defaults to `seq[byte]` (raw bytes):
+
+```nim
+# These are equivalent - both return RawRecord
+let raw1 = (await ds.get(key)).tryGet()
+let raw2 = (await ds.get(key, seq[byte])).tryGet()
+
+# For typed records, pass the type explicitly
+let typed = (await ds.get(key, Person)).tryGet()
 ```
 
 ## Storage Backends
@@ -565,6 +591,7 @@ let query = Query.init(
   limit = 100                # -1 for unlimited (default)
 )
 
+# Raw bytes query (default)
 let iter = (await ds.query(query)).tryGet()
 
 # Option 1: Manual iteration
@@ -580,6 +607,28 @@ discard await iter.dispose()
 let iter2 = (await ds.query(query)).tryGet()
 let records = (await iter2.fetchAll()).tryGet()
 discard await iter2.dispose()
+```
+
+### Typed Query Results
+
+Pass a type to `query()` for automatic decoding:
+
+```nim
+# Query with typed decoding
+let iter = (await ds.query(query, Person)).tryGet()
+defer: discard await iter.dispose()
+
+while not iter.finished:
+  let recordOpt = (await iter.next()).tryGet()
+  if record =? recordOpt:
+    echo record.val.name, " is ", record.val.age, " years old"
+
+# Or use fetchAll for typed results
+let iter2 = (await ds.query(query, Person)).tryGet()
+let people = (await iter2.fetchAll()).tryGet()
+discard await iter2.dispose()
+for p in people:
+  echo p.val.name
 ```
 
 **Important:** Iterators are must-dispose resources. Always call `dispose()` to release backend resources (prepared statements, locks). Failing to dispose before `close()` may cause close to fail.
