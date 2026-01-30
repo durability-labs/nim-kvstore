@@ -13,7 +13,7 @@ export types
 # Base Interface Methods
 # =============================================================================
 
-method has*(
+method hasImpl*(
     self: KVStore, keys: seq[Key]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Check existence of multiple keys.
@@ -24,7 +24,7 @@ method has*(
   ## - Duplicate keys in input are deduplicated (first occurrence wins)
   raiseAssert("Not implemented!")
 
-method get*(
+method getImpl*(
     self: KVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Get a list of records specified by the keys
@@ -32,7 +32,7 @@ method get*(
 
   raiseAssert("Not implemented!")
 
-method put*(
+method putImpl*(
     self: KVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Insert or update a group of records
@@ -43,7 +43,7 @@ method put*(
 
   raiseAssert("Not implemented!")
 
-method delete*(
+method deleteImpl*(
     self: KVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Delete a list of records
@@ -52,10 +52,10 @@ method delete*(
   ##
   raiseAssert("Not implemented!")
 
-method close*(self: KVStore): Future[?!void] {.base, async: (raises: []).} =
+method closeImpl*(self: KVStore): Future[?!void] {.base, async: (raises: []).} =
   raiseAssert("Not implemented!")
 
-method query*(
+method queryImpl*(
     self: KVStore, query: Query
 ): Future[?!QueryIterRaw] {.base, gcsafe, async: (raises: [CancelledError]).} =
   raiseAssert("Not implemented!")
@@ -72,7 +72,7 @@ method supportsAtomicBatch*(self: KVStore): bool {.base, gcsafe.} =
   ## - Commit NONE and report conflicts (non-empty conflict list)
   false
 
-method putAtomic*(
+method putAtomicImpl*(
     self: KVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Insert or update records atomically (all-or-nothing).
@@ -87,7 +87,7 @@ method putAtomic*(
     KVStoreBackendError, "Atomic batch not supported by this backend"
   )
 
-method deleteAtomic*(
+method deleteAtomicImpl*(
     self: KVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Delete records atomically (all-or-nothing).

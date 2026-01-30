@@ -4,7 +4,6 @@ import pkg/asynctest/chronos/unittest2
 import pkg/chronos
 
 import pkg/kvstore
-import pkg/kvstore/typedkv
 
 suite "KVStore (base)":
   let
@@ -27,10 +26,10 @@ suite "KVStore (base)":
 
   test "get":
     expect AssertionDefect:
-      var rec = (await get[seq[byte]](ds, key)).tryGet
+      var rec = (await ds.get(key)).tryGet
 
   test "query":
     expect AssertionDefect:
-      let iter = (await query[seq[byte]](ds, Query.init(key))).tryGet
+      let iter = (await query(ds, Query.init(key))).tryGet
       for n in iter:
         discard
