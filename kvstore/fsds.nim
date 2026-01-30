@@ -7,7 +7,7 @@ import std/os
 import std/tables
 import std/strutils
 import std/options
-import std/random
+import std/sysrand
 import std/times
 
 import std/sets
@@ -19,6 +19,7 @@ import pkg/questionable
 import pkg/questionable/results
 import pkg/stew/endians2
 import pkg/stew/io2
+import pkg/stew/byteutils
 import pkg/taskpools
 
 import ./key
@@ -69,7 +70,13 @@ type
     tp: Taskpool
     signal: ThreadSignalPtr
 
-randomize() # TODO: We should probably use a stronger rng here?
+proc generateTempSuffix(): ?!string {.gcsafe.} =
+  ## Generate cryptographically secure random suffix for temp files.
+  ## Returns 16-character hex string (8 random bytes).
+  let bytes = ?catch(urandom(8)).toKVError(
+    "Failed to generate random bytes", KVStoreBackendError
+  )
+  success bytes.toHex
 
 proc moveFile(src, dst: string): ?!void {.gcsafe.} =
   try:
@@ -194,7 +201,7 @@ proc writeVersioned*(
       failure newException(KVStoreBackendError, "unable to create parent directory")
 
   let
-    tmp = path & ".tmp-" & $epochTime() & "-" & $rand(1_000_000)
+    tmp = path & ".tmp-" & ?generateTempSuffix()
     handle =
       ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
         context = "Unable to open temporary file '" & tmp & "'",
