@@ -17,23 +17,24 @@ type
     when T is not type void:
       val*: T
 
-  Middleware*[T] =
-    proc(failed: seq[T]): Future[?!seq[T]] {.gcsafe, async: (raises: [CancelledError]).}
+  Middleware*[T] = proc(failed: seq[Record[T]]): Future[?!seq[Record[T]]] {.
+    gcsafe, async: (raises: [CancelledError])
+  .}
   ValueProducer*[T] = proc(): Future[?!T] {.gcsafe, async: (raises: [CancelledError]).}
 
   # Atomic batch middleware receives ALL records + conflict keys
   # This allows it to refresh tokens for the entire batch, not just failed records
-  AtomicMiddleware*[T] = proc(allRecords: seq[T], conflicts: seq[Key]): Future[?!seq[T]] {.
-    gcsafe, async: (raises: [CancelledError])
-  .}
+  AtomicMiddleware*[T] = proc(
+    allRecords: seq[Record[T]], conflicts: seq[Key]
+  ): Future[?!seq[Record[T]]] {.gcsafe, async: (raises: [CancelledError]).}
 
   RawRecord* = Record[seq[byte]]
   KeyRecord* = Record[void]
-  KeyMiddleware* = Middleware[KeyRecord]
-  RawMiddleware* = Middleware[RawRecord]
-  RawAtomicMiddleware* = AtomicMiddleware[RawRecord]
-  KeyAtomicMiddleware* = AtomicMiddleware[KeyRecord]
-  RawValueProducer* = ValueProducer[seq[byte]]
+  KeyMiddleware* = Middleware[void]
+  # RawMiddleware* = Middleware[RawRecord]
+  # RawAtomicMiddleware* = AtomicMiddleware[RawRecord]
+  KeyAtomicMiddleware* = AtomicMiddleware[void]
+  # RawValueProducer* = ValueProducer[seq[byte]]
 
   # Error types
   KVStoreError* = object of CatchableError
@@ -69,6 +70,7 @@ proc toRaw*[T](record: Record[T]): RawRecord =
   when T is seq[byte]:
     record
   elif T is not void:
+    requireEncoder(T)
     mixin encode
     RawRecord.init(record.key, encode(record.val), record.token)
   else:
@@ -78,6 +80,7 @@ template toRecord*[T](record: RawRecord): ?!Record[T] =
   when T is seq[byte]:
     success record
   elif T is not void:
+    requireDecoder(T)
     mixin decode
     success Record[T].init(record.key, ?T.decode(record.val), record.token)
   else:
@@ -85,7 +88,13 @@ template toRecord*[T](record: RawRecord): ?!Record[T] =
 
 # KeyRecord extraction - for operations that only need key+token
 template toKeyRecord*[T](record: Record[T]): KeyRecord =
-  KeyRecord(key: record.key, token: record.token)
+  when T is void:
+    record
+  else:
+    KeyRecord(key: record.key, token: record.token)
 
 template toKeyRecord*[T](records: seq[Record[T]]): seq[KeyRecord] =
-  records.mapIt(KeyRecord(key: it.key, token: it.token))
+  when T is void:
+    records
+  else:
+    records.mapIt(KeyRecord(key: it.key, token: it.token))

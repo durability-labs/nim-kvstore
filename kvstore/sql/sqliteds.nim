@@ -204,7 +204,7 @@ proc runNextTask(
 # Async Methods (public API)
 # =============================================================================
 
-method has*(
+method hasImpl*(
     self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## Check existence of multiple keys.
@@ -271,7 +271,7 @@ method has*(
 
     return extract(ctx[].result)
 
-method get*(
+method getImpl*(
     self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   # don't move after closed, every await introduces concurrency
@@ -332,7 +332,7 @@ method get*(
 
     return extract(ctx[].result)
 
-method put*(
+method putImpl*(
     self: SQLiteKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   # don't move after closed, every await introduces concurrency
@@ -362,7 +362,7 @@ method put*(
 
   return extract(ctx[].result)
 
-method delete*(
+method deleteImpl*(
     self: SQLiteKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   # don't move after closed, every await introduces concurrency
@@ -402,7 +402,7 @@ method delete*(
 method supportsAtomicBatch*(self: SQLiteKVStore): bool =
   true
 
-method putAtomic*(
+method putAtomicImpl*(
     self: SQLiteKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch put with CAS.
@@ -441,7 +441,7 @@ method putAtomic*(
 
   return extract(ctx[].result)
 
-method deleteAtomic*(
+method deleteAtomicImpl*(
     self: SQLiteKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch delete with CAS.
@@ -481,7 +481,7 @@ method deleteAtomic*(
 
   return extract(ctx[].result)
 
-method close*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
+method closeImpl*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
     return success()
 
@@ -500,7 +500,7 @@ method close*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
 
   return success()
 
-method query*(
+method queryImpl*(
     self: SQLiteKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
   if self.closed:
