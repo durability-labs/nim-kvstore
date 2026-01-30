@@ -14,7 +14,7 @@ type
   Record*[T] = object
     token*: uint64
     key*: Key
-    when T is not type void:
+    when T isnot void:
       val*: T
 
   Middleware*[T] = proc(failed: seq[Record[T]]): Future[?!seq[Record[T]]] {.
