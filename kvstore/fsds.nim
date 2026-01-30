@@ -31,8 +31,6 @@ const
   FileExt* = "dsobj"
   EmptyBytes* = newSeq[byte](0)
 
-export kvstore
-
 type
   RefCountedLock* = ref object
     ## AsyncLock with reference counting to safely track waiters.
@@ -376,7 +374,7 @@ proc release*(self: FSKVStore, key: Key, rcLock: RefCountedLock) {.raises: [].} 
 # Async Methods (public API)
 # =============================================================================
 
-method has*(
+method hasImpl*(
     self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## Check existence of multiple keys.
@@ -424,7 +422,7 @@ method has*(
 
   return success(existing)
 
-method get*(
+method getImpl*(
     self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
   var records: seq[RawRecord]
@@ -466,7 +464,7 @@ method get*(
 
   return success records
 
-method put*(
+method putImpl*(
     self: FSKVStore, records: seq[RawRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   if self.closed:
@@ -515,7 +513,7 @@ method put*(
 
   return success conflicts
 
-method delete*(
+method deleteImpl*(
     self: FSKVStore, records: seq[KeyRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   var skipped: seq[Key]
@@ -564,7 +562,7 @@ method delete*(
 
   return success skipped
 
-method close*(self: FSKVStore): Future[?!void] {.async: (raises: []).} =
+method closeImpl*(self: FSKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
     return success()
 
@@ -592,7 +590,7 @@ proc dirWalker(path: string): (iterator (): string {.raises: [Defect], gcsafe.})
       except CatchableError as exc:
         raise newException(Defect, exc.msg)
 
-method query*(
+method queryImpl*(
     self: FSKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
   if self.closed:

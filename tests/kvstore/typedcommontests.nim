@@ -8,7 +8,6 @@ import pkg/questionable
 import pkg/questionable/results
 
 import pkg/kvstore
-import pkg/kvstore/typedkv
 
 # Encoder/decoder for int type
 proc encode(i: int): seq[byte] =
@@ -28,7 +27,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let failed = (await ds.tryPut(@[record])).tryGet()
     check failed.len == 0 # No failures
 
-    let retrieved = (await get[int](ds, key)).tryGet()
+    let retrieved = (await get(ds, key, int)).tryGet()
     check retrieved.val == 42
     check retrieved.token == 1
 
@@ -39,7 +38,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     (await ds.tryPut(initial)).tryGet()
 
     # Get current version
-    let current = (await get[int](ds, conflictKey)).tryGet()
+    let current = (await get(ds, conflictKey, int)).tryGet()
 
     # Try to insert with stale token - should fail after retries
     let stale =
@@ -47,7 +46,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     check (await ds.tryPut(@[stale], maxRetries = 2)).isErr
 
     # Original value should be unchanged
-    let unchanged = (await get[int](ds, conflictKey)).tryGet()
+    let unchanged = (await get(ds, conflictKey, int)).tryGet()
     check unchanged.val == 100
 
   test "tryPut - single record wrapper":
@@ -55,7 +54,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let record = Record[int].init(key2, 999)
     (await ds.tryPut(record)).tryGet()
 
-    let retrieved = (await get[int](ds, key2)).tryGet()
+    let retrieved = (await get(ds, key2, int)).tryGet()
     check retrieved.val == 999
 
   test "tryPut - bulk operation with partial conflicts":
@@ -69,7 +68,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     discard (await ds.tryPut(records)).tryGet()
 
     # Update with one stale token
-    let current2 = (await get[int](ds, key2)).tryGet()
+    let current2 = (await get(ds, key2, int)).tryGet()
     let updates =
       @[
         Record[int].init(key1, 10, 1), # Valid
@@ -92,7 +91,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
         failed: seq[Record[int]]
     ): Future[?!seq[Record[int]]] {.async: (raises: [CancelledError]).} =
       middlewareCalled = true
-      let fresh = ?(await get[int](ds, failed.mapIt(it.key)))
+      let fresh = ?(await get(ds, failed.mapIt(it.key), int))
       success zip(failed, fresh).mapIt(
         Record[int].init(it[0].key, it[0].val, it[1].token)
       )
@@ -106,7 +105,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     check middlewareCalled # Middleware should have been invoked
     check failed.len == 0 # Should eventually succeed
 
-    let final = (await get[int](ds, middlewareKey)).tryGet()
+    let final = (await get(ds, middlewareKey, int)).tryGet()
     check final.val == 15 # Value should be updated
 
   test "tryDelete - successful deletion":
@@ -114,7 +113,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
 
     # Insert and then delete
     (await ds.tryPut(Record[int].init(delKey, 77))).tryGet()
-    let current = (await get[int](ds, delKey)).tryGet()
+    let current = (await get(ds, delKey, int)).tryGet()
 
     let failed = (await ds.tryDelete(@[KeyRecord.init(delKey, current.token)])).tryGet()
     check failed.len == 0
@@ -125,7 +124,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
 
     # Insert record
     (await ds.tryPut(Record[int].init(delKey, 88))).tryGet()
-    let current = (await get[int](ds, delKey)).tryGet()
+    let current = (await get(ds, delKey, int)).tryGet()
 
     # Try to delete with stale token
     let stale = KeyRecord.init(delKey, current.token - 1)
@@ -138,7 +137,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let delKey = (key / "delete3").tryGet()
 
     (await ds.tryPut(Record[int].init(delKey, 99))).tryGet()
-    let current = (await get[int](ds, delKey)).tryGet()
+    let current = (await get(ds, delKey, int)).tryGet()
 
     (await ds.tryDelete(KeyRecord.init(delKey, current.token))).tryGet()
     check not (await ds.has(delKey)).tryGet()
@@ -155,7 +154,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
         failed: seq[KeyRecord]
     ): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
       middlewareCalled = true
-      success (?(await get[int](ds, failed.mapIt(it.key)))).mapIt(
+      success (?(await get(ds, failed.mapIt(it.key), int))).mapIt(
         KeyRecord.init(it.key, it.token)
       )
 
@@ -200,7 +199,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     check res.val == 456 # Should get produced value
 
     # Verify it was actually stored
-    let retrieved = (await get[int](ds, gopKey)).tryGet()
+    let retrieved = (await get(ds, gopKey, int)).tryGet()
     check retrieved.val == 456
 
   test "getOrPut - handles concurrent insert race":
@@ -230,7 +229,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
   test "single put - conflict returns error":
     let conflictKey = (key / "single-put-conflict").tryGet()
     (await ds.put(conflictKey, 42)).tryGet()
-    let current = (await get[int](ds, conflictKey)).tryGet()
+    let current = (await get(ds, conflictKey, int)).tryGet()
 
     # Try single put with stale token - should error
     let stale = Record[int].init(conflictKey, 999, current.token - 1)
@@ -240,7 +239,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
   test "single delete - conflict returns error":
     let delKey = (key / "single-del-conflict").tryGet()
     (await ds.put(delKey, 77)).tryGet()
-    let current = (await get[int](ds, delKey)).tryGet()
+    let current = (await get(ds, delKey, int)).tryGet()
 
     # Try single delete with stale token - should error
     let stale = KeyRecord.init(delKey, current.token - 1)
@@ -259,7 +258,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
       (await ds.put(record)).tryGet()
 
     # Query with typed results
-    let iter = (await query[int](ds, Query.init(Root))).tryGet()
+    let iter = (await query(ds, Query.init(Root), int)).tryGet()
 
     var results = initTable[string, int]()
 
