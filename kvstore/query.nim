@@ -24,7 +24,7 @@ type
   IterFinished* = proc(): bool {.closure, gcsafe, raises: [].}
   IterDisposed* = proc(): bool {.closure, gcsafe, raises: [].}
   IterDispose* = proc(): Future[?!void] {.closure, async: (raises: []), gcsafe.}
-  GetNext*[T] = proc(): Future[?!(?Record[T])] {.
+  GetNext*[T] = proc(): Future[?!(?KVRecord[T])] {.
     closure, async: (raises: [CancelledError]), gcsafe
   .}
 
@@ -47,7 +47,7 @@ proc disposed*[T](iter: QueryIter[T]): bool =
 
 proc next*[T](
     iter: QueryIter[T]
-): Future[?!(?Record[T])] {.async: (raises: [CancelledError]).} =
+): Future[?!(?KVRecord[T])] {.async: (raises: [CancelledError]).} =
   await iter.nextImpl()
 
 proc dispose*[T](iter: QueryIter[T]): Future[?!void] {.async: (raises: []).} =
@@ -56,7 +56,7 @@ proc dispose*[T](iter: QueryIter[T]): Future[?!void] {.async: (raises: []).} =
     return await iter.disposeImpl()
   return success()
 
-iterator items*[T](q: QueryIter[T]): Future[?!(?Record[T])] =
+iterator items*[T](q: QueryIter[T]): Future[?!(?KVRecord[T])] =
   while not q.finished:
     yield q.next()
 
