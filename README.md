@@ -280,7 +280,7 @@ let relative = key.relative(Key.init("/users").tryGet()).tryGet()  # alice/profi
 Every record in nim-kvstore has three components:
 
 ```nim
-type Record*[T] = object
+type KVRecord*[T] = object
   key*: Key        # Unique identifier
   val*: T          # The stored value
   token*: uint64   # Version token for optimistic concurrency
@@ -338,9 +338,9 @@ let skipped = (await ds.put(records)).tryGet()
 | ------ | ----------- |
 | `has(key)` | Check if key exists |
 | `get(key)` | Get single record as `RawRecord` (raw bytes) |
-| `get(key, T)` | Get single record as `Record[T]` (auto-decode) |
+| `get(key, T)` | Get single record as `KVRecord[T]` (auto-decode) |
 | `get(keys)` | Get multiple records as `seq[RawRecord]` |
-| `get(keys, T)` | Get multiple records as `seq[Record[T]]` |
+| `get(keys, T)` | Get multiple records as `seq[KVRecord[T]]` |
 | `put(record)` | Insert/update single record (errors on conflict) |
 | `put(records)` | Insert/update multiple records (returns skipped keys) |
 | `put(key, val)` | Convenience: insert raw bytes or typed value at key |

@@ -12,7 +12,7 @@ import ./kvstore
 import ./query
 
 # =============================================================================
-# Single Record Convenience Wrappers
+# Single KVRecord Convenience Wrappers
 # =============================================================================
 
 proc has*(
@@ -32,7 +32,7 @@ proc has*(
 
 proc get*(
     self: KVStore, keys: seq[Key], T: type = seq[byte]
-): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+): Future[?!seq[KVRecord[T]]] {.async: (raises: [CancelledError]).} =
   ## Get multiple records by keys.
   ## Returns only records that exist (missing keys are silently skipped).
 
@@ -44,7 +44,7 @@ proc get*(
 
 proc get*(
     self: KVStore, key: Key, T: type = seq[byte]
-): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
+): Future[?!KVRecord[T]] {.async: (raises: [CancelledError]).} =
   ## Get a single record
   ##
 
@@ -55,7 +55,7 @@ proc get*(
   success records[0]
 
 proc put*[T](
-    self: KVStore, records: seq[Record[T]]
+    self: KVStore, records: seq[KVRecord[T]]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
   let rawRecords =
     when T isnot seq[byte]:
@@ -66,7 +66,7 @@ proc put*[T](
   self.putImpl(rawRecords)
 
 proc put*[T](
-    self: KVStore, record: Record[T]
+    self: KVStore, record: KVRecord[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Insert or update a single record
   ##
@@ -87,7 +87,7 @@ proc put*[T](
   ## Errors if conflict occurs
   ##
 
-  self.put(Record[T].init(key, val))
+  self.put(KVRecord[T].init(key, val))
 
 proc put*(
     self: KVStore, key: Key, value: seq[byte]
@@ -112,14 +112,14 @@ proc delete*(
 
 # RawRecord convenience overloads - just extract key+token, no conversion
 proc delete*[T](
-    self: KVStore, records: seq[Record[T]]
+    self: KVStore, records: seq[KVRecord[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
   let keyRecords = when T is void: records else: records.toKeyRecord
 
   self.deleteImpl(keyRecords)
 
 proc delete*[T](
-    self: KVStore, record: Record[T]
+    self: KVStore, record: KVRecord[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.delete(@[record]))
   if skipped.len > 0:
@@ -136,11 +136,11 @@ proc contains*(
     false
 
 # =============================================================================
-# Atomic Single Record Wrappers
+# Atomic Single KVRecord Wrappers
 # =============================================================================
 
 proc putAtomic*[T](
-    self: KVStore, records: seq[Record[T]]
+    self: KVStore, records: seq[KVRecord[T]]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
   ## Atomic batch put - all succeed or all fail
   let rawRecords =
@@ -152,7 +152,7 @@ proc putAtomic*[T](
   self.putAtomicImpl(rawRecords)
 
 proc putAtomic*[T](
-    self: KVStore, record: Record[T]
+    self: KVStore, record: KVRecord[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single record is trivially atomic - convenience wrapper.
   let skipped = ?(await self.putAtomic(@[record]))
@@ -164,7 +164,7 @@ proc putAtomic*[T](
     self: KVStore, key: Key, val: T
 ): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
   ## Convenience: atomically insert or update a typed value at key
-  self.putAtomic(Record[T].init(key, val))
+  self.putAtomic(KVRecord[T].init(key, val))
 
 proc putAtomic*(
     self: KVStore, key: Key, value: seq[byte]
@@ -184,13 +184,13 @@ proc deleteAtomic*(
 
 # RawRecord overloads for deleteAtomic
 proc deleteAtomic*[T](
-    self: KVStore, records: seq[Record[T]]
+    self: KVStore, records: seq[KVRecord[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
   let keyRecords = when T is void: records else: records.toKeyRecord
   self.deleteAtomicImpl(keyRecords)
 
 proc deleteAtomic*[T](
-    self: KVStore, record: Record[T]
+    self: KVStore, record: KVRecord[T]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   let skipped = ?(await self.deleteAtomic(@[record]))
   if skipped.len > 0:
@@ -205,10 +205,10 @@ proc deleteAtomic*[T](
 
 proc tryPut*[T](
     self: KVStore,
-    records: seq[Record[T]],
+    records: seq[KVRecord[T]],
     maxRetries = 3,
     middleware: Middleware[T] = nil,
-): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+): Future[?!seq[KVRecord[T]]] {.async: (raises: [CancelledError]).} =
   ## Bulk put with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
   ##
@@ -216,7 +216,7 @@ proc tryPut*[T](
   ##
 
   if records.len == 0:
-    return success(newSeq[Record[T]]())
+    return success(newSeq[KVRecord[T]]())
 
   var
     remaining = maxRetries
@@ -244,7 +244,7 @@ proc tryPut*[T](
   return success records
 
 proc tryPut*[T](
-    self: KVStore, record: Record[T], maxRetries = 3, middleware: Middleware[T] = nil
+    self: KVStore, record: KVRecord[T], maxRetries = 3, middleware: Middleware[T] = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryPut
   ##
@@ -311,11 +311,11 @@ proc tryDelete*(
 
 # RawRecord tryDelete - middleware works with RawRecord, no conversion
 proc tryDelete*[T](
-    self: KVStore, records: seq[Record[T]], maxRetries = 3, middleware: Middleware[T]
-): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+    self: KVStore, records: seq[KVRecord[T]], maxRetries = 3, middleware: Middleware[T]
+): Future[?!seq[KVRecord[T]]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry
   if records.len == 0:
-    return success(newSeq[Record[T]]())
+    return success(newSeq[KVRecord[T]]())
 
   var
     remaining = maxRetries
@@ -344,7 +344,7 @@ proc tryDelete*[T](
   return success records
 
 proc tryDelete*[T](
-    self: KVStore, record: Record[T], maxRetries = 3, middleware: Middleware[T] = nil
+    self: KVStore, record: KVRecord[T], maxRetries = 3, middleware: Middleware[T] = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record tryDelete - value is ignored (no encode/decode)
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
@@ -355,7 +355,7 @@ proc tryDelete*[T](
 
 proc getOrPut*[T](
     self: KVStore, key: Key, producer: ValueProducer[T], maxRetries = 3
-): Future[?!Record[T]] {.async: (raises: [CancelledError]).} =
+): Future[?!KVRecord[T]] {.async: (raises: [CancelledError]).} =
   ## Get existing record or lazily insert using producer
   ## Producer is only called if key is missing
   ## Errors if backend fails or retries exhausted
@@ -372,7 +372,7 @@ proc getOrPut*[T](
 
   # Key doesn't exist - produce value and try to insert
   let value = ?(await producer())
-  ?(await self.tryPut(Record[T].init(key, value), maxRetries))
+  ?(await self.tryPut(KVRecord[T].init(key, value), maxRetries))
 
   # Fetch the record to get the actual token
   return await self.get(key, T)
@@ -383,7 +383,7 @@ proc getOrPut*[T](
 
 proc tryPutAtomic*[T](
     self: KVStore,
-    records: seq[Record[T]],
+    records: seq[KVRecord[T]],
     maxRetries = 3,
     middleware: AtomicMiddleware[T] = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
@@ -432,7 +432,7 @@ proc tryPutAtomic*[T](
 
 proc tryPutAtomic*[T](
     self: KVStore,
-    record: Record[T],
+    record: KVRecord[T],
     maxRetries = 3,
     middleware: AtomicMiddleware[T] = nil,
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
@@ -502,10 +502,10 @@ proc query*(
     await self.queryImpl(q)
   else:
     let dsIter = ?(await self.queryImpl(q))
-    proc next(): Future[?!(?Record[T])] {.async: (raises: [CancelledError]).} =
+    proc next(): Future[?!(?KVRecord[T])] {.async: (raises: [CancelledError]).} =
       let rawOpt = ?(await dsIter.next())
       without raw =? rawOpt:
-        return success Record[T].none
+        return success KVRecord[T].none
 
       let decoded = ?(toRecord[T](raw))
       success decoded.some
@@ -525,7 +525,7 @@ proc query*(
 
 proc fetchAll*[T](
     iter: QueryIter[T]
-): Future[?!seq[Record[T]]] {.async: (raises: [CancelledError]).} =
+): Future[?!seq[KVRecord[T]]] {.async: (raises: [CancelledError]).} =
   ## Collect all records from an iterator into a seq.
   ##
   ## This is the correct way to collect results from an async iterator.
@@ -536,7 +536,7 @@ proc fetchAll*[T](
   ##   let iter = (await ds.query(q)).tryGet
   ##   let records = (await iter.fetchAll()).tryGet
   ##
-  var res: seq[Record[T]]
+  var res: seq[KVRecord[T]]
   while not iter.finished:
     let recordOpt = ?await iter.next()
     if record =? recordOpt:
