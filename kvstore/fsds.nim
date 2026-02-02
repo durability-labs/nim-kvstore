@@ -278,7 +278,7 @@ proc putSync*(path: string, record: RawRecord): ?!void =
 proc deleteSync*(path: string, record: KeyRecord): ?!void =
   if not isFile(path):
     return
-      failure newException(KVConflictError, "Record does not exist: " & $record.key)
+      failure newException(KVConflictError, "KVRecord does not exist: " & $record.key)
 
   let current = ?readVersioned(path, record.key)
   if current.token != record.token:

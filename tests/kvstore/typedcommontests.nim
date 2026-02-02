@@ -23,7 +23,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
   # Tests for typed helper functions: tryPut, tryDelete, getOrPut
 
   test "tryPut - successful insertion without conflicts":
-    let record = Record[int].init(key, 42)
+    let record = KVRecord[int].init(key, 42)
     let failed = (await ds.tryPut(@[record])).tryGet()
     check failed.len == 0 # No failures
 
@@ -34,7 +34,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
   test "tryPut - handles conflicts with retry":
     let conflictKey = (key / "retry-conflict").tryGet()
     # First insert
-    let initial = Record[int].init(conflictKey, 100)
+    let initial = KVRecord[int].init(conflictKey, 100)
     (await ds.tryPut(initial)).tryGet()
 
     # Get current version
@@ -42,7 +42,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
 
     # Try to insert with stale token - should fail after retries
     let stale =
-      Record[int].init(key = conflictKey, val = 200, token = current.token - 1)
+      KVRecord[int].init(key = conflictKey, val = 200, token = current.token - 1)
     check (await ds.tryPut(@[stale], maxRetries = 2)).isErr
 
     # Original value should be unchanged
@@ -51,7 +51,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
 
   test "tryPut - single record wrapper":
     let key2 = (key / "single").tryGet()
-    let record = Record[int].init(key2, 999)
+    let record = KVRecord[int].init(key2, 999)
     (await ds.tryPut(record)).tryGet()
 
     let retrieved = (await get(ds, key2, int)).tryGet()
@@ -64,16 +64,16 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
 
     # Insert initial records
     let records =
-      @[Record[int].init(key1, 1), Record[int].init(key2, 2), Record[int].init(key3, 3)]
+      @[KVRecord[int].init(key1, 1), KVRecord[int].init(key2, 2), KVRecord[int].init(key3, 3)]
     discard (await ds.tryPut(records)).tryGet()
 
     # Update with one stale token
     let current2 = (await get(ds, key2, int)).tryGet()
     let updates =
       @[
-        Record[int].init(key1, 10, 1), # Valid
-        Record[int].init(key2, 20, current2.token - 1), # Stale - will conflict
-        Record[int].init(key3, 30, 1), # Valid
+        KVRecord[int].init(key1, 10, 1), # Valid
+        KVRecord[int].init(key2, 20, current2.token - 1), # Stale - will conflict
+        KVRecord[int].init(key3, 30, 1), # Valid
       ]
 
     let res = await ds.tryPut(updates, maxRetries = 1)
@@ -83,21 +83,21 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let middlewareKey = (key / "middleware").tryGet()
 
     # Insert initial value
-    (await ds.tryPut(Record[int].init(middlewareKey, 5))).tryGet()
+    (await ds.tryPut(KVRecord[int].init(middlewareKey, 5))).tryGet()
 
     # Middleware that refetches tokens
     var middlewareCalled = false
     let middleware = proc(
-        failed: seq[Record[int]]
-    ): Future[?!seq[Record[int]]] {.async: (raises: [CancelledError]).} =
+        failed: seq[KVRecord[int]]
+    ): Future[?!seq[KVRecord[int]]] {.async: (raises: [CancelledError]).} =
       middlewareCalled = true
       let fresh = ?(await get(ds, failed.mapIt(it.key), int))
       success zip(failed, fresh).mapIt(
-        Record[int].init(it[0].key, it[0].val, it[1].token)
+        KVRecord[int].init(it[0].key, it[0].val, it[1].token)
       )
 
     # Try to update with stale token
-    let stale = Record[int].init(middlewareKey, 15, 0) # Wrong token
+    let stale = KVRecord[int].init(middlewareKey, 15, 0) # Wrong token
     let failed = (
       await tryPut[int](ds, @[stale], maxRetries = 3, middleware = middleware)
     ).tryGet()
@@ -112,7 +112,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let delKey = (key / "delete1").tryGet()
 
     # Insert and then delete
-    (await ds.tryPut(Record[int].init(delKey, 77))).tryGet()
+    (await ds.tryPut(KVRecord[int].init(delKey, 77))).tryGet()
     let current = (await get(ds, delKey, int)).tryGet()
 
     let failed = (await ds.tryDelete(@[KeyRecord.init(delKey, current.token)])).tryGet()
@@ -123,7 +123,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let delKey = (key / "delete2").tryGet()
 
     # Insert record
-    (await ds.tryPut(Record[int].init(delKey, 88))).tryGet()
+    (await ds.tryPut(KVRecord[int].init(delKey, 88))).tryGet()
     let current = (await get(ds, delKey, int)).tryGet()
 
     # Try to delete with stale token
@@ -131,12 +131,12 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let res = await ds.tryDelete(@[stale], maxRetries = 2)
 
     check res.isErr # Should fail with max retries
-    check (await ds.has(delKey)).tryGet() # Record should still exist
+    check (await ds.has(delKey)).tryGet() # KVRecord should still exist
 
   test "tryDelete - single record wrapper":
     let delKey = (key / "delete3").tryGet()
 
-    (await ds.tryPut(Record[int].init(delKey, 99))).tryGet()
+    (await ds.tryPut(KVRecord[int].init(delKey, 99))).tryGet()
     let current = (await get(ds, delKey, int)).tryGet()
 
     (await ds.tryDelete(KeyRecord.init(delKey, current.token))).tryGet()
@@ -146,7 +146,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let delKey = (key / "delete4").tryGet()
 
     # Insert record
-    (await ds.tryPut(Record[int].init(delKey, 111))).tryGet()
+    (await ds.tryPut(KVRecord[int].init(delKey, 111))).tryGet()
 
     # Middleware that refetches tokens
     var middlewareCalled = false
@@ -171,7 +171,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let gopKey = (key / "getorput1").tryGet()
 
     # Insert initial value
-    (await ds.tryPut(Record[int].init(gopKey, 123))).tryGet()
+    (await ds.tryPut(KVRecord[int].init(gopKey, 123))).tryGet()
 
     # Producer that should NOT be called
     var producerCalled = false
@@ -232,7 +232,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let current = (await get(ds, conflictKey, int)).tryGet()
 
     # Try single put with stale token - should error
-    let stale = Record[int].init(conflictKey, 999, current.token - 1)
+    let stale = KVRecord[int].init(conflictKey, 999, current.token - 1)
     let res = await ds.put(stale)
     check res.isErr
 
@@ -254,7 +254,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     # Insert typed data
     for k, v in source:
       let putKey = (Root / k).tryGet()
-      let record = Record[int](key: putKey, val: v, token: 0)
+      let record = KVRecord[int](key: putKey, val: v, token: 0)
       (await ds.put(record)).tryGet()
 
     # Query with typed results

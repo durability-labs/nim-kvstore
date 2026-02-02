@@ -11,13 +11,13 @@ type
   KVStore* = ref object of RootObj
 
   # Core types
-  Record*[T] = object
+  KVRecord*[T] = object
     token*: uint64
     key*: Key
     when T isnot void:
       val*: T
 
-  Middleware*[T] = proc(failed: seq[Record[T]]): Future[?!seq[Record[T]]] {.
+  Middleware*[T] = proc(failed: seq[KVRecord[T]]): Future[?!seq[KVRecord[T]]] {.
     gcsafe, async: (raises: [CancelledError])
   .}
   ValueProducer*[T] = proc(): Future[?!T] {.gcsafe, async: (raises: [CancelledError]).}
@@ -25,11 +25,11 @@ type
   # Atomic batch middleware receives ALL records + conflict keys
   # This allows it to refresh tokens for the entire batch, not just failed records
   AtomicMiddleware*[T] = proc(
-    allRecords: seq[Record[T]], conflicts: seq[Key]
-  ): Future[?!seq[Record[T]]] {.gcsafe, async: (raises: [CancelledError]).}
+    allRecords: seq[KVRecord[T]], conflicts: seq[Key]
+  ): Future[?!seq[KVRecord[T]]] {.gcsafe, async: (raises: [CancelledError]).}
 
-  RawRecord* = Record[seq[byte]]
-  KeyRecord* = Record[void]
+  RawRecord* = KVRecord[seq[byte]]
+  KeyRecord* = KVRecord[void]
   KeyMiddleware* = Middleware[void]
   KeyAtomicMiddleware* = AtomicMiddleware[void]
 
@@ -42,14 +42,14 @@ type
   KVStoreCorruption* = object of KVStoreBackendError
 
 # =============================================================================
-# Record Constructors
+# KVRecord Constructors
 # =============================================================================
 
-proc init*[T](_: type Record[T], key: Key, val: T, token = 0'u64): Record[T] =
-  Record[T](key: key, val: val, token: token)
+proc init*[T](_: type KVRecord[T], key: Key, val: T, token = 0'u64): KVRecord[T] =
+  KVRecord[T](key: key, val: val, token: token)
 
-proc init*[void](_: type Record[void], key: Key, token = 0'u64): Record[void] =
-  Record[void](key: key, token: token)
+proc init*[void](_: type KVRecord[void], key: Key, token = 0'u64): KVRecord[void] =
+  KVRecord[void](key: key, token: token)
 
 # Encoder/decoder requirements
 template requireDecoder*(T: typedesc): untyped =
@@ -63,7 +63,7 @@ template requireEncoder*(T: typedesc): untyped =
   when not (compiles (let _: seq[byte] = encode(default(T)))):
     {.error: "provide an encoder: `proc encode(a: " & $T & "): seq[byte]`".}
 
-proc toRaw*[T](record: Record[T]): RawRecord =
+proc toRaw*[T](record: KVRecord[T]): RawRecord =
   when T is seq[byte]:
     record
   elif T is not void:
@@ -73,24 +73,27 @@ proc toRaw*[T](record: Record[T]): RawRecord =
   else:
     RawRecord.init(record.key, newSeq[byte](), record.token)
 
-template toRecord*[T](record: RawRecord): ?!Record[T] =
+template toRecord*[T](record: RawRecord): ?!KVRecord[T] =
   when T is seq[byte]:
     success record
   elif T is not void:
     requireDecoder(T)
     mixin decode
-    success Record[T].init(record.key, ?T.decode(record.val), record.token)
+    success KVRecord[T].init(record.key, ?T.decode(record.val), record.token)
   else:
     success KeyRecord.init(record.key, record.token)
 
+template toRecord*(T: type, record: RawRecord): ?!KVRecord[T] =
+  toRecord[T](record)
+
 # KeyRecord extraction - for operations that only need key+token
-template toKeyRecord*[T](record: Record[T]): KeyRecord =
+template toKeyRecord*[T](record: KVRecord[T]): KeyRecord =
   when T is void:
     record
   else:
     KeyRecord(key: record.key, token: record.token)
 
-template toKeyRecord*[T](records: seq[Record[T]]): seq[KeyRecord] =
+template toKeyRecord*[T](records: seq[KVRecord[T]]): seq[KeyRecord] =
   when T is void:
     records
   else:
