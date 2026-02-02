@@ -10,7 +10,7 @@ suite "KVStore (base)":
     key = Key.init("a").get
     ds = KVStore()
 
-  let record = Record.init(key, @[1.byte])
+  let record = KVRecord.init(key, @[1.byte])
 
   test "put":
     expect AssertionDefect:
