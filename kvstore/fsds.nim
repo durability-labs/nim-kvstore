@@ -73,9 +73,8 @@ type
 proc generateTempSuffix(): ?!string {.gcsafe.} =
   ## Generate cryptographically secure random suffix for temp files.
   ## Returns 16-character hex string (8 random bytes).
-  let bytes = ?catch(urandom(8)).toKVError(
-    "Failed to generate random bytes", KVStoreBackendError
-  )
+  let bytes =
+    ?catch(urandom(8)).toKVError("Failed to generate random bytes", KVStoreBackendError)
   success bytes.toHex
 
 proc moveFile(src, dst: string): ?!void {.gcsafe.} =
