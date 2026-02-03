@@ -9,7 +9,7 @@ import pkg/kvstore
 import pkg/kvstore/kvstore
 
 proc basicStoreTests*(ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[byte]) =
-  var record: RawRecord
+  var record: RawKVRecord
   test "put":
     (await ds.put(key, bytes)).tryGet()
 
@@ -30,17 +30,17 @@ proc basicStoreTests*(ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[b
       record.token == 2
 
   test "delete":
-    (await ds.delete(KeyRecord.init(key, record.token))).tryGet()
+    (await ds.delete(KeyKVRecord.init(key, record.token))).tryGet()
 
   test "contains":
     check:
       not await (key in ds)
 
-  var records: seq[RawRecord]
+  var records: seq[RawKVRecord]
 
   test "put many":
     for k in 0 ..< 100:
-      records.add(RawRecord.init(Key.init(key.id, $k).tryGet, @[k.byte]))
+      records.add(RawKVRecord.init(Key.init(key.id, $k).tryGet, @[k.byte]))
 
     check (await ds.put(records)).tryGet.len == 0 # 0 means we've inserted all records
 
@@ -63,7 +63,7 @@ proc basicStoreTests*(ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[b
 
   test "delete records":
     let skipped =
-      (await ds.delete(records.mapIt(KeyRecord.init(it.key, it.token)))).tryGet
+      (await ds.delete(records.mapIt(KeyKVRecord.init(it.key, it.token)))).tryGet
     check skipped.len == 0 # all deletions should succeed
 
     for k in records:
@@ -72,11 +72,11 @@ proc basicStoreTests*(ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[b
 
   test "put detects stale token conflicts":
     let conflictKey = (key / "conflict").tryGet()
-    (await ds.put(RawRecord.init(conflictKey, "initial".toBytes))).tryGet()
+    (await ds.put(RawKVRecord.init(conflictKey, "initial".toBytes))).tryGet()
 
     let current = (await ds.get(conflictKey)).tryGet()
 
-    let fresh = RawRecord.init(conflictKey, "fresh".toBytes, current.token)
+    let fresh = RawKVRecord.init(conflictKey, "fresh".toBytes, current.token)
     check (await ds.put(@[fresh])).tryGet.len == 0
 
     let updated = (await ds.get(conflictKey)).tryGet()
@@ -84,7 +84,7 @@ proc basicStoreTests*(ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[b
       updated.val == "fresh".toBytes
       updated.token == current.token + 1
 
-    let stale = RawRecord.init(conflictKey, "stale".toBytes, current.token)
+    let stale = RawKVRecord.init(conflictKey, "stale".toBytes, current.token)
     let skipped = (await ds.put(@[stale])).tryGet()
     check skipped.len == 1
     check skipped[0] == conflictKey
@@ -96,16 +96,16 @@ proc basicStoreTests*(ds: KVStore, key: Key, bytes: seq[byte], otherBytes: seq[b
 
   test "delete ignores conflicting tokens":
     let deleteKey = ((key / "delete").tryGet() / "conflict").tryGet()
-    (await ds.put(RawRecord.init(deleteKey, "value".toBytes))).tryGet()
+    (await ds.put(RawKVRecord.init(deleteKey, "value".toBytes))).tryGet()
     let current = (await ds.get(deleteKey)).tryGet()
 
-    let staleDelete = KeyRecord.init(deleteKey, current.token - 1)
+    let staleDelete = KeyKVRecord.init(deleteKey, current.token - 1)
     let skippedStale = (await ds.delete(@[staleDelete])).tryGet
     check skippedStale.len == 1 # stale token should be skipped
     check skippedStale[0] == deleteKey
 
     let skippedCurrent =
-      (await ds.delete(@[KeyRecord.init(current.key, current.token)])).tryGet
+      (await ds.delete(@[KeyKVRecord.init(current.key, current.token)])).tryGet
     check skippedCurrent.len == 0 # current token should succeed
     check not (await ds.has(deleteKey)).tryGet()
 
@@ -125,7 +125,7 @@ proc atomicBatchTests*(ds: KVStore, key: Key, supportsAtomic: bool) =
 
       let conflicts = (
         await ds.putAtomic(
-          @[RawRecord.init(k1, @[1'u8], 0), RawRecord.init(k2, @[2'u8], 0)]
+          @[RawKVRecord.init(k1, @[1'u8], 0), RawKVRecord.init(k2, @[2'u8], 0)]
         )
       ).tryGet()
 
@@ -138,14 +138,14 @@ proc atomicBatchTests*(ds: KVStore, key: Key, supportsAtomic: bool) =
       let k2 = (key / "atomic" / "rollback2").tryGet()
 
       # Insert k1 first
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
 
       # Try atomic batch with k1 (wrong token) and k2 (new)
       let conflicts = (
         await ds.putAtomic(
           @[
-            RawRecord.init(k1, @[10'u8], 999), # Wrong token
-            RawRecord.init(k2, @[20'u8], 0), # Would succeed alone
+            RawKVRecord.init(k1, @[10'u8], 999), # Wrong token
+            RawKVRecord.init(k2, @[20'u8], 0), # Would succeed alone
           ]
         )
       ).tryGet()
@@ -161,7 +161,9 @@ proc atomicBatchTests*(ds: KVStore, key: Key, supportsAtomic: bool) =
 
       # Insert both
       discard (
-        await ds.put(@[RawRecord.init(k1, @[1'u8], 0), RawRecord.init(k2, @[2'u8], 0)])
+        await ds.put(
+          @[RawKVRecord.init(k1, @[1'u8], 0), RawKVRecord.init(k2, @[2'u8], 0)]
+        )
       ).tryGet()
 
       let r1 = (await ds.get(k1)).tryGet()
@@ -169,7 +171,7 @@ proc atomicBatchTests*(ds: KVStore, key: Key, supportsAtomic: bool) =
 
       let conflicts = (
         await ds.deleteAtomic(
-          @[KeyRecord.init(k1, r1.token), KeyRecord.init(k2, r2.token)]
+          @[KeyKVRecord.init(k1, r1.token), KeyKVRecord.init(k2, r2.token)]
         )
       ).tryGet()
 
@@ -181,12 +183,12 @@ proc atomicBatchTests*(ds: KVStore, key: Key, supportsAtomic: bool) =
 
     test "putAtomic - returns error for unsupported backend":
       let k1 = (key / "atomic" / "unsupported").tryGet()
-      let result = await ds.putAtomic(@[RawRecord.init(k1, @[1'u8], 0)])
+      let result = await ds.putAtomic(@[RawKVRecord.init(k1, @[1'u8], 0)])
       check result.isErr
 
     test "deleteAtomic - returns error for unsupported backend":
       let k1 = (key / "atomic" / "unsupported").tryGet()
-      let result = await ds.deleteAtomic(@[KeyRecord.init(k1, 1)])
+      let result = await ds.deleteAtomic(@[KeyKVRecord.init(k1, 1)])
       check result.isErr
 
 proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
@@ -201,7 +203,7 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
     let k2 = (key / "tryatomic" / "put2").tryGet()
 
     let result = await ds.tryPutAtomic(
-      @[RawRecord.init(k1, "v1".toBytes, 0), RawRecord.init(k2, "v2".toBytes, 0)]
+      @[RawKVRecord.init(k1, "v1".toBytes, 0), RawKVRecord.init(k2, "v2".toBytes, 0)]
     )
     check result.isOk
     check (await ds.has(k1)).tryGet()
@@ -212,12 +214,12 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
     let k2 = (key / "tryatomic" / "noMw2").tryGet()
 
     # Insert k1 first
-    (await ds.put(RawRecord.init(k1, "existing".toBytes, 0))).tryGet()
+    (await ds.put(RawKVRecord.init(k1, "existing".toBytes, 0))).tryGet()
 
     let result = await ds.tryPutAtomic(
       @[
-        RawRecord.init(k1, "v1".toBytes, 0), # Conflict
-        RawRecord.init(k2, "v2".toBytes, 0), # Would succeed alone
+        RawKVRecord.init(k1, "v1".toBytes, 0), # Conflict
+        RawKVRecord.init(k2, "v2".toBytes, 0), # Would succeed alone
       ],
       middleware = nil,
     )
@@ -231,27 +233,30 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
     let k2 = (key / "tryatomic" / "mw2").tryGet()
 
     # Insert k1 first
-    (await ds.put(RawRecord.init(k1, "existing".toBytes, 0))).tryGet()
+    (await ds.put(RawKVRecord.init(k1, "existing".toBytes, 0))).tryGet()
 
     var middlewareCalled = false
     let middleware = proc(
-        all: seq[RawRecord], conflicts: seq[Key]
-    ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+        all: seq[RawKVRecord], conflicts: seq[Key]
+    ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
       middlewareCalled = true
       let fresh = ?(await ds.get(conflicts))
-      var updated: seq[RawRecord]
+      var updated: seq[RawKVRecord]
       for rec in all:
         if rec.key in conflicts:
           for f in fresh:
             if f.key == rec.key:
-              updated.add(RawRecord.init(rec.key, rec.val, f.token))
+              updated.add(RawKVRecord.init(rec.key, rec.val, f.token))
               break
         else:
           updated.add(rec)
       success(updated)
 
     let result = await ds.tryPutAtomic(
-      @[RawRecord.init(k1, "updated".toBytes, 0), RawRecord.init(k2, "v2".toBytes, 0)],
+      @[
+        RawKVRecord.init(k1, "updated".toBytes, 0),
+        RawKVRecord.init(k2, "v2".toBytes, 0),
+      ],
       middleware = middleware,
     )
 
@@ -265,15 +270,17 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
   test "tryPutAtomic - fails after max retries":
     let k1 = (key / "tryatomic" / "maxRetry").tryGet()
 
-    (await ds.put(RawRecord.init(k1, "existing".toBytes, 0))).tryGet()
+    (await ds.put(RawKVRecord.init(k1, "existing".toBytes, 0))).tryGet()
 
     let badMiddleware = proc(
-        all: seq[RawRecord], conflicts: seq[Key]
-    ): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+        all: seq[RawKVRecord], conflicts: seq[Key]
+    ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
       success(all) # No fix
 
     let result = await ds.tryPutAtomic(
-      @[RawRecord.init(k1, "v1".toBytes, 0)], maxRetries = 2, middleware = badMiddleware
+      @[RawKVRecord.init(k1, "v1".toBytes, 0)],
+      maxRetries = 2,
+      middleware = badMiddleware,
     )
 
     check result.isErr
@@ -281,11 +288,11 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
 
   test "tryPutAtomic - single record succeeds":
     let k1 = (key / "tryatomic" / "single").tryGet()
-    let result = await ds.tryPutAtomic(RawRecord.init(k1, "v1".toBytes, 0))
+    let result = await ds.tryPutAtomic(RawKVRecord.init(k1, "v1".toBytes, 0))
     check result.isOk
 
   test "tryPutAtomic - empty batch succeeds":
-    let result = await ds.tryPutAtomic(newSeq[RawRecord]())
+    let result = await ds.tryPutAtomic(newSeq[RawKVRecord]())
     check result.isOk
 
   test "tryDeleteAtomic - succeeds when tokens match":
@@ -294,7 +301,7 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
 
     discard (
       await ds.put(
-        @[RawRecord.init(k1, "v1".toBytes, 0), RawRecord.init(k2, "v2".toBytes, 0)]
+        @[RawKVRecord.init(k1, "v1".toBytes, 0), RawKVRecord.init(k2, "v2".toBytes, 0)]
       )
     ).tryGet()
 
@@ -302,7 +309,7 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
     let r2 = (await ds.get(k2)).tryGet()
 
     let result = await ds.tryDeleteAtomic(
-      @[KeyRecord.init(k1, r1.token), KeyRecord.init(k2, r2.token)]
+      @[KeyKVRecord.init(k1, r1.token), KeyKVRecord.init(k2, r2.token)]
     )
 
     check result.isOk
@@ -315,7 +322,7 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
 
     discard (
       await ds.put(
-        @[RawRecord.init(k1, "v1".toBytes, 0), RawRecord.init(k2, "v2".toBytes, 0)]
+        @[RawKVRecord.init(k1, "v1".toBytes, 0), RawKVRecord.init(k2, "v2".toBytes, 0)]
       )
     ).tryGet()
 
@@ -323,7 +330,7 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
 
     let result = await ds.tryDeleteAtomic(
       @[
-        KeyRecord.init(k1, r1.token), KeyRecord.init(k2, 999'u64) # Wrong token
+        KeyKVRecord.init(k1, r1.token), KeyKVRecord.init(k2, 999'u64) # Wrong token
       ],
       middleware = nil,
     )
@@ -334,14 +341,14 @@ proc atomicRetryHelperTests*(ds: KVStore, key: Key) =
 
   test "tryDeleteAtomic - single record succeeds":
     let k1 = (key / "tryatomic" / "delSingle").tryGet()
-    (await ds.put(RawRecord.init(k1, "v1".toBytes, 0))).tryGet()
+    (await ds.put(RawKVRecord.init(k1, "v1".toBytes, 0))).tryGet()
     let rec = (await ds.get(k1)).tryGet()
 
-    let result = await ds.tryDeleteAtomic(KeyRecord.init(k1, rec.token))
+    let result = await ds.tryDeleteAtomic(KeyKVRecord.init(k1, rec.token))
     check result.isOk
 
   test "tryDeleteAtomic - empty batch succeeds":
-    let result = await ds.tryDeleteAtomic(newSeq[KeyRecord]())
+    let result = await ds.tryDeleteAtomic(newSeq[KeyKVRecord]())
     check result.isOk
 
 proc hasBatchTests*(ds: KVStore, key: Key) =
@@ -354,9 +361,9 @@ proc hasBatchTests*(ds: KVStore, key: Key) =
       let k3 = (key / "hasbatch" / "all3").tryGet()
 
       # Create keys
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
-      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
-      (await ds.put(RawRecord.init(k3, @[3'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k2, @[2'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k3, @[3'u8], 0))).tryGet()
 
       # Check all exist
       let existing = (await ds.has(@[k1, k2, k3])).tryGet()
@@ -380,8 +387,8 @@ proc hasBatchTests*(ds: KVStore, key: Key) =
       let k3 = (key / "hasbatch" / "partial3").tryGet()
 
       # Create only k1 and k3
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
-      (await ds.put(RawRecord.init(k3, @[3'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k3, @[3'u8], 0))).tryGet()
 
       # Check all three, only k1 and k3 should exist
       let existing = (await ds.has(@[k1, k2, k3])).tryGet()
@@ -396,7 +403,7 @@ proc hasBatchTests*(ds: KVStore, key: Key) =
 
     test "has batch - single key exists":
       let k1 = (key / "hasbatch" / "single1").tryGet()
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
 
       let existing = (await ds.has(@[k1])).tryGet()
       check existing.len == 1
@@ -410,7 +417,7 @@ proc hasBatchTests*(ds: KVStore, key: Key) =
 
     test "has single-key helper - exists":
       let k1 = (key / "hasbatch" / "helper1").tryGet()
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
 
       let exists = (await ds.has(k1)).tryGet()
       check exists == true
@@ -426,8 +433,8 @@ proc hasBatchTests*(ds: KVStore, key: Key) =
       let k1 = (key / "hasbatch" / "identity1").tryGet()
       let k2 = (key / "hasbatch" / "identity2").tryGet()
 
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
-      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k2, @[2'u8], 0))).tryGet()
 
       let existing = (await ds.has(@[k1, k2])).tryGet()
       check existing.len == 2
@@ -440,8 +447,8 @@ proc hasBatchTests*(ds: KVStore, key: Key) =
       let k1 = (key / "hasbatch" / "dedup1").tryGet()
       let k2 = (key / "hasbatch" / "dedup2").tryGet()
 
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
-      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k2, @[2'u8], 0))).tryGet()
 
       # Input has duplicates
       let existing = (await ds.has(@[k1, k2, k1, k2, k1])).tryGet()
@@ -455,9 +462,9 @@ proc hasBatchTests*(ds: KVStore, key: Key) =
       let k2 = (key / "hasbatch" / "order2").tryGet()
       let k3 = (key / "hasbatch" / "order3").tryGet()
 
-      (await ds.put(RawRecord.init(k1, @[1'u8], 0))).tryGet()
-      (await ds.put(RawRecord.init(k2, @[2'u8], 0))).tryGet()
-      (await ds.put(RawRecord.init(k3, @[3'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k1, @[1'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k2, @[2'u8], 0))).tryGet()
+      (await ds.put(RawKVRecord.init(k3, @[3'u8], 0))).tryGet()
 
       # Request in specific order: k3, k1, k2
       let existing = (await ds.has(@[k3, k1, k2])).tryGet()

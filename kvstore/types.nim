@@ -28,8 +28,8 @@ type
     allRecords: seq[KVRecord[T]], conflicts: seq[Key]
   ): Future[?!seq[KVRecord[T]]] {.gcsafe, async: (raises: [CancelledError]).}
 
-  RawRecord* = KVRecord[seq[byte]]
-  KeyRecord* = KVRecord[void]
+  RawKVRecord* = KVRecord[seq[byte]]
+  KeyKVRecord* = KVRecord[void]
   KeyMiddleware* = Middleware[void]
   KeyAtomicMiddleware* = AtomicMiddleware[void]
 
@@ -63,17 +63,17 @@ template requireEncoder*(T: typedesc): untyped =
   when not (compiles (let _: seq[byte] = encode(default(T)))):
     {.error: "provide an encoder: `proc encode(a: " & $T & "): seq[byte]`".}
 
-proc toRaw*[T](record: KVRecord[T]): RawRecord =
+proc toRaw*[T](record: KVRecord[T]): RawKVRecord =
   when T is seq[byte]:
     record
   elif T is not void:
     requireEncoder(T)
     mixin encode
-    RawRecord.init(record.key, encode(record.val), record.token)
+    RawKVRecord.init(record.key, encode(record.val), record.token)
   else:
-    RawRecord.init(record.key, newSeq[byte](), record.token)
+    RawKVRecord.init(record.key, newSeq[byte](), record.token)
 
-template toRecord*[T](record: RawRecord): ?!KVRecord[T] =
+template toRecord*[T](record: RawKVRecord): ?!KVRecord[T] =
   when T is seq[byte]:
     success record
   elif T is not void:
@@ -81,20 +81,20 @@ template toRecord*[T](record: RawRecord): ?!KVRecord[T] =
     mixin decode
     success KVRecord[T].init(record.key, ?T.decode(record.val), record.token)
   else:
-    success KeyRecord.init(record.key, record.token)
+    success KeyKVRecord.init(record.key, record.token)
 
-template toRecord*(T: type, record: RawRecord): ?!KVRecord[T] =
+template toRecord*(T: type, record: RawKVRecord): ?!KVRecord[T] =
   toRecord[T](record)
 
-# KeyRecord extraction - for operations that only need key+token
-template toKeyRecord*[T](record: KVRecord[T]): KeyRecord =
+# KeyKVRecord extraction - for operations that only need key+token
+template toKeyRecord*[T](record: KVRecord[T]): KeyKVRecord =
   when T is void:
     record
   else:
-    KeyRecord(key: record.key, token: record.token)
+    KeyKVRecord(key: record.key, token: record.token)
 
-template toKeyRecord*[T](records: seq[KVRecord[T]]): seq[KeyRecord] =
+template toKeyRecord*[T](records: seq[KVRecord[T]]): seq[KeyKVRecord] =
   when T is void:
     records
   else:
-    records.mapIt(KeyRecord(key: it.key, token: it.token))
+    records.mapIt(KeyKVRecord(key: it.key, token: it.token))

@@ -93,10 +93,10 @@ proc put*(
     self: KVStore, key: Key, value: seq[byte]
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Convenience: insert or update raw bytes at key (token=0, insert-only semantics)
-  self.put(RawRecord.init(key, value))
+  self.put(RawKVRecord.init(key, value))
 
 proc delete*(
-    self: KVStore, record: KeyRecord
+    self: KVStore, record: KeyKVRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Delete a single record
   ##
@@ -110,7 +110,7 @@ proc delete*(
 
   success()
 
-# RawRecord convenience overloads - just extract key+token, no conversion
+# RawKVRecord convenience overloads - just extract key+token, no conversion
 proc delete*[T](
     self: KVStore, records: seq[KVRecord[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
@@ -170,10 +170,10 @@ proc putAtomic*(
     self: KVStore, key: Key, value: seq[byte]
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
   ## Convenience: atomically insert or update raw bytes at key (token=0, insert-only semantics)
-  self.putAtomic(RawRecord.init(key, value))
+  self.putAtomic(RawKVRecord.init(key, value))
 
 proc deleteAtomic*(
-    self: KVStore, record: KeyRecord
+    self: KVStore, record: KeyKVRecord
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single record delete - convenience wrapper.
   let skipped = ?(await self.deleteAtomicImpl(@[record]))
@@ -182,7 +182,7 @@ proc deleteAtomic*(
       failure newException(KVConflictError, "Unable to delete record due to conflict")
   success()
 
-# RawRecord overloads for deleteAtomic
+# RawKVRecord overloads for deleteAtomic
 proc deleteAtomic*[T](
     self: KVStore, records: seq[KVRecord[T]]
 ): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
@@ -257,10 +257,10 @@ proc tryPut*[T](
 
 proc tryDelete*(
     self: KVStore,
-    records: seq[KeyRecord],
+    records: seq[KeyKVRecord],
     maxRetries = 3,
     middleware: KeyMiddleware = nil,
-): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
+): Future[?!seq[KeyKVRecord]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry on conflicts
   ## Returns a list containing failed records, or empty list on success
   ##
@@ -268,7 +268,7 @@ proc tryDelete*(
   ##
 
   if records.len == 0:
-    return success(newSeq[KeyRecord]())
+    return success(newSeq[KeyKVRecord]())
 
   var
     remaining = maxRetries
@@ -297,7 +297,7 @@ proc tryDelete*(
   return success records
 
 proc tryDelete*(
-    self: KVStore, record: KeyRecord, maxRetries = 3, middleware: KeyMiddleware = nil
+    self: KVStore, record: KeyKVRecord, maxRetries = 3, middleware: KeyMiddleware = nil
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryDelete
   ##
@@ -309,7 +309,7 @@ proc tryDelete*(
 
   return success()
 
-# RawRecord tryDelete - middleware works with RawRecord, no conversion
+# RawKVRecord tryDelete - middleware works with RawKVRecord, no conversion
 proc tryDelete*[T](
     self: KVStore, records: seq[KVRecord[T]], maxRetries = 3, middleware: Middleware[T]
 ): Future[?!seq[KVRecord[T]]] {.async: (raises: [CancelledError]).} =
@@ -326,7 +326,7 @@ proc tryDelete*[T](
       return
         failure newException(KVStoreMaxRetriesError, "tryDelete max retries reached")
 
-    # Convert to KeyRecord ONLY for the delete call
+    # Convert to KeyKVRecord ONLY for the delete call
     let keys = ?(await self.delete(records))
     records = records.filterIt(it.key in keys)
     if records.len == 0:
@@ -441,7 +441,7 @@ proc tryPutAtomic*[T](
 
 proc tryDeleteAtomic*(
     self: KVStore,
-    records: seq[KeyRecord],
+    records: seq[KeyKVRecord],
     maxRetries = 3,
     middleware: KeyAtomicMiddleware = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
@@ -484,7 +484,7 @@ proc tryDeleteAtomic*(
 
 proc tryDeleteAtomic*(
     self: KVStore,
-    record: KeyRecord,
+    record: KeyKVRecord,
     maxRetries = 3,
     middleware: KeyAtomicMiddleware = nil,
 ): Future[?!void] {.async: (raw: true, raises: [CancelledError]).} =
