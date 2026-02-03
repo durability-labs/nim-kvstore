@@ -18,7 +18,7 @@ suite "KVStore (base)":
 
   test "delete":
     expect AssertionDefect:
-      (await ds.delete(KeyRecord.init(key, record.token))).tryGet
+      (await ds.delete(KeyKVRecord.init(key, record.token))).tryGet
 
   test "contains":
     expect AssertionDefect:

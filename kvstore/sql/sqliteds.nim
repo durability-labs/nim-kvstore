@@ -89,7 +89,7 @@ proc runHasManyTask(
     ctx[].result = unsafeIsolate(hasManySync(db[], keys))
 
 proc runGetTask(
-    ctx: SharedPtr[TaskCtx[RawRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
+    ctx: SharedPtr[TaskCtx[RawKVRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -100,7 +100,7 @@ proc runGetTask(
     ctx[].result = unsafeIsolate(getSync(db[], key))
 
 proc runGetManyTask(
-    ctx: SharedPtr[TaskCtx[seq[RawRecord]]],
+    ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     keys: seq[Key],
@@ -117,7 +117,7 @@ proc runPutTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[RawRecord],
+    records: seq[RawKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -132,7 +132,7 @@ proc runDeleteTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[KeyRecord],
+    records: seq[KeyKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -147,7 +147,7 @@ proc runPutAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[RawRecord],
+    records: seq[RawKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -162,7 +162,7 @@ proc runDeleteAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[KeyRecord],
+    records: seq[KeyKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -174,7 +174,7 @@ proc runDeleteAtomicTask(
     ctx[].result = unsafeIsolate(deleteAtomicSync(db[], records, readOnly))
 
 proc runNextTask(
-    ctx: SharedPtr[TaskCtx[?RawRecord]],
+    ctx: SharedPtr[TaskCtx[?RawKVRecord]],
     stmt: ptr RawStmtPtr,
     lock: ptr Lock,
     finished: ptr Atomic[bool],
@@ -189,13 +189,13 @@ proc runNextTask(
 
   # Check finished atomically before acquiring lock
   if finished[].load():
-    ctx[].result = isolate(success(RawRecord.none))
+    ctx[].result = isolate(success(RawKVRecord.none))
     return
 
   withLock(lock[]):
     # Double-check after acquiring lock
     if finished[].load():
-      ctx[].result = isolate(success(RawRecord.none))
+      ctx[].result = isolate(success(RawKVRecord.none))
       return
 
     ctx[].result = unsafeIsolate(nextSync(stmt[], queryValue))
@@ -273,7 +273,7 @@ method hasImpl*(
 
 method getImpl*(
     self: SQLiteKVStore, keys: seq[Key]
-): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
   # don't move after closed, every await introduces concurrency
   await checkFairness()
 
@@ -281,13 +281,13 @@ method getImpl*(
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
   if keys.len == 0:
-    return success(newSeq[RawRecord]())
+    return success(newSeq[RawKVRecord]())
 
   if keys.len == 1:
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
-    let ctx = newSharedPtr(TaskCtx[RawRecord](signal: signal))
+    let ctx = newSharedPtr(TaskCtx[RawKVRecord](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
@@ -306,7 +306,7 @@ method getImpl*(
     # Match batch get semantics: return empty seq for missing key, not error
     without extracted =? extract(ctx[].result), err:
       if err of KVStoreKeyNotFound:
-        return success(newSeq[RawRecord]())
+        return success(newSeq[RawKVRecord]())
       return failure(err)
 
     return success(@[extracted])
@@ -314,7 +314,7 @@ method getImpl*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
-    let ctx = newSharedPtr(TaskCtx[seq[RawRecord]](signal: signal))
+    let ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
@@ -333,7 +333,7 @@ method getImpl*(
     return extract(ctx[].result)
 
 method putImpl*(
-    self: SQLiteKVStore, records: seq[RawRecord]
+    self: SQLiteKVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -363,7 +363,7 @@ method putImpl*(
   return extract(ctx[].result)
 
 method deleteImpl*(
-    self: SQLiteKVStore, records: seq[KeyRecord]
+    self: SQLiteKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -403,7 +403,7 @@ method supportsAtomicBatch*(self: SQLiteKVStore): bool =
   true
 
 method putAtomicImpl*(
-    self: SQLiteKVStore, records: seq[RawRecord]
+    self: SQLiteKVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch put with CAS.
   ## If ANY record has a CAS conflict, NO records are committed.
@@ -442,7 +442,7 @@ method putAtomicImpl*(
   return extract(ctx[].result)
 
 method deleteAtomicImpl*(
-    self: SQLiteKVStore, records: seq[KeyRecord]
+    self: SQLiteKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch delete with CAS.
   ## Same semantics as putAtomic().
@@ -520,7 +520,7 @@ method queryImpl*(
   initLock(state.lock)
 
   let asyncLock = newAsyncLock()
-  proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
+  proc next(): Future[?!(?RawKVRecord)] {.async: (raises: [CancelledError]).} =
     # don't move after closed, every await introduces concurrency
     await checkFairness()
 
@@ -546,9 +546,9 @@ method queryImpl*(
       )
 
     if state.finished.load():
-      return success(RawRecord.none)
+      return success(RawKVRecord.none)
 
-    let ctx = newSharedPtr(TaskCtx[?RawRecord](signal: state.signal))
+    let ctx = newSharedPtr(TaskCtx[?RawKVRecord](signal: state.signal))
 
     let taskFut = signal.wait()
     state.tp.spawn runNextTask(

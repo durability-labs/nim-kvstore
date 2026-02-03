@@ -96,7 +96,7 @@ proc basicCancellationTests*(factory: StoreFactory, key: Key) =
     let existing = (await ds.get(k)).tryGet
 
     # Start an update and try to cancel it
-    let updateRecord = RawRecord.init(k, "updated".toBytes, existing.token)
+    let updateRecord = RawKVRecord.init(k, "updated".toBytes, existing.token)
     let putFut = ds.put(updateRecord)
     discard await cancelAfterSteps(putFut, 1)
 
@@ -114,7 +114,7 @@ proc basicCancellationTests*(factory: StoreFactory, key: Key) =
     let existing = (await ds.get(k)).tryGet
 
     # Start delete and try to cancel
-    let delFut = ds.delete(KeyRecord.init(k, existing.token))
+    let delFut = ds.delete(KeyKVRecord.init(k, existing.token))
     discard await cancelAfterSteps(delFut, 1)
 
     # Key should either exist or not, never in corrupted state
@@ -151,10 +151,10 @@ proc batchCancellationTests*(factory: StoreFactory, key: Key) =
       discard await ds.close()
 
     # Create batch of records
-    var records: seq[RawRecord]
+    var records: seq[RawKVRecord]
     for i in 0 ..< 20:
       let k = (key / "batch-put" / $i).tryGet
-      records.add(RawRecord.init(k, ("value" & $i).toBytes))
+      records.add(RawKVRecord.init(k, ("value" & $i).toBytes))
 
     # Start batch put and cancel
     let putFut = ds.put(records)
@@ -179,16 +179,16 @@ proc batchCancellationTests*(factory: StoreFactory, key: Key) =
       discard await ds.close()
 
     # First, insert records
-    var records: seq[RawRecord]
+    var records: seq[RawKVRecord]
     for i in 0 ..< 20:
       let k = (key / "batch-del" / $i).tryGet
-      records.add(RawRecord.init(k, ("value" & $i).toBytes))
+      records.add(RawKVRecord.init(k, ("value" & $i).toBytes))
 
     discard (await ds.put(records)).tryGet
 
     # Get tokens for delete
     let fetched = (await ds.get(records.mapIt(it.key))).tryGet
-    let deleteRecords = fetched.mapIt(KeyRecord.init(it.key, it.token))
+    let deleteRecords = fetched.mapIt(KeyKVRecord.init(it.key, it.token))
 
     # Start batch delete and cancel
     let delFut = ds.delete(deleteRecords)
@@ -287,7 +287,7 @@ proc rapidCancelRetryTests*(factory: StoreFactory, key: Key) =
     (await ds.put(k, "value".toBytes)).tryGet
 
     # Fire off many operations and cancel them all rapidly
-    var futures: seq[Future[?!RawRecord]]
+    var futures: seq[Future[?!RawKVRecord]]
     for _ in 0 ..< 10:
       futures.add(ds.get(k))
 
@@ -310,7 +310,7 @@ proc rapidCancelRetryTests*(factory: StoreFactory, key: Key) =
 
     for i in 1 .. 5:
       let existing = (await ds.get(k)).tryGet
-      let updateRecord = RawRecord.init(k, ("v" & $i).toBytes, existing.token)
+      let updateRecord = RawKVRecord.init(k, ("v" & $i).toBytes, existing.token)
 
       let putFut = ds.put(updateRecord)
       discard await cancelAfterSteps(putFut, 1)
@@ -333,7 +333,7 @@ proc closeDuringCancellationTests*(factory: StoreFactory, key: Key) =
     (await ds.put(k, "value".toBytes)).tryGet
 
     # Start operations and cancel them
-    var futures: seq[Future[?!RawRecord]]
+    var futures: seq[Future[?!RawKVRecord]]
     for _ in 0 ..< 5:
       futures.add(ds.get(k))
 

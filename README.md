@@ -47,7 +47,7 @@ proc main() {.async.} =
   echo "Token: ", record.token  # Version token for CAS
 
   # Update with CAS - use the token from the previous get
-  let updated = RawRecord.init(key, "Updated!".toBytes(), record.token)
+  let updated = RawKVRecord.init(key, "Updated!".toBytes(), record.token)
   (await ds.put(updated)).tryGet()
 
   # Close the store
@@ -94,7 +94,7 @@ proc process(): ?!int =
   let b = ?transform(a)    # Returns failure if transform fails
   success(b)
 
-proc processAsync(): Future[?!RawRecord] {.async.} =
+proc processAsync(): Future[?!RawKVRecord] {.async.} =
   let record = ?(await ds.get(key))  # Works with await too
   success(record)
 ```
@@ -135,13 +135,13 @@ proc updateUser(id: string, name: string): Future[?!void] {.async.} =
   let
     key = ?Key.init("/users/" & id)
     record = ?(await ds.get(key))
-    updated = RawRecord.init(record.key, name.toBytes(), record.token)
+    updated = RawKVRecord.init(record.key, name.toBytes(), record.token)
   discard ?(await ds.put(updated))
   success()
 
 # Collect results, propagate first error
-proc getAll(keys: seq[Key]): Future[?!seq[RawRecord]] {.async.} =
-  var results: seq[RawRecord]
+proc getAll(keys: seq[Key]): Future[?!seq[RawKVRecord]] {.async.} =
+  var results: seq[RawKVRecord]
   for key in keys:
     results.add(?(await ds.get(key)))
   success(results)
@@ -303,11 +303,11 @@ let record1 = (await ds.get(key)).tryGet()  # token = 5
 let record2 = (await ds.get(key)).tryGet()  # token = 5
 
 # Client 1 updates successfully
-let update1 = RawRecord.init(key, newValue1, record1.token)
+let update1 = RawKVRecord.init(key, newValue1, record1.token)
 (await ds.put(update1)).tryGet()  # Success! Token is now 6
 
 # Client 2's update fails - stale token (single-record put raises error)
-let update2 = RawRecord.init(key, newValue2, record2.token)
+let update2 = RawKVRecord.init(key, newValue2, record2.token)
 let result = await ds.put(update2)
 if result.isErr:
   echo "Conflict detected: ", result.error.msg  # KVConflictError
@@ -321,9 +321,9 @@ Bulk operations return a list of keys that were skipped due to conflicts:
 
 ```nim
 let records = @[
-  RawRecord.init(key1, value1, token1),
-  RawRecord.init(key2, value2, token2),
-  RawRecord.init(key3, value3, token3),
+  RawKVRecord.init(key1, value1, token1),
+  RawKVRecord.init(key2, value2, token2),
+  RawKVRecord.init(key3, value3, token3),
 ]
 
 let skipped = (await ds.put(records)).tryGet()
@@ -337,16 +337,16 @@ let skipped = (await ds.put(records)).tryGet()
 | Method | Description |
 | ------ | ----------- |
 | `has(key)` | Check if key exists |
-| `get(key)` | Get single record as `RawRecord` (raw bytes) |
+| `get(key)` | Get single record as `RawKVRecord` (raw bytes) |
 | `get(key, T)` | Get single record as `KVRecord[T]` (auto-decode) |
-| `get(keys)` | Get multiple records as `seq[RawRecord]` |
+| `get(keys)` | Get multiple records as `seq[RawKVRecord]` |
 | `get(keys, T)` | Get multiple records as `seq[KVRecord[T]]` |
 | `put(record)` | Insert/update single record (errors on conflict) |
 | `put(records)` | Insert/update multiple records (returns skipped keys) |
 | `put(key, val)` | Convenience: insert raw bytes or typed value at key |
 | `delete(record)` | Delete single record (errors on conflict) |
 | `delete(records)` | Delete multiple records (returns skipped keys) |
-| `query(query)` | Query records by key prefix as `QueryIter[RawRecord]` |
+| `query(query)` | Query records by key prefix as `QueryIter[RawKVRecord]` |
 | `query(query, T)` | Query records by key prefix as `QueryIter[T]` |
 | `close()` | Close the store |
 
@@ -389,17 +389,17 @@ The `tryPut` and `tryDelete` helpers accept a middleware function to resolve con
 import std/sequtils
 
 # Middleware receives failed records and returns updated records to retry
-let middleware = proc(failed: seq[RawRecord]): Future[?!seq[RawRecord]]
+let middleware = proc(failed: seq[RawKVRecord]): Future[?!seq[RawKVRecord]]
     {.async: (raises: [CancelledError]).} =
   # Refetch current tokens
   let fresh = (await ds.get(failed.mapIt(it.key))).tryGet()
 
   # Update records with fresh tokens
-  var updated: seq[RawRecord]
+  var updated: seq[RawKVRecord]
   for record in failed:
     for f in fresh:
       if f.key == record.key:
-        updated.add(RawRecord.init(record.key, record.val, f.token))
+        updated.add(RawKVRecord.init(record.key, record.val, f.token))
         break
 
   success(updated)
@@ -459,7 +459,7 @@ discard await iter.dispose()
 The type parameter defaults to `seq[byte]` (raw bytes):
 
 ```nim
-# These are equivalent - both return RawRecord
+# These are equivalent - both return RawKVRecord
 let raw1 = (await ds.get(key)).tryGet()
 let raw2 = (await ds.get(key, seq[byte])).tryGet()
 

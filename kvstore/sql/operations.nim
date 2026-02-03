@@ -124,7 +124,7 @@ proc hasManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
 
   success uniqueIds.filterIt(it in foundIds)
 
-proc getSync*(db: SQLiteDsDb, key: Key): ?!RawRecord {.gcsafe.} =
+proc getSync*(db: SQLiteDsDb, key: Key): ?!RawKVRecord {.gcsafe.} =
   ## Synchronous get single record
   var
     rowFound = false
@@ -143,15 +143,15 @@ proc getSync*(db: SQLiteDsDb, key: Key): ?!RawRecord {.gcsafe.} =
   if not rowFound:
     return failure(newException(KVStoreKeyNotFound, "Key doesn't exist"))
 
-  success RawRecord.init(key, value, token.uint64)
+  success RawKVRecord.init(key, value, token.uint64)
 
-proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
+proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawKVRecord] {.gcsafe.} =
   ## Synchronous get multiple records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
   if keys.len == 0:
-    return success(newSeq[RawRecord]())
+    return success(newSeq[RawKVRecord]())
 
-  var records: seq[RawRecord]
+  var records: seq[RawKVRecord]
 
   proc onRow(s: RawStmtPtr) =
     let
@@ -163,7 +163,9 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
       raiseAssert("Negative token detected")
 
     records.add(
-      RawRecord.init(Key.init(keyId).expect("Invalid key from DB"), value, token.uint64)
+      RawKVRecord.init(
+        Key.init(keyId).expect("Invalid key from DB"), value, token.uint64
+      )
     )
 
   # Chunk keys to stay within SQLite parameter limits
@@ -181,7 +183,7 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawRecord] {.gcsafe.} =
   success records
 
 proc putSync*(
-    db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool
+    db: SQLiteDsDb, records: seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous put records
   ?checkWritable(readOnly)
@@ -229,7 +231,7 @@ proc putSync*(
   success skipped
 
 proc deleteSync*(
-    db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool
+    db: SQLiteDsDb, records: seq[KeyKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous delete records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
@@ -285,7 +287,7 @@ proc deleteSync*(
   success skipped
 
 proc putAtomicSync*(
-    db: SQLiteDsDb, records: seq[RawRecord], readOnly: bool
+    db: SQLiteDsDb, records: seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch put
   ?checkWritable(readOnly)
@@ -351,7 +353,7 @@ proc putAtomicSync*(
   success newSeq[Key]()
 
 proc deleteAtomicSync*(
-    db: SQLiteDsDb, records: seq[KeyRecord], readOnly: bool
+    db: SQLiteDsDb, records: seq[KeyKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch delete
   ?checkWritable(readOnly)
@@ -454,7 +456,7 @@ proc prepareQueryStmt*(env: SQLite, query: Query): ?!RawStmtPtr {.gcsafe.} =
 
   success s
 
-proc nextSync*(stmt: RawStmtPtr, queryValue: bool): ?!Option[RawRecord] {.gcsafe.} =
+proc nextSync*(stmt: RawStmtPtr, queryValue: bool): ?!Option[RawKVRecord] {.gcsafe.} =
   ## Step through query results and return the next record.
   ## Returns none when iteration is complete.
   let v = sqlite3_step(stmt)
@@ -485,9 +487,9 @@ proc nextSync*(stmt: RawStmtPtr, queryValue: bool): ?!Option[RawRecord] {.gcsafe
         if queryValue: QueryStmtVersionColWithData else: QueryStmtVersionColNoData
       version = sqlite3_column_int64(stmt, versionCol.cint).uint64
 
-    success some(RawRecord.init(key, data, version))
+    success some(RawKVRecord.init(key, data, version))
   of SQLITE_DONE:
-    success none(RawRecord)
+    success none(RawKVRecord)
   else:
     failure(newException(KVStoreError, $sqlite3_errstr(v)))
 

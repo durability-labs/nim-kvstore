@@ -89,7 +89,7 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
     proc tightWrites(): Future[void] {.async.} =
       while running:
         let current = (await ds.get(k1)).tryGet
-        (await ds.put(RawRecord.init(k1, "updated".toBytes, current.token))).tryGet
+        (await ds.put(RawKVRecord.init(k1, "updated".toBytes, current.token))).tryGet
         inc loopCount
 
     let loopFut = tightWrites()
@@ -97,7 +97,7 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
     proc mainWork(): Future[void] {.async.} =
       for i in 0 ..< 10:
         let current = (await ds.get(k2)).tryGet
-        (await ds.put(RawRecord.init(k2, ("w" & $i).toBytes, current.token))).tryGet
+        (await ds.put(RawKVRecord.init(k2, ("w" & $i).toBytes, current.token))).tryGet
 
     let completed = await withTimeout(mainWork(), BlockingTestTimeout)
     check completed
@@ -170,7 +170,7 @@ proc eventLoopBlockingTests*(factory: StoreFactory, key: Key) =
       var i = 0
       while running:
         let current = (await ds.get(k2)).tryGet
-        (await ds.put(RawRecord.init(k2, ("v" & $i).toBytes, current.token))).tryGet
+        (await ds.put(RawKVRecord.init(k2, ("v" & $i).toBytes, current.token))).tryGet
         inc writeCount
         inc i
 
@@ -216,10 +216,10 @@ proc serializationTests*(factory: StoreFactory, key: Key) =
     # Use AsyncEvent to ensure all 5 start simultaneously
     var futures: seq[Future[?!void]]
     for i in 0 ..< 5:
-      let record = RawRecord.init(testKey, ("update" & $i).toBytes, initial.token)
+      let record = RawKVRecord.init(testKey, ("update" & $i).toBytes, initial.token)
       futures.add(
         (
-          proc(r: RawRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
+          proc(r: RawKVRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
             await event.wait()
             await ds.put(r)
         )(record)
@@ -257,10 +257,10 @@ proc serializationTests*(factory: StoreFactory, key: Key) =
     # Use AsyncEvent to ensure all 3 deletes start simultaneously
     var futures: seq[Future[?!void]]
     for i in 0 ..< 3:
-      let record = KeyRecord.init(testKey, current.token)
+      let record = KeyKVRecord.init(testKey, current.token)
       futures.add(
         (
-          proc(r: KeyRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
+          proc(r: KeyKVRecord): Future[?!void] {.async: (raises: [CancelledError]).} =
             await event.wait()
             await ds.delete(r)
         )(record)
@@ -302,17 +302,17 @@ proc iteratorThreadingTests*(factory: StoreFactory, key: Key) =
 
     # Use AsyncEvent to ensure all 3 fetchAll() start simultaneously
     let futA = (
-      proc(): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      proc(): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
         await event.wait()
         await iterA.fetchAll()
     )()
     let futB = (
-      proc(): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      proc(): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
         await event.wait()
         await iterB.fetchAll()
     )()
     let futC = (
-      proc(): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
+      proc(): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
         await event.wait()
         await iterC.fetchAll()
     )()
@@ -345,11 +345,11 @@ proc iteratorThreadingTests*(factory: StoreFactory, key: Key) =
 
     # Fire multiple next() calls concurrently using AsyncEvent
     # This ensures all 10 next() calls race simultaneously
-    var futures: seq[Future[?!Option[RawRecord]]]
+    var futures: seq[Future[?!Option[RawKVRecord]]]
     for i in 0 ..< 10:
       futures.add(
         (
-          proc(): Future[?!Option[RawRecord]] {.async: (raises: [CancelledError]).} =
+          proc(): Future[?!Option[RawKVRecord]] {.async: (raises: [CancelledError]).} =
             await event.wait()
             await iter.next()
         )()
@@ -489,12 +489,12 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
       let deleteFut = (
         proc(): Future[?!void] {.async: (raises: [CancelledError]).} =
           await event.wait()
-          await ds.delete(KeyRecord.init(roundKey, current.token))
+          await ds.delete(KeyKVRecord.init(roundKey, current.token))
       )()
       let writeFut = (
         proc(): Future[?!void] {.async: (raises: [CancelledError]).} =
           await event.wait()
-          await ds.put(RawRecord.init(roundKey, makeValue("updated"), current.token))
+          await ds.put(RawKVRecord.init(roundKey, makeValue("updated"), current.token))
       )()
 
       event.fire()
@@ -531,13 +531,13 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
     defer:
       (await ds.close()).tryGet
 
-    var batch1: seq[RawRecord]
-    var batch2: seq[RawRecord]
+    var batch1: seq[RawKVRecord]
+    var batch2: seq[RawKVRecord]
 
     for i in 0 ..< 10:
       let k = (key / "interleave" / "batch" / $i).tryGet
-      batch1.add(RawRecord.init(k, makeValue("batch1-" & $i)))
-      batch2.add(RawRecord.init(k, makeValue("batch2-" & $i)))
+      batch1.add(RawKVRecord.init(k, makeValue("batch1-" & $i)))
+      batch2.add(RawKVRecord.init(k, makeValue("batch2-" & $i)))
 
     let fut1 = (
       proc(): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
@@ -602,7 +602,7 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
     # All tasks wait at the gate, then try to update with the same initial token
     var futures: seq[Future[?!void]]
     for i in 0 ..< numTasks:
-      let record = RawRecord.init(testKey, makeValue("update" & $i), initial.token)
+      let record = RawKVRecord.init(testKey, makeValue("update" & $i), initial.token)
       futures.add(
         (
           proc(): Future[?!void] {.async: (raises: [CancelledError]).} =
@@ -656,8 +656,9 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
       let k = (key / "interleave" / "itermod" / $i).tryGet
       let current = await ds.get(k)
       if current.isOk:
-        discard
-          await ds.put(RawRecord.init(k, makeValue("modified" & $i), current.get.token))
+        discard await ds.put(
+          RawKVRecord.init(k, makeValue("modified" & $i), current.get.token)
+        )
 
     # Continue iteration
     while true:
@@ -687,7 +688,7 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
     # Rapid sequential updates
     for i in 1 .. 50:
       let current = (await ds.get(testKey)).tryGet
-      (await ds.put(RawRecord.init(testKey, makeValue($i), current.token))).tryGet
+      (await ds.put(RawKVRecord.init(testKey, makeValue($i), current.token))).tryGet
 
     # Store should still be usable
     let final = (await ds.get(testKey)).tryGet
