@@ -115,7 +115,8 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     (await ds.tryPut(KVRecord[int].init(delKey, 77))).tryGet()
     let current = (await get(ds, delKey, int)).tryGet()
 
-    let failed = (await ds.tryDelete(@[KeyRecord.init(delKey, current.token)])).tryGet()
+    let failed =
+      (await ds.tryDelete(@[KeyKVRecord.init(delKey, current.token)])).tryGet()
     check failed.len == 0
     check not (await ds.has(delKey)).tryGet()
 
@@ -127,7 +128,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let current = (await get(ds, delKey, int)).tryGet()
 
     # Try to delete with stale token
-    let stale = KeyRecord.init(delKey, current.token - 1)
+    let stale = KeyKVRecord.init(delKey, current.token - 1)
     let res = await ds.tryDelete(@[stale], maxRetries = 2)
 
     check res.isErr # Should fail with max retries
@@ -139,7 +140,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     (await ds.tryPut(KVRecord[int].init(delKey, 99))).tryGet()
     let current = (await get(ds, delKey, int)).tryGet()
 
-    (await ds.tryDelete(KeyRecord.init(delKey, current.token))).tryGet()
+    (await ds.tryDelete(KeyKVRecord.init(delKey, current.token))).tryGet()
     check not (await ds.has(delKey)).tryGet()
 
   test "tryDelete - middleware resolves conflicts":
@@ -151,15 +152,15 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     # Middleware that refetches tokens
     var middlewareCalled = false
     let middleware = proc(
-        failed: seq[KeyRecord]
-    ): Future[?!seq[KeyRecord]] {.async: (raises: [CancelledError]).} =
+        failed: seq[KeyKVRecord]
+    ): Future[?!seq[KeyKVRecord]] {.async: (raises: [CancelledError]).} =
       middlewareCalled = true
       success (?(await get(ds, failed.mapIt(it.key), int))).mapIt(
-        KeyRecord.init(it.key, it.token)
+        KeyKVRecord.init(it.key, it.token)
       )
 
     # Try to delete with stale token
-    let stale = KeyRecord.init(delKey, 0)
+    let stale = KeyKVRecord.init(delKey, 0)
     let failed =
       (await ds.tryDelete(@[stale], maxRetries = 3, middleware = middleware)).tryGet()
 
@@ -242,7 +243,7 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
     let current = (await get(ds, delKey, int)).tryGet()
 
     # Try single delete with stale token - should error
-    let stale = KeyRecord.init(delKey, current.token - 1)
+    let stale = KeyKVRecord.init(delKey, current.token - 1)
     let res = await ds.delete(stale)
     check res.isErr
 

@@ -145,7 +145,7 @@ proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
 
 proc readVersioned*(
     path: string, key: Key, data = true
-): ?!RawRecord {.gcsafe, raises: [].} =
+): ?!RawKVRecord {.gcsafe, raises: [].} =
   if not isFile(path):
     return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
 
@@ -191,7 +191,7 @@ proc readVersioned*(
     else:
       EmptyBytes
 
-  return success RawRecord.init(key, value, token)
+  return success RawKVRecord.init(key, value, token)
 
 proc writeVersioned*(
     path: string, token: uint64, value: seq[byte]
@@ -251,10 +251,10 @@ proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
   syncParentDirectory(path)
   success()
 
-proc getSync*(path: string, key: Key): ?!RawRecord =
+proc getSync*(path: string, key: Key): ?!RawKVRecord =
   return readVersioned(path, key)
 
-proc putSync*(path: string, record: RawRecord): ?!void =
+proc putSync*(path: string, record: RawKVRecord): ?!void =
   if not isFile(path):
     if record.token != 0:
       return failure newException(
@@ -275,7 +275,7 @@ proc putSync*(path: string, record: RawRecord): ?!void =
 
   return success()
 
-proc deleteSync*(path: string, record: KeyRecord): ?!void =
+proc deleteSync*(path: string, record: KeyKVRecord): ?!void =
   if not isFile(path):
     return
       failure newException(KVConflictError, "KVRecord does not exist: " & $record.key)
@@ -303,7 +303,9 @@ proc runHasTask(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
 
   ctx[].result = isolate(success(isFile(path)))
 
-proc runGetTask(ctx: SharedPtr[TaskCtx[RawRecord]], path: string, key: Key) {.gcsafe.} =
+proc runGetTask(
+    ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key
+) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
@@ -312,7 +314,7 @@ proc runGetTask(ctx: SharedPtr[TaskCtx[RawRecord]], path: string, key: Key) {.gc
   ctx[].result = unsafeIsolate(getSync(path, key))
 
 proc runPutTask(
-    ctx: SharedPtr[TaskCtx[void]], path: string, record: RawRecord
+    ctx: SharedPtr[TaskCtx[void]], path: string, record: RawKVRecord
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -322,7 +324,7 @@ proc runPutTask(
   ctx[].result = unsafeIsolate(putSync(path, record))
 
 proc runDeleteTask(
-    ctx: SharedPtr[TaskCtx[void]], path: string, record: KeyRecord
+    ctx: SharedPtr[TaskCtx[void]], path: string, record: KeyKVRecord
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -332,7 +334,7 @@ proc runDeleteTask(
   ctx[].result = unsafeIsolate(deleteSync(path, record))
 
 proc runReadRecordTask(
-    ctx: SharedPtr[TaskCtx[RawRecord]], path: string, key: Key, includeValue: bool
+    ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key, includeValue: bool
 ) {.gcsafe.} =
   ## Task worker for reading a single record from disk.
   ## Walker stepping happens on the async thread; this only does file I/O.
@@ -431,8 +433,8 @@ method hasImpl*(
 
 method getImpl*(
     self: FSKVStore, keys: seq[Key]
-): Future[?!seq[RawRecord]] {.async: (raises: [CancelledError]).} =
-  var records: seq[RawRecord]
+): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
+  var records: seq[RawKVRecord]
 
   for key in keys:
     await checkFairness()
@@ -445,7 +447,7 @@ method getImpl*(
     let signal =
       ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
 
-    let ctx = newSharedPtr(TaskCtx[RawRecord](signal: signal))
+    let ctx = newSharedPtr(TaskCtx[RawKVRecord](signal: signal))
     defer:
       if err =? signal.close().errorOption:
         warn "signal.close failed in get", error = err
@@ -472,7 +474,7 @@ method getImpl*(
   return success records
 
 method putImpl*(
-    self: FSKVStore, records: seq[RawRecord]
+    self: FSKVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   if self.closed:
     return failure newException(KVStoreError, "FSKVStore is closed")
@@ -521,7 +523,7 @@ method putImpl*(
   return success conflicts
 
 method deleteImpl*(
-    self: FSKVStore, records: seq[KeyRecord]
+    self: FSKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   var skipped: seq[Key]
 
@@ -632,7 +634,7 @@ method queryImpl*(
   state.finished = false
   state.isDisposed = false
 
-  proc next(): Future[?!(?RawRecord)] {.async: (raises: [CancelledError]).} =
+  proc next(): Future[?!(?RawKVRecord)] {.async: (raises: [CancelledError]).} =
     # don't move to after close/disposed/finished checks due to concurrency
     await checkFairness()
 
@@ -654,7 +656,7 @@ method queryImpl*(
         failure newException(KVStoreError, "FSKVStore is closed or iterator disposed")
 
     if state.finished:
-      return success(RawRecord.none)
+      return success(RawKVRecord.none)
 
     # Step the walker on the async thread (single-threaded, no races).
     # This loop finds the next valid path before spawning a worker.
@@ -663,7 +665,7 @@ method queryImpl*(
 
       if finished(state.walker):
         state.finished = true
-        return success(RawRecord.none)
+        return success(RawKVRecord.none)
 
       var keyPath = state.basePath
       keyPath.removePrefix(state.root)
@@ -684,7 +686,7 @@ method queryImpl*(
 
       let absPath = absPathRes.get
 
-      let ctx = newSharedPtr(TaskCtx[RawRecord](signal: state.signal))
+      let ctx = newSharedPtr(TaskCtx[RawKVRecord](signal: state.signal))
 
       let taskFut = signal.wait()
       state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)

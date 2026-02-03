@@ -90,9 +90,9 @@ suite "Test Misc FSKVStore":
       key = Key.init("/a/b/c/d").tryGet()
 
     check:
-      (await fs.put(RawRecord.init(key, bytes))).isErr
+      (await fs.put(RawKVRecord.init(key, bytes))).isErr
       (await fs.get(key)).isErr
-      (await fs.delete(KeyRecord.init(key))).isErr
+      (await fs.delete(KeyKVRecord.init(key))).isErr
       (await fs.has(key)).isErr
 
   test "Test valid key (path) depth":
@@ -115,9 +115,9 @@ suite "Test Misc FSKVStore":
       key = Key.init("/a/../../c").tryGet()
 
     check:
-      (await fs.put(RawRecord.init(key, bytes))).isErr
+      (await fs.put(RawKVRecord.init(key, bytes))).isErr
       (await fs.get(key)).isErr
-      (await fs.delete(RawRecord.init(key, EmptyBytes))).isErr
+      (await fs.delete(RawKVRecord.init(key, EmptyBytes))).isErr
       (await fs.has(key)).isErr
 
   test "Test key cannot convert to invalid path":
@@ -132,9 +132,9 @@ suite "Test Misc FSKVStore":
       let key = Key.init("/" & c).tryGet()
 
       check:
-        (await fs.put(RawRecord.init(key, bytes))).isErr
+        (await fs.put(RawKVRecord.init(key, bytes))).isErr
         (await fs.get(key)).isErr
-        (await fs.delete(RawRecord.init(key, EmptyBytes))).isErr
+        (await fs.delete(RawKVRecord.init(key, EmptyBytes))).isErr
         (await fs.has(key)).isErr
 
 suite "Test Query":
@@ -175,9 +175,9 @@ suite "Test Query":
       leftChild = Key.init(leftKey, Key.init("/child").tryGet()).tryGet()
       rightKey = Key.init(rootKey, Key.init("/right").tryGet()).tryGet()
 
-    (await ds.put(RawRecord.init(leftKey, "left".toBytes))).tryGet()
-    (await ds.put(RawRecord.init(leftChild, "left child".toBytes))).tryGet()
-    (await ds.put(RawRecord.init(rightKey, "right".toBytes))).tryGet()
+    (await ds.put(RawKVRecord.init(leftKey, "left".toBytes))).tryGet()
+    (await ds.put(RawKVRecord.init(leftChild, "left child".toBytes))).tryGet()
+    (await ds.put(RawKVRecord.init(rightKey, "right".toBytes))).tryGet()
 
     let iter = (await ds.query(Query.init(leftKey))).tryGet()
     defer:

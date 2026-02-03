@@ -26,14 +26,14 @@ method hasImpl*(
 
 method getImpl*(
     self: KVStore, keys: seq[Key]
-): Future[?!seq[RawRecord]] {.base, gcsafe, async: (raises: [CancelledError]).} =
+): Future[?!seq[RawKVRecord]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Get a list of records specified by the keys
   ##
 
   raiseAssert("Not implemented!")
 
 method putImpl*(
-    self: KVStore, records: seq[RawRecord]
+    self: KVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Insert or update a group of records
   ##
@@ -44,7 +44,7 @@ method putImpl*(
   raiseAssert("Not implemented!")
 
 method deleteImpl*(
-    self: KVStore, records: seq[KeyRecord]
+    self: KVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Delete a list of records
   ##
@@ -73,7 +73,7 @@ method supportsAtomicBatch*(self: KVStore): bool {.base, gcsafe.} =
   false
 
 method putAtomicImpl*(
-    self: KVStore, records: seq[RawRecord]
+    self: KVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Insert or update records atomically (all-or-nothing).
   ##
@@ -88,7 +88,7 @@ method putAtomicImpl*(
   )
 
 method deleteAtomicImpl*(
-    self: KVStore, records: seq[KeyRecord]
+    self: KVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Delete records atomically (all-or-nothing).
   ## Same semantics as putAtomic().
