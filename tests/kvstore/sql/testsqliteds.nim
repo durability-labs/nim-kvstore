@@ -81,7 +81,7 @@ suite "Test Read Only SQLiteKVStore":
 
     (await dsDb.put(key, bytes)).tryGet()
 
-  var record: RawRecord
+  var record: RawKVRecord
   test "get":
     record = (await readOnlyDb.get(key)).tryGet()
 
@@ -173,9 +173,9 @@ suite "Test Atomic Batch Operations":
     # All new keys with token=0 (insert mode)
     let records =
       @[
-        RawRecord.init(key1, "value1".toBytes, 0),
-        RawRecord.init(key2, "value2".toBytes, 0),
-        RawRecord.init(key3, "value3".toBytes, 0),
+        RawKVRecord.init(key1, "value1".toBytes, 0),
+        RawKVRecord.init(key2, "value2".toBytes, 0),
+        RawKVRecord.init(key3, "value3".toBytes, 0),
       ]
 
     let conflicts = (await ds.putAtomic(records)).tryGet()
@@ -192,13 +192,13 @@ suite "Test Atomic Batch Operations":
 
   test "putAtomic rolls back on any conflict":
     # Insert k1 first
-    (await ds.put(RawRecord.init(key1, "v1".toBytes, 0))).tryGet()
+    (await ds.put(RawKVRecord.init(key1, "v1".toBytes, 0))).tryGet()
 
     # Atomic batch: k1 (wrong token), k2 (new)
     let records =
       @[
-        RawRecord.init(key1, "v1-new".toBytes, 999), # Wrong token
-        RawRecord.init(key2, "v2".toBytes, 0), # Would succeed alone
+        RawKVRecord.init(key1, "v1-new".toBytes, 999), # Wrong token
+        RawKVRecord.init(key2, "v2".toBytes, 0), # Would succeed alone
       ]
 
     let conflicts = (await ds.putAtomic(records)).tryGet()
@@ -215,7 +215,10 @@ suite "Test Atomic Batch Operations":
     # Insert both keys first
     discard (
       await ds.put(
-        @[RawRecord.init(key1, "v1".toBytes, 0), RawRecord.init(key2, "v2".toBytes, 0)]
+        @[
+          RawKVRecord.init(key1, "v1".toBytes, 0),
+          RawKVRecord.init(key2, "v2".toBytes, 0),
+        ]
       )
     ).tryGet()
 
@@ -227,8 +230,8 @@ suite "Test Atomic Batch Operations":
     let conflicts = (
       await ds.putAtomic(
         @[
-          RawRecord.init(key1, "v1-new".toBytes, r1.token),
-          RawRecord.init(key2, "v2-new".toBytes, r2.token),
+          RawKVRecord.init(key1, "v1-new".toBytes, r1.token),
+          RawKVRecord.init(key2, "v2-new".toBytes, r2.token),
         ]
       )
     ).tryGet()
@@ -244,11 +247,11 @@ suite "Test Atomic Batch Operations":
 
   test "putAtomic fails insert when key exists":
     # Insert k1 first
-    (await ds.put(RawRecord.init(key1, "v1".toBytes, 0))).tryGet()
+    (await ds.put(RawKVRecord.init(key1, "v1".toBytes, 0))).tryGet()
 
     # Try to insert again with token=0 (insert-only mode)
     let conflicts =
-      (await ds.putAtomic(@[RawRecord.init(key1, "v1-new".toBytes, 0)])).tryGet()
+      (await ds.putAtomic(@[RawKVRecord.init(key1, "v1-new".toBytes, 0)])).tryGet()
 
     check conflicts.len == 1
     check conflicts[0] == key1
@@ -262,7 +265,7 @@ suite "Test Atomic Batch Operations":
     let conflicts = (
       await ds.putAtomic(
         @[
-          RawRecord.init(key1, "v1".toBytes, 5) # token != 0 means update-only
+          RawKVRecord.init(key1, "v1".toBytes, 5) # token != 0 means update-only
         ]
       )
     ).tryGet()
@@ -278,7 +281,10 @@ suite "Test Atomic Batch Operations":
     # Insert records first
     discard (
       await ds.put(
-        @[RawRecord.init(key1, "v1".toBytes, 0), RawRecord.init(key2, "v2".toBytes, 0)]
+        @[
+          RawKVRecord.init(key1, "v1".toBytes, 0),
+          RawKVRecord.init(key2, "v2".toBytes, 0),
+        ]
       )
     ).tryGet()
 
@@ -289,7 +295,7 @@ suite "Test Atomic Batch Operations":
     # Delete both atomically
     let conflicts = (
       await ds.deleteAtomic(
-        @[KeyRecord.init(key1, r1.token), KeyRecord.init(key2, r2.token)]
+        @[KeyKVRecord.init(key1, r1.token), KeyKVRecord.init(key2, r2.token)]
       )
     ).tryGet()
 
@@ -301,14 +307,14 @@ suite "Test Atomic Batch Operations":
 
   test "deleteAtomic rolls back on any conflict":
     # Insert only k1
-    (await ds.put(RawRecord.init(key1, "v1".toBytes, 0))).tryGet()
+    (await ds.put(RawKVRecord.init(key1, "v1".toBytes, 0))).tryGet()
     let r1 = (await ds.get(key1)).tryGet()
 
     # Try to delete k1 (correct) and k2 (doesn't exist)
     let conflicts = (
       await ds.deleteAtomic(
         @[
-          KeyRecord.init(key1, r1.token), KeyRecord.init(key2, 1) # k2 doesn't exist
+          KeyKVRecord.init(key1, r1.token), KeyKVRecord.init(key2, 1) # k2 doesn't exist
         ]
       )
     ).tryGet()
@@ -321,10 +327,10 @@ suite "Test Atomic Batch Operations":
     check stillExists.val == "v1".toBytes
 
   test "empty batch returns success":
-    let putConflicts = (await ds.putAtomic(newSeq[RawRecord]())).tryGet()
+    let putConflicts = (await ds.putAtomic(newSeq[RawKVRecord]())).tryGet()
     check putConflicts.len == 0
 
-    let delConflicts = (await ds.deleteAtomic(newSeq[KeyRecord]())).tryGet()
+    let delConflicts = (await ds.deleteAtomic(newSeq[KeyKVRecord]())).tryGet()
     check delConflicts.len == 0
 
 suite "Test Close and Dispose":
@@ -461,12 +467,12 @@ suite "Test Large Batch Operations":
   test "delete with >500 records chunks correctly":
     # Create 600 records (exceeds 495 param limit for delete - 2 params per record)
     let count = 600
-    var records: seq[KeyRecord]
+    var records: seq[KeyKVRecord]
     for i in 0 ..< count:
       let k = Key.init("/largebatch/del/" & $i).tryGet()
       (await ds.put(k, ($i).toBytes)).tryGet()
       let stored = (await ds.get(k)).tryGet()
-      records.add(KeyRecord.init(k, stored.token))
+      records.add(KeyKVRecord.init(k, stored.token))
 
     # Delete all in one call - should be chunked internally
     let skipped = (await ds.delete(records)).tryGet()

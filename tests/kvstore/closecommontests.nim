@@ -249,7 +249,7 @@ proc closeAndDisposeTests*(factory: StoreFactory, key: Key) =
     check (await ds.has(testKey)).isErr
     check (await ds.get(testKey)).isErr
     check (await ds.put(testKey, "new".toBytes)).isErr
-    check (await ds.delete(KeyRecord.init(testKey, 1))).isErr
+    check (await ds.delete(KeyKVRecord.init(testKey, 1))).isErr
     check (await ds.query(Query.init(key))).isErr
 
   test "close is idempotent":

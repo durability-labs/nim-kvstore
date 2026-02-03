@@ -27,9 +27,9 @@ template queryTests*(
   test "Key should query all keys and all it's children":
     let q = Query.init(key1)
 
-    (await ds.put(RawRecord.init(key1, val1))).tryGet()
-    (await ds.put(RawRecord.init(key2, val2))).tryGet()
-    (await ds.put(RawRecord.init(key3, val3))).tryGet()
+    (await ds.put(RawKVRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawKVRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawKVRecord.init(key3, val3))).tryGet()
 
     let
       iter = (await ds.query(q)).tryGet
@@ -49,9 +49,9 @@ template queryTests*(
   test "Key should query all keys without values":
     let q = Query.init(key1, value = false)
 
-    (await ds.put(RawRecord.init(key1, val1))).tryGet()
-    (await ds.put(RawRecord.init(key2, val2))).tryGet()
-    (await ds.put(RawRecord.init(key3, val3))).tryGet()
+    (await ds.put(RawKVRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawKVRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawKVRecord.init(key3, val3))).tryGet()
 
     let
       iter = (await ds.query(q)).tryGet
@@ -71,9 +71,9 @@ template queryTests*(
   test "Key should not query parent":
     let q = Query.init(key2)
 
-    (await ds.put(RawRecord.init(key1, val1))).tryGet()
-    (await ds.put(RawRecord.init(key2, val2))).tryGet()
-    (await ds.put(RawRecord.init(key3, val3))).tryGet()
+    (await ds.put(RawKVRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawKVRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawKVRecord.init(key3, val3))).tryGet()
 
     let
       iter = (await ds.query(q)).tryGet
@@ -92,15 +92,15 @@ template queryTests*(
       queryKey = Key.init("/a").tryGet
       q = Query.init(queryKey)
 
-    (await ds.put(RawRecord.init(key1, val1))).tryGet()
-    (await ds.put(RawRecord.init(key2, val2))).tryGet()
-    (await ds.put(RawRecord.init(key3, val3))).tryGet()
+    (await ds.put(RawKVRecord.init(key1, val1))).tryGet()
+    (await ds.put(RawKVRecord.init(key2, val2))).tryGet()
+    (await ds.put(RawKVRecord.init(key3, val3))).tryGet()
 
     let iter = (await ds.query(q)).tryGet
 
     var res = (await iter.fetchAll()).tryGet
 
-    res.sort do(a, b: RawRecord) -> int:
+    res.sort do(a, b: RawKVRecord) -> int:
       cmp(a.key.id, b.key.id)
 
     check:
@@ -118,9 +118,9 @@ template queryTests*(
     when defined(gcOrc) or defined(gcArc):
       let q = Query.init(key1)
 
-      (await ds.put(RawRecord.init(key1, val1))).tryGet()
-      (await ds.put(RawRecord.init(key2, val2))).tryGet()
-      (await ds.put(RawRecord.init(key3, val3))).tryGet()
+      (await ds.put(RawKVRecord.init(key1, val1))).tryGet()
+      (await ds.put(RawKVRecord.init(key2, val2))).tryGet()
+      (await ds.put(RawKVRecord.init(key3, val3))).tryGet()
 
       proc openIterator() {.async.} =
         let iter = (await ds.query(q)).tryGet
@@ -143,7 +143,7 @@ template queryTests*(
           key = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        (await ds.put(RawRecord.init(key, val))).tryGet()
+        (await ds.put(RawKVRecord.init(key, val))).tryGet()
 
       let
         iter = (await ds.query(q)).tryGet
@@ -162,7 +162,7 @@ template queryTests*(
           key = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        (await ds.put(RawRecord.init(key, val))).tryGet()
+        (await ds.put(RawKVRecord.init(key, val))).tryGet()
 
       let
         iter = (await ds.query(q)).tryGet
@@ -181,7 +181,7 @@ template queryTests*(
           key = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        (await ds.put(RawRecord.init(key, val))).tryGet()
+        (await ds.put(RawKVRecord.init(key, val))).tryGet()
 
       let
         iter = (await ds.query(q)).tryGet
@@ -205,17 +205,17 @@ template queryTests*(
         key = Key.init("/a").tryGet
         q = Query.init(key, sort = SortOrder.Descending)
 
-      var kvs: seq[RawRecord]
+      var kvs: seq[RawKVRecord]
       for i in 0 ..< 100:
         let
           k = Key.init(key, Key.init("/" & $i).tryGet).tryGet
           val = ("val " & $i).toBytes
 
-        kvs.add(RawRecord.init(k, val))
-        (await ds.put(RawRecord.init(k, val))).tryGet()
+        kvs.add(RawKVRecord.init(k, val))
+        (await ds.put(RawKVRecord.init(k, val))).tryGet()
 
       # lexicographic sort, as it comes from the backend
-      kvs.sort do(a, b: RawRecord) -> int:
+      kvs.sort do(a, b: RawKVRecord) -> int:
         cmp(a.key.id, b.key.id)
 
       kvs = kvs.reversed
