@@ -51,6 +51,9 @@ proc init*[T](_: type KVRecord[T], key: Key, val: T, token = 0'u64): KVRecord[T]
 proc init*[void](_: type KVRecord[void], key: Key, token = 0'u64): KVRecord[void] =
   KVRecord[void](key: key, token: token)
 
+proc fromRecord*[T](record: KVRecord[T], val: T): KVRecord[T] =
+  KVRecord[T](key: record.key, val: val, token: record.token)
+
 # Encoder/decoder requirements
 template requireDecoder*(T: typedesc): untyped =
   when not (compiles (let _: ?!T = T.decode(newSeq[byte]()))):
@@ -67,8 +70,8 @@ proc toRaw*[T](record: KVRecord[T]): RawKVRecord =
   when T is seq[byte]:
     record
   elif T is not void:
-    requireEncoder(T)
     mixin encode
+    requireEncoder(T)
     RawKVRecord.init(record.key, encode(record.val), record.token)
   else:
     RawKVRecord.init(record.key, newSeq[byte](), record.token)
@@ -77,8 +80,8 @@ template toRecord*[T](record: RawKVRecord): ?!KVRecord[T] =
   when T is seq[byte]:
     success record
   elif T is not void:
-    requireDecoder(T)
     mixin decode
+    requireDecoder(T)
     success KVRecord[T].init(record.key, ?T.decode(record.val), record.token)
   else:
     success KeyKVRecord.init(record.key, record.token)
