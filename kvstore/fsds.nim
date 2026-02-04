@@ -46,7 +46,6 @@ type
     ## which is limited to int64 range due to SQLite INTEGER type, FSKVStore
     ## supports the full uint64 range.
     root*: string
-    ignoreProtected: bool
     depth: int
     locks: Table[Key, RefCountedLock]
     tasks: HashSet[Future[?!void]]
@@ -761,7 +760,7 @@ method queryImpl*(
 # =============================================================================
 
 proc new*(
-    _: type FSKVStore, root: string, tp: Taskpool, depth = 2, ignoreProtected = false
+    _: type FSKVStore, root: string, tp: Taskpool, depth = 2
 ): ?!FSKVStore =
   let root =
     ?(
@@ -776,7 +775,6 @@ proc new*(
 
   success FSKVStore(
     root: root,
-    ignoreProtected: ignoreProtected,
     depth: depth,
     locks: initTable[Key, RefCountedLock](),
     tp: tp,
