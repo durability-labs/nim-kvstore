@@ -759,9 +759,7 @@ method queryImpl*(
 # Constructor
 # =============================================================================
 
-proc new*(
-    _: type FSKVStore, root: string, tp: Taskpool, depth = 2
-): ?!FSKVStore =
+proc new*(_: type FSKVStore, root: string, tp: Taskpool, depth = 2): ?!FSKVStore =
   let root =
     ?(
       block:
@@ -774,8 +772,5 @@ proc new*(
     return failure "directory does not exist: " & root
 
   success FSKVStore(
-    root: root,
-    depth: depth,
-    locks: initTable[Key, RefCountedLock](),
-    tp: tp,
+    root: root, depth: depth, locks: initTable[Key, RefCountedLock](), tp: tp
   )
