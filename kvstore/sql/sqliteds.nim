@@ -173,6 +173,21 @@ proc runDeleteAtomicTask(
   withLock(lock[]):
     ctx[].result = unsafeIsolate(deleteAtomicSync(db[], records, readOnly))
 
+proc runMoveTask(
+    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    oldPrefix, newPrefix: Key,
+    readOnly: bool,
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runMoveTask", error = res.error
+
+  withLock(lock[]):
+    ctx[].result = unsafeIsolate(moveSync(db[], oldPrefix, newPrefix, readOnly))
+
 proc runNextTask(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]],
     stmt: ptr RawStmtPtr,
@@ -480,6 +495,52 @@ method deleteAtomicImpl*(
   ?await fut
 
   return extract(ctx[].result)
+
+# =============================================================================
+# Move (Key-Prefix Rename)
+# =============================================================================
+
+method moveKeysImpl*(
+    self: SQLiteKVStore, oldPrefix, newPrefix: Key
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## Move all keys from oldPrefix/* to newPrefix/* using native SQL UPDATE.
+  ## Single statement in autocommit mode (implicitly atomic).
+  ## Returns empty seq on success (SQL UPDATE has no partial failures).
+
+  await checkFairness()
+
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for moveKeys")
+
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
+  defer:
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in moveKeys", error = err
+
+  let taskFut = signal.wait()
+  self.tp.spawn runMoveTask(
+    ctx, addr self.db, addr self.lock, oldPrefix, newPrefix, self.readOnly
+  )
+
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  ?await fut
+
+  return extract(ctx[].result)
+
+method moveKeysAtomicImpl*(
+    self: SQLiteKVStore, oldPrefix, newPrefix: Key
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Single SQL UPDATE is already atomic in autocommit mode.
+  ## Delegates to moveKeysImpl (same code path, discards empty conflict list).
+  discard ?await self.moveKeysImpl(oldPrefix, newPrefix)
+  success()
 
 method closeImpl*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
