@@ -26,6 +26,7 @@ type
   InsertStmt* = SQLiteStmt[(string, seq[byte], int64), void]
   # Update statement: (data, timestamp, id, version)
   UpdateStmt* = SQLiteStmt[(seq[byte], int64, string, int64), void]
+  MoveStmt* = SQLiteStmt[(string, int64, string), void]
   UpsertStmt* {.deprecated.} = SQLiteStmt[(string, seq[byte], int64, int64), void]
   DeleteStmt* = SQLiteStmt[(string, int64), void]
   GetChangesStmt* = NoParamsStmt
@@ -41,6 +42,7 @@ type
     getSingleStmt*: GetSingleStmt
     insertStmt*: InsertStmt
     updateStmt*: UpdateStmt
+    moveStmt*: MoveStmt
     deleteStmt*: DeleteStmt
     getChangesStmt*: GetChangesStmt
     beginStmt*: BeginStmt
@@ -219,6 +221,16 @@ const
     fmt"""
     DELETE FROM {TableName}
     WHERE ({IdColName}, {VersionColName}) IN ($1)
+  """
+
+  # Move/rename keys with a given prefix
+  # Uses GLOB to match prefix/* and replaces the prefix
+  MoveStmtStr* =
+    fmt"""
+    UPDATE {TableName}
+    SET {IdColName} = ? || SUBSTR({IdColName}, ?)
+    WHERE {IdColName} GLOB ?
+    RETURNING {IdColName}, {VersionColName}
   """
 
   GetChangesStmtStr* =
@@ -418,6 +430,9 @@ proc close*(self: var SQLiteDsDb): ?!void =
   if not RawStmtPtr(self.updateStmt).isNil:
     self.updateStmt.dispose
 
+  if not RawStmtPtr(self.moveStmt).isNil:
+    self.moveStmt.dispose
+
   if not RawStmtPtr(self.deleteStmt).isNil:
     self.deleteStmt.dispose
 
@@ -470,6 +485,7 @@ proc open*(
     getSingleStmt: GetSingleStmt
     insertStmt: InsertStmt
     updateStmt: UpdateStmt
+    moveStmt: MoveStmt
     deleteStmt: DeleteStmt
     getChangesStmt: GetChangesStmt
     beginStmt: BeginStmt
@@ -482,6 +498,8 @@ proc open*(
     insertStmt = ?InsertStmt.prepare(env.val, InsertStmtStr, SQLITE_PREPARE_PERSISTENT)
 
     updateStmt = ?UpdateStmt.prepare(env.val, UpdateStmtStr, SQLITE_PREPARE_PERSISTENT)
+
+    moveStmt = ?MoveStmt.prepare(env.val, MoveStmtStr, SQLITE_PREPARE_PERSISTENT)
 
     deleteStmt = ?DeleteStmt.prepare(env.val, DeleteStmtStr, SQLITE_PREPARE_PERSISTENT)
 
@@ -510,6 +528,7 @@ proc open*(
     getSingleStmt: getSingleStmt,
     insertStmt: insertStmt,
     updateStmt: updateStmt,
+    moveStmt: moveStmt,
     deleteStmt: deleteStmt,
     getChangesStmt: getChangesStmt,
     beginStmt: beginStmt,
