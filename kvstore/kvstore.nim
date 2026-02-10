@@ -95,3 +95,30 @@ method deleteAtomicImpl*(
   return failure newException(
     KVStoreBackendError, "Atomic batch not supported by this backend"
   )
+
+# =============================================================================
+# Move (Key-Prefix Rename)
+# =============================================================================
+
+method moveKeysImpl*(
+    self: KVStore, oldPrefix, newPrefix: Key
+): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
+  ## Move all records from oldPrefix/* to newPrefix/* (best-effort).
+  ##
+  ## Returns destination keys that could not be moved (conflicts).
+  ## Empty seq means all keys were moved successfully.
+  ##
+  return failure newException(KVStoreBackendError, "Move not supported by this backend")
+
+method moveKeysAtomicImpl*(
+    self: KVStore, oldPrefix, newPrefix: Key
+): Future[?!void] {.base, gcsafe, async: (raises: [CancelledError]).} =
+  ## Move all records from oldPrefix/* to newPrefix/* atomically
+  ## (all-or-nothing).
+  ##
+  ## Either all keys are moved or none are. Fails if any destination
+  ## key already exists.
+  ##
+  return failure newException(
+    KVStoreBackendError, "Atomic move not supported by this backend"
+  )
