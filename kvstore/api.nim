@@ -544,5 +544,30 @@ proc fetchAll*[T](
       break # End of stream
   return success(res)
 
+# =============================================================================
+# Move Operations (Key-Prefix Rename)
+# =============================================================================
+
+proc moveKeys*(
+    self: KVStore, oldPrefix, newPrefix: Key
+): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
+  ## Move all records from oldPrefix/* to newPrefix/* (best-effort).
+  ##
+  ## Returns destination keys that could not be moved (conflicts).
+  ## Empty seq means all keys were moved successfully.
+  ##
+  self.moveKeysImpl(oldPrefix, newPrefix)
+
+proc moveKeysAtomic*(
+    self: KVStore, oldPrefix, newPrefix: Key
+): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
+  ## Move all records from oldPrefix/* to newPrefix/* atomically
+  ## (all-or-nothing).
+  ##
+  ## Either all keys are moved or none are. Fails if any destination
+  ## key already exists.
+  ##
+  self.moveKeysAtomicImpl(oldPrefix, newPrefix)
+
 proc close*(self: KVStore): Future[?!void] {.async: (raises: [], raw: true).} =
   self.closeImpl()

@@ -493,6 +493,39 @@ proc nextSync*(stmt: RawStmtPtr, queryValue: bool): ?!Option[RawKVRecord] {.gcsa
   else:
     failure(newException(KVStoreError, $sqlite3_errstr(v)))
 
+# =============================================================================
+# Move Operations
+# =============================================================================
+
+proc moveSync*(
+    db: SQLiteDsDb, oldPrefix, newPrefix: Key, readOnly: bool
+): ?!seq[Key] {.gcsafe.} =
+  ## Move all records from oldPrefix/* to newPrefix/* using a single
+  ## UPDATE statement. A single statement in SQLite autocommit mode is
+  ## already atomic, so this is used by both moveKeysImpl and
+  ## moveKeysAtomicImpl.
+  ##
+  ## Fails on UNIQUE constraint if any destination key already exists.
+  ## Returns empty seq on success (SQL UPDATE has no partial failures).
+  ##
+  ?checkWritable(readOnly)
+
+  let
+    globPattern = oldPrefix.id & "/*"
+    # SQLite SUBSTR is 1-based; skip oldPrefix chars, keep separator + rest
+    substrOffset = (oldPrefix.id.len + 1).int64
+    newPrefixStr = newPrefix.id
+
+  proc onRow(s: RawStmtPtr) =
+    discard # Consume RETURNING clause
+
+  discard ?db.moveStmt.query((newPrefixStr, substrOffset, globPattern), onRow)
+  success(newSeq[Key]())
+
+# =============================================================================
+# Statement Disposal
+# =============================================================================
+
 proc disposeStmtSync*(stmt: RawStmtPtr): ?!void {.gcsafe.} =
   ## Finalize a prepared statement.
   discard sqlite3_finalize(stmt)
