@@ -18,6 +18,7 @@ import ../typedcommontests
 import ../querycommontests
 import ../closecommontests
 import ../threadingcommontests
+import ../movecommontests
 
 suite "Test Basic SQLiteKVStore":
   var
@@ -42,6 +43,7 @@ suite "Test Basic SQLiteKVStore":
   atomicBatchTests(ds, key, supportsAtomic = true)
   atomicRetryHelperTests(ds, key)
   hasBatchTests(ds, key)
+  moveTests(ds, key)
 
 suite "Test Read Only SQLiteKVStore":
   let
@@ -99,6 +101,21 @@ suite "Test Read Only SQLiteKVStore":
     check:
       not (await readOnlyDb.has(key)).tryGet()
       not (await dsDb.has(key)).tryGet()
+
+  test "moveKeys rejected on read-only store":
+    let
+      oldPrefix = Key.init("/ro/move/old").tryGet()
+      newPrefix = Key.init("/ro/move/new").tryGet()
+
+    # Insert via writable store
+    (await dsDb.put((oldPrefix / "a").tryGet(), "v".toBytes)).tryGet()
+
+    # Move via read-only store should fail
+    check (await readOnlyDb.moveKeys(oldPrefix, newPrefix)).isErr
+    check (await readOnlyDb.moveKeysAtomic(oldPrefix, newPrefix)).isErr
+
+    # Original should still exist
+    check (await dsDb.has((oldPrefix / "a").tryGet())).tryGet()
 
 suite "Test Query":
   var
