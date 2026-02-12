@@ -7,6 +7,8 @@ import pkg/questionable/results
 
 import ./key
 
+const KVStoreDefaultMaxRetries* = 5
+
 type
   KVStore* = ref object of RootObj
 
