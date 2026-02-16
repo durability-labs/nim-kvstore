@@ -244,7 +244,10 @@ proc tryPut*[T](
   return success records
 
 proc tryPut*[T](
-    self: KVStore, record: KVRecord[T], maxRetries = KVStoreDefaultMaxRetries, middleware: Middleware[T] = nil
+    self: KVStore,
+    record: KVRecord[T],
+    maxRetries = KVStoreDefaultMaxRetries,
+    middleware: Middleware[T] = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryPut
   ##
@@ -297,7 +300,10 @@ proc tryDelete*(
   return success records
 
 proc tryDelete*(
-    self: KVStore, record: KeyKVRecord, maxRetries = KVStoreDefaultMaxRetries, middleware: KeyMiddleware = nil
+    self: KVStore,
+    record: KeyKVRecord,
+    maxRetries = KVStoreDefaultMaxRetries,
+    middleware: KeyMiddleware = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record wrapper for tryDelete
   ##
@@ -311,7 +317,10 @@ proc tryDelete*(
 
 # RawKVRecord tryDelete - middleware works with RawKVRecord, no conversion
 proc tryDelete*[T](
-    self: KVStore, records: seq[KVRecord[T]], maxRetries = KVStoreDefaultMaxRetries, middleware: Middleware[T]
+    self: KVStore,
+    records: seq[KVRecord[T]],
+    maxRetries = KVStoreDefaultMaxRetries,
+    middleware: Middleware[T],
 ): Future[?!seq[KVRecord[T]]] {.async: (raises: [CancelledError]).} =
   ## Bulk delete with retry
   if records.len == 0:
@@ -344,7 +353,10 @@ proc tryDelete*[T](
   return success records
 
 proc tryDelete*[T](
-    self: KVStore, record: KVRecord[T], maxRetries = KVStoreDefaultMaxRetries, middleware: Middleware[T] = nil
+    self: KVStore,
+    record: KVRecord[T],
+    maxRetries = KVStoreDefaultMaxRetries,
+    middleware: Middleware[T] = nil,
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single-record tryDelete - value is ignored (no encode/decode)
   let results = ?(await self.tryDelete(@[record], maxRetries, middleware))
@@ -354,7 +366,10 @@ proc tryDelete*[T](
   return success()
 
 proc getOrPut*[T](
-    self: KVStore, key: Key, producer: ValueProducer[T], maxRetries = KVStoreDefaultMaxRetries
+    self: KVStore,
+    key: Key,
+    producer: ValueProducer[T],
+    maxRetries = KVStoreDefaultMaxRetries,
 ): Future[?!KVRecord[T]] {.async: (raises: [CancelledError]).} =
   ## Get existing record or lazily insert using producer
   ## Producer is only called if key is missing
