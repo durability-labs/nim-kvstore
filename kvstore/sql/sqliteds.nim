@@ -569,7 +569,9 @@ method moveKeysImpl*(
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
   let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for moveKeysMulti")
+    ?ThreadSignalPtr.new().toKVError(
+      context = "Failed to create signal for moveKeysMulti"
+    )
 
   let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
   defer:

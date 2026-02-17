@@ -561,9 +561,8 @@ proc moveSyncMulti*(
     proc onRow(s: RawStmtPtr) =
       discard
 
-    discard ?db.moveStmt.query(
-      (newPrefixStr, substrOffset, globPattern, exactKey), onRow
-    )
+    discard
+      ?db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow)
 
   ?db.endStmt.exec()
   committed = true
