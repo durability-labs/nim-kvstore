@@ -569,5 +569,25 @@ proc moveKeysAtomic*(
   ##
   self.moveKeysAtomicImpl(oldPrefix, newPrefix)
 
+proc moveKeys*(
+    self: KVStore, moves: seq[(Key, Key)]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
+  ## Move multiple prefix pairs (best-effort).
+  ##
+  ## Each pair moves all records from oldPrefix/* to newPrefix/*
+  ## (including the prefix key itself).
+  ##
+  self.moveKeysImpl(moves)
+
+proc moveKeysAtomic*(
+    self: KVStore, moves: seq[(Key, Key)]
+): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
+  ## Move multiple prefix pairs atomically in a single transaction.
+  ##
+  ## All pairs are moved or none are. Fails if any destination
+  ## key already exists.
+  ##
+  self.moveKeysAtomicImpl(moves)
+
 proc close*(self: KVStore): Future[?!void] {.async: (raises: [], raw: true).} =
   self.closeImpl()

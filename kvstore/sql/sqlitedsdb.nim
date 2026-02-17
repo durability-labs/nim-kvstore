@@ -26,7 +26,7 @@ type
   InsertStmt* = SQLiteStmt[(string, seq[byte], int64), void]
   # Update statement: (data, timestamp, id, version)
   UpdateStmt* = SQLiteStmt[(seq[byte], int64, string, int64), void]
-  MoveStmt* = SQLiteStmt[(string, int64, string), void]
+  MoveStmt* = SQLiteStmt[(string, int64, string, string), void]
   UpsertStmt* {.deprecated.} = SQLiteStmt[(string, seq[byte], int64, int64), void]
   DeleteStmt* = SQLiteStmt[(string, int64), void]
   GetChangesStmt* = NoParamsStmt
@@ -224,12 +224,12 @@ const
   """
 
   # Move/rename keys with a given prefix
-  # Uses GLOB to match prefix/* and replaces the prefix
+  # Matches both prefix children (GLOB prefix/*) and the prefix key itself (id = prefix)
   MoveStmtStr* =
     fmt"""
     UPDATE {TableName}
     SET {IdColName} = ? || SUBSTR({IdColName}, ?)
-    WHERE {IdColName} GLOB ?
+    WHERE ({IdColName} GLOB ? OR {IdColName} = ?)
     RETURNING {IdColName}, {VersionColName}
   """
 
