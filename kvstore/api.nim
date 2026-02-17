@@ -10,6 +10,7 @@ import ./key
 import ./types
 import ./kvstore
 import ./query
+import ./metrics
 
 # =============================================================================
 # Single KVRecord Convenience Wrappers
@@ -218,18 +219,23 @@ proc tryPut*[T](
   if records.len == 0:
     return success(newSeq[KVRecord[T]]())
 
+  kvstore_tryput_total.inc()
+
   var
     remaining = maxRetries
     records = records
 
   while true:
     if remaining == 0:
+      kvstore_tryput_exhausted_total.inc()
       return failure newException(KVStoreMaxRetriesError, "tryPut max retries reached")
 
     let keys = ?(await self.put(records))
     records = records.filterIt(it.key in keys)
     if records.len == 0:
       break
+
+    kvstore_tryput_retries_total.inc()
 
     # Prepare next attempt using middleware
     if not middleware.isNil:
@@ -270,12 +276,15 @@ proc tryDelete*(
   if records.len == 0:
     return success(newSeq[KeyKVRecord]())
 
+  kvstore_trydelete_total.inc()
+
   var
     remaining = maxRetries
     records = records
 
   while true:
     if remaining == 0:
+      kvstore_trydelete_exhausted_total.inc()
       return
         failure newException(KVStoreMaxRetriesError, "tryDelete max retries reached")
 
@@ -283,6 +292,8 @@ proc tryDelete*(
     records = records.filterIt(it.key in keys)
     if records.len == 0:
       break
+
+    kvstore_trydelete_retries_total.inc()
 
     # Prepare next attempt using middleware
     if not middleware.isNil:
@@ -404,6 +415,8 @@ proc tryPutAtomic*[T](
       KVStoreBackendError, "Atomic batch not supported by this backend"
     )
 
+  kvstore_tryputatomic_total.inc()
+
   var
     remaining = maxRetries
     current = records
@@ -412,6 +425,8 @@ proc tryPutAtomic*[T](
     let conflicts = ?(await self.putAtomic(current))
     if conflicts.len == 0:
       return success()
+
+    kvstore_tryputatomic_retries_total.inc()
 
     # Prepare next attempt using middleware
     if middleware.isNil:
@@ -427,6 +442,7 @@ proc tryPutAtomic*[T](
 
     dec remaining
 
+  kvstore_tryputatomic_exhausted_total.inc()
   return
     failure newException(KVStoreMaxRetriesError, "tryPutAtomic max retries reached")
 
@@ -456,6 +472,8 @@ proc tryDeleteAtomic*(
       KVStoreBackendError, "Atomic batch not supported by this backend"
     )
 
+  kvstore_trydeleteatomic_total.inc()
+
   var
     remaining = maxRetries
     current = records
@@ -464,6 +482,8 @@ proc tryDeleteAtomic*(
     let conflicts = ?(await self.deleteAtomic(current))
     if conflicts.len == 0:
       return success()
+
+    kvstore_trydeleteatomic_retries_total.inc()
 
     # Prepare next attempt using middleware
     if middleware.isNil:
@@ -479,6 +499,7 @@ proc tryDeleteAtomic*(
 
     dec remaining
 
+  kvstore_trydeleteatomic_exhausted_total.inc()
   return
     failure newException(KVStoreMaxRetriesError, "tryDeleteAtomic max retries reached")
 
