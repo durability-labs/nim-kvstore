@@ -122,3 +122,25 @@ method moveKeysAtomicImpl*(
   return failure newException(
     KVStoreBackendError, "Atomic move not supported by this backend"
   )
+
+method moveKeysImpl*(
+    self: KVStore, moves: seq[(Key, Key)]
+): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
+  ## Move multiple prefix pairs (best-effort).
+  ##
+  ## Each pair moves all records from oldPrefix/* to newPrefix/*
+  ## (including the prefix key itself).
+  ##
+  return failure newException(KVStoreBackendError, "Move not supported by this backend")
+
+method moveKeysAtomicImpl*(
+    self: KVStore, moves: seq[(Key, Key)]
+): Future[?!void] {.base, gcsafe, async: (raises: [CancelledError]).} =
+  ## Move multiple prefix pairs atomically in a single transaction.
+  ##
+  ## All pairs are moved or none are. Fails if any destination
+  ## key already exists.
+  ##
+  return failure newException(
+    KVStoreBackendError, "Atomic move not supported by this backend"
+  )

@@ -505,6 +505,9 @@ proc moveSync*(
   ## already atomic, so this is used by both moveKeysImpl and
   ## moveKeysAtomicImpl.
   ##
+  ## Matches both prefix children (GLOB prefix/*) and the prefix key
+  ## itself (id = prefix).
+  ##
   ## Fails on UNIQUE constraint if any destination key already exists.
   ## Returns empty seq on success (SQL UPDATE has no partial failures).
   ##
@@ -512,6 +515,7 @@ proc moveSync*(
 
   let
     globPattern = oldPrefix.id & "/*"
+    exactKey = oldPrefix.id
     # SQLite SUBSTR is 1-based; skip oldPrefix chars, keep separator + rest
     substrOffset = (oldPrefix.id.len + 1).int64
     newPrefixStr = newPrefix.id
@@ -519,7 +523,50 @@ proc moveSync*(
   proc onRow(s: RawStmtPtr) =
     discard # Consume RETURNING clause
 
-  discard ?db.moveStmt.query((newPrefixStr, substrOffset, globPattern), onRow)
+  discard ?db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow)
+  success(newSeq[Key]())
+
+proc moveSyncMulti*(
+    db: SQLiteDsDb, moves: seq[(Key, Key)], readOnly: bool
+): ?!seq[Key] {.gcsafe.} =
+  ## Move multiple prefix pairs atomically in a single transaction.
+  ##
+  ## Each pair moves all records from oldPrefix/* to newPrefix/*
+  ## (including the prefix key itself). All moves succeed or all
+  ## are rolled back.
+  ##
+  ## Fails on UNIQUE constraint if any destination key already exists.
+  ##
+  ?checkWritable(readOnly)
+
+  if moves.len == 0:
+    return success(newSeq[Key]())
+
+  if moves.len == 1:
+    return moveSync(db, moves[0][0], moves[0][1], readOnly)
+
+  var committed = false
+  ?db.beginStmt.exec()
+  defer:
+    if not committed:
+      discard db.rollbackStmt.exec()
+
+  for (oldPrefix, newPrefix) in moves:
+    let
+      globPattern = oldPrefix.id & "/*"
+      exactKey = oldPrefix.id
+      substrOffset = (oldPrefix.id.len + 1).int64
+      newPrefixStr = newPrefix.id
+
+    proc onRow(s: RawStmtPtr) =
+      discard
+
+    discard ?db.moveStmt.query(
+      (newPrefixStr, substrOffset, globPattern, exactKey), onRow
+    )
+
+  ?db.endStmt.exec()
+  committed = true
   success(newSeq[Key]())
 
 # =============================================================================
