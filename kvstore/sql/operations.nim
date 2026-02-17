@@ -8,7 +8,6 @@
 import std/times
 import std/sequtils
 import std/sets
-import std/tables
 import std/options
 
 import pkg/questionable
@@ -23,9 +22,9 @@ import ./sqlitedsdb
 import ./sqliteutils
 
 const
-  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
-  # Leave some headroom for safety
-  MaxSqliteParams* = 990
+  # SQLite >= 3.32.0 raised SQLITE_MAX_VARIABLE_NUMBER from 999 to 32766.
+  # Use 80% of the limit to leave headroom.
+  MaxSqliteParams* = 26212
   # For delete, each record uses 2 params (id, token)
   MaxDeleteChunkSize* = MaxSqliteParams div 2
 
@@ -58,6 +57,14 @@ proc checkWritable*(readOnly: bool): ?!void =
   if readOnly:
     return failure(newException(KVStoreBackendError, "SQLite store opened read-only"))
   success()
+
+proc upsertVersion*(token: uint64): ?!int64 =
+  ## Convert a CAS token to the version value for the batch upsert VALUES clause.
+  ## For token=0 (insert): version=1
+  ## For token!=0 (update): version=token+1 (must fit in int64)
+  if token >= uint64(high(int64)):
+    return failure(newException(KVStoreCorruption, "SQLite token overflow on upsert"))
+  success((token + 1).int64)
 
 # =============================================================================
 # Transaction Helper
@@ -185,12 +192,20 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawKVRecord] {.gcsafe.}
 proc putSync*(
     db: SQLiteDsDb, records: seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
-  ## Synchronous put records
+  ## Synchronous put records using a single-statement batch upsert.
+  ## All records (inserts and updates) are handled in one CTE-based
+  ## INSERT ... ON CONFLICT DO UPDATE statement per chunk.
   ?checkWritable(readOnly)
 
-  var
-    skipped: seq[Key]
+  if records.len == 0:
+    return success(newSeq[Key]())
+
+  let
+    maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
     stamp = timestamp()
+
+  var
+    affectedIds = initHashSet[string]()
     inTransaction = false
     committed = false
 
@@ -201,33 +216,36 @@ proc putSync*(
     if inTransaction and not committed:
       discard db.rollbackStmt.exec()
 
-  for record in records:
-    var changed = false
+  var offset = 0
+  while offset < records.len:
+    let
+      chunkSize = min(maxPerChunk, records.len - offset)
+      chunk = records[offset ..< offset + chunkSize]
+      queryStr = makeBatchUpsertQuery(chunkSize)
+      params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
 
     proc onRow(s: RawStmtPtr) =
-      changed = true
+      affectedIds.incl($sqlite3_column_text_not_null(s, BatchUpsertReturnIdCol.cint))
 
-    if record.token == 0:
-      discard ?db.insertStmt.query((record.key.id, record.val, stamp), onRow)
-    else:
-      let token = ?boundedToken(record.token)
-      discard ?db.updateStmt.query((record.val, stamp, record.key.id, token), onRow)
+    discard ?db.env.queryWithUpsertRecords(queryStr, params, onRow)
 
     let changes = ?db.checkChanges()
-    if changes > 1:
+    if changes > chunkSize:
       return failure(
         newException(
           KVStoreCorruption,
-          "Multiple rows affected by CAS operation on key: " & record.key.id,
+          "Batch upsert affected more rows (" & $changes & ") than records (" &
+            $chunkSize & ")",
         )
       )
 
-    if not changed:
-      skipped.add(record.key)
+    offset += chunkSize
 
   ?db.endStmt.exec()
   committed = true
 
+  # Any record not in the affected set was skipped
+  let skipped = records.filterIt(it.key.id notin affectedIds).mapIt(it.key)
   success skipped
 
 proc deleteSync*(
@@ -289,15 +307,19 @@ proc deleteSync*(
 proc putAtomicSync*(
     db: SQLiteDsDb, records: seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
-  ## Synchronous all-or-nothing batch put
+  ## Synchronous all-or-nothing batch put using a single-statement batch upsert.
+  ## Any conflict (insert or update) rolls back the entire transaction.
   ?checkWritable(readOnly)
 
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var
-    conflicts: seq[Key]
+  let
+    maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
     stamp = timestamp()
+
+  var
+    affectedIds = initHashSet[string]()
     inTransaction = false
     committed = false
 
@@ -308,45 +330,27 @@ proc putAtomicSync*(
     if inTransaction and not committed:
       discard db.rollbackStmt.exec()
 
-  # First pass: check ALL CAS conditions, collect conflicts
-  for record in records:
-    var
-      exists = false
-      currentToken = 0'i64
+  var offset = 0
+  while offset < records.len:
+    let
+      chunkSize = min(maxPerChunk, records.len - offset)
+      chunk = records[offset ..< offset + chunkSize]
+      queryStr = makeBatchUpsertQuery(chunkSize)
+      params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
 
     proc onRow(s: RawStmtPtr) =
-      exists = true
-      currentToken = versionCol(s, GetSingleStmtVersionCol)()
+      affectedIds.incl($sqlite3_column_text_not_null(s, BatchUpsertReturnIdCol.cint))
 
-    discard ?db.getSingleStmt.query((record.key.id), onRow)
+    discard ?db.env.queryWithUpsertRecords(queryStr, params, onRow)
+    offset += chunkSize
 
-    let conflict =
-      if record.token == 0:
-        exists # Insert-only but key exists
-      elif not exists:
-        true # Update expected but key missing
-      else:
-        currentToken != record.token.int64 # Token mismatch
+  # Any record not in the affected set is a conflict
+  let conflicts = records.filterIt(it.key.id notin affectedIds).mapIt(it.key)
 
-    if conflict:
-      conflicts.add(record.key)
-
-  # If any conflicts, rollback and return them
   if conflicts.len > 0:
     ?db.rollbackStmt.exec()
     committed = true # Prevent defer rollback
     return success conflicts
-
-  # Second pass: apply ALL writes (no conflicts)
-  for record in records:
-    proc onRow(s: RawStmtPtr) =
-      discard # Consume RETURNING clause
-
-    if record.token == 0:
-      discard ?db.insertStmt.query((record.key.id, record.val, stamp), onRow)
-    else:
-      let token = ?boundedToken(record.token)
-      discard ?db.updateStmt.query((record.val, stamp, record.key.id, token), onRow)
 
   ?db.endStmt.exec()
   committed = true
