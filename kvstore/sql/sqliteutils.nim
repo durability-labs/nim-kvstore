@@ -317,6 +317,66 @@ proc queryWithIdVersionPairs*(
   checkErr sqlite3_finalize(s)
   res
 
+proc queryWithUpsertRecords*(
+    env: SQLite,
+    query: string,
+    records: openArray[(string, seq[byte], int64, int64)],
+    onData: DataProc,
+): ?!bool =
+  ## Execute a batch upsert with dynamically bound (id, data, version, timestamp) tuples.
+  ## Binds as: id1, data1, ver1, ts1, id2, data2, ver2, ts2, ...
+  var s: RawStmtPtr
+  checkErr sqlite3_prepare_v3(env, query.cstring, query.len.cint, 0, addr s, nil)
+
+  var paramIdx = 1
+  for (id, data, version, stamp) in records:
+    var v = sqlite3_bind_text(s, paramIdx.cint, id.cstring, -1.cint, SQLITE_TRANSIENT)
+    if v != SQLITE_OK:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+    v =
+      if data.len > 0:
+        sqlite3_bind_blob(
+          s, paramIdx.cint, unsafeAddr data[0], data.len.cint, SQLITE_TRANSIENT
+        )
+      else:
+        sqlite3_bind_null(s, paramIdx.cint)
+    if v != SQLITE_OK:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+    v = sqlite3_bind_int64(s, paramIdx.cint, version)
+    if v != SQLITE_OK:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+    v = sqlite3_bind_int64(s, paramIdx.cint, stamp)
+    if v != SQLITE_OK:
+      discard sqlite3_finalize(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+  var res = success false
+
+  while true:
+    let v = sqlite3_step(s)
+    case v
+    of SQLITE_ROW:
+      onData(s)
+      res = success true
+    of SQLITE_DONE:
+      break
+    else:
+      res = failure $sqlite3_errstr(v)
+      break
+
+  checkErr sqlite3_finalize(s)
+  res
+
 proc execPragma(env: SQLite, pragma: string): ?!void =
   ## Execute a PRAGMA statement that returns a result row.
   ## Steps until done, then finalizes.
@@ -345,6 +405,10 @@ proc setProductionPragmas*(env: SQLite): ?!void =
   ##
   ## - busy_timeout: Wait up to 5 seconds for locks instead of failing immediately
   ## - synchronous=NORMAL: Safe with WAL mode, ~2x faster than FULL
+  ## - cache_size: 64MB page cache (default 2MB is too conservative)
+  ## - mmap_size: 256MB memory-mapped I/O for faster reads
+  ## - temp_store: Keep temporary tables/indices in memory
+  ## - wal_autocheckpoint: 10000 pages to reduce checkpoint stalls during writes
   ##
   ## These pragmas improve behavior under concurrent access and write performance.
 
@@ -355,7 +419,22 @@ proc setProductionPragmas*(env: SQLite): ?!void =
   # Set synchronous to NORMAL (safe with WAL mode)
   # WAL + NORMAL provides durability guarantees while improving write performance
   # - Transactions are durable after commit (written to WAL)
-  # - Only risk: corruption if OS crashes during WAL checkpoint (very rare)
+  # - Only risk: recent transactions may roll back on OS crash (never corrupted)
   ?env.execPragma("PRAGMA synchronous = NORMAL;")
+
+  # 64MB page cache (default is ~2MB)
+  # Absorbs batch writes in memory, reduces WAL reads
+  ?env.execPragma("PRAGMA cache_size = -65536;")
+
+  # 256MB memory-mapped I/O for read acceleration
+  # Shares pages with OS page cache, reduces read syscalls
+  ?env.execPragma("PRAGMA mmap_size = 268435456;")
+
+  # Keep temporary tables and indices in memory
+  ?env.execPragma("PRAGMA temp_store = MEMORY;")
+
+  # Checkpoint every 10000 pages instead of default 1000
+  # Reduces checkpoint stalls during large batch writes
+  ?env.execPragma("PRAGMA wal_autocheckpoint = 10000;")
 
   success()
