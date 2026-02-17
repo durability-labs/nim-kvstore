@@ -154,6 +154,20 @@
         "sha1": "455802a90204d8ad6b31d53f2efff8ebfe4c834a"
       }
     },
+    "metrics": {
+      "version": "0.1.2",
+      "vcsRevision": "11d0cddfb0e711aa2a8c75d1892ae24a64c299fc",
+      "url": "https://github.com/status-im/nim-metrics",
+      "downloadMethod": "git",
+      "dependencies": [
+        "chronos",
+        "results",
+        "stew"
+      ],
+      "checksums": {
+        "sha1": "5cdac99d85d3c146d170e85064c88fb28f377842"
+      }
+    },
     "questionable": {
       "version": "0.10.15",
       "vcsRevision": "82d90b67bcfb7f2e918b61dace2ff1a4ced60935",
