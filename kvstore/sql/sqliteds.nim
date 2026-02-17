@@ -23,6 +23,7 @@ import ../taskutils
 import ./sqlitedsdb
 import ./sqliteutils
 import ./operations
+import ./metrics
 
 export sqlitedsdb
 export operations
@@ -241,6 +242,15 @@ method hasImpl*(
   ## Returns the subset of input keys that exist in the store.
   ## Result preserves input order; duplicates are deduplicated (first occurrence wins).
 
+  kvstore_sql_has_total.inc()
+  kvstore_sql_inflight_has.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_has_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_has.dec()
+
   # don't move after closed, every await introduces concurrency
   await checkFairness()
 
@@ -304,6 +314,15 @@ method hasImpl*(
 method getImpl*(
     self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
+  kvstore_sql_get_total.inc()
+  kvstore_sql_inflight_get.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_get_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_get.dec()
+
   # don't move after closed, every await introduces concurrency
   await checkFairness()
 
@@ -339,6 +358,7 @@ method getImpl*(
         return success(newSeq[RawKVRecord]())
       return failure(err)
 
+    kvstore_sql_get_value_bytes.observe(extracted.val.len.float64)
     return success(@[extracted])
   else:
     let signal =
@@ -360,11 +380,26 @@ method getImpl*(
 
     ?await fut
 
-    return extract(ctx[].result)
+    let records = ?extract(ctx[].result)
+    for record in records:
+      kvstore_sql_get_value_bytes.observe(record.val.len.float64)
+    return success(records)
 
 method putImpl*(
     self: SQLiteKVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  kvstore_sql_put_total.inc()
+  kvstore_sql_inflight_put.inc()
+  kvstore_sql_put_batch_size.observe(records.len.float64)
+  for record in records:
+    kvstore_sql_put_value_bytes.observe(record.val.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_put_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_put.dec()
+
   # don't move after closed, every await introduces concurrency
   await checkFairness()
 
@@ -390,11 +425,24 @@ method putImpl*(
 
   ?await fut
 
-  return extract(ctx[].result)
+  let skipped = ?extract(ctx[].result)
+  if skipped.len > 0:
+    kvstore_sql_put_conflict_total.inc(skipped.len.int64)
+  return success(skipped)
 
 method deleteImpl*(
     self: SQLiteKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  kvstore_sql_delete_total.inc()
+  kvstore_sql_inflight_delete.inc()
+  kvstore_sql_delete_batch_size.observe(records.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_delete_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_delete.dec()
+
   # don't move after closed, every await introduces concurrency
   await checkFairness()
 
@@ -423,7 +471,10 @@ method deleteImpl*(
 
   ?await fut
 
-  return extract(ctx[].result)
+  let skipped = ?extract(ctx[].result)
+  if skipped.len > 0:
+    kvstore_sql_delete_conflict_total.inc(skipped.len.int64)
+  return success(skipped)
 
 # =============================================================================
 # Atomic Batch API Implementation
@@ -438,6 +489,16 @@ method putAtomicImpl*(
   ## All-or-nothing batch put with CAS.
   ## If ANY record has a CAS conflict, NO records are committed.
   ## Returns conflict keys on rollback, empty seq on success.
+
+  kvstore_sql_putatomic_total.inc()
+  kvstore_sql_inflight_putatomic.inc()
+  kvstore_sql_putatomic_batch_size.observe(records.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_putatomic_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_putatomic.dec()
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -469,13 +530,27 @@ method putAtomicImpl*(
 
   ?await fut
 
-  return extract(ctx[].result)
+  let conflicts = ?extract(ctx[].result)
+  if conflicts.len > 0:
+    kvstore_sql_putatomic_conflict_total.inc(conflicts.len.int64)
+    kvstore_sql_putatomic_rollback_total.inc()
+  return success(conflicts)
 
 method deleteAtomicImpl*(
     self: SQLiteKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## All-or-nothing batch delete with CAS.
   ## Same semantics as putAtomic().
+
+  kvstore_sql_deleteatomic_total.inc()
+  kvstore_sql_inflight_deleteatomic.inc()
+  kvstore_sql_deleteatomic_batch_size.observe(records.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_deleteatomic_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_deleteatomic.dec()
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -509,7 +584,11 @@ method deleteAtomicImpl*(
 
   ?await fut
 
-  return extract(ctx[].result)
+  let conflicts = ?extract(ctx[].result)
+  if conflicts.len > 0:
+    kvstore_sql_deleteatomic_conflict_total.inc(conflicts.len.int64)
+    kvstore_sql_deleteatomic_rollback_total.inc()
+  return success(conflicts)
 
 # =============================================================================
 # Move (Key-Prefix Rename)
@@ -521,6 +600,13 @@ method moveKeysImpl*(
   ## Move all keys from oldPrefix/* to newPrefix/* using native SQL UPDATE.
   ## Single statement in autocommit mode (implicitly atomic).
   ## Returns empty seq on success (SQL UPDATE has no partial failures).
+
+  kvstore_sql_move_total.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_move_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
 
   await checkFairness()
 
@@ -554,7 +640,15 @@ method moveKeysAtomicImpl*(
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Single SQL UPDATE is already atomic in autocommit mode.
   ## Delegates to moveKeysImpl (same code path, discards empty conflict list).
-  discard ?await self.moveKeysImpl(oldPrefix, newPrefix)
+  kvstore_sql_moveatomic_total.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_moveatomic_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+  without _ =? (await self.moveKeysImpl(oldPrefix, newPrefix)), err:
+    kvstore_sql_moveatomic_error_total.inc()
+    return failure(err)
   success()
 
 method moveKeysImpl*(
@@ -622,6 +716,9 @@ method closeImpl*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
 method queryImpl*(
     self: SQLiteKVStore, query: Query
 ): Future[?!QueryIterRaw] {.async: (raises: [CancelledError]).} =
+  kvstore_sql_query_total.inc()
+  let startTime = Moment.now()
+
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -713,6 +810,7 @@ method queryImpl*(
       # don't leak resources
       discard disposeStmtSync(state.stmt)
       deinitLock(state.lock)
+      kvstore_sql_active_iterators.dec()
 
     return success()
 
@@ -742,6 +840,10 @@ method queryImpl*(
 
     return ?catch(await noCancel handle)
 
+  kvstore_sql_query_duration_seconds.observe(
+    (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+  )
+  kvstore_sql_active_iterators.inc()
   return success QueryIter.new(next, isFinished, isDisposed, dispose)
 
 proc new*(T: type SQLiteKVStore, path: string, tp: Taskpool, readOnly = false): ?!T =
