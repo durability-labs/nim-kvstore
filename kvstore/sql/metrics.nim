@@ -9,19 +9,16 @@ export metrics
 
 const
   # Custom buckets tuned for I/O latencies: 100µs → 5s
-  ioBuckets = [
-    0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-    Inf,
-  ]
+  ioBuckets =
+    [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0, Inf]
 
   # Batch size buckets: 1 → 100k records
-  batchBuckets = [1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.0,
-    100000.0, Inf]
+  batchBuckets =
+    [1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.0, 100000.0, Inf]
 
   # Value size buckets (bytes): 16B → 64KB (metadata records are small)
   sizeBuckets = [
-    16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0, 16384.0,
-    65536.0, Inf,
+    16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0, 16384.0, 65536.0, Inf
   ]
 
 # --- Operation counters ---
@@ -42,9 +39,7 @@ declarePublicCounter(kvstore_sql_query_total, "kvstore sqlite query operations")
 
 # --- Conflict / rollback counters ---
 
-declarePublicCounter(
-  kvstore_sql_put_conflict_total, "kvstore sqlite put CAS conflicts"
-)
+declarePublicCounter(kvstore_sql_put_conflict_total, "kvstore sqlite put CAS conflicts")
 declarePublicCounter(
   kvstore_sql_delete_conflict_total, "kvstore sqlite delete CAS conflicts"
 )
@@ -144,15 +139,9 @@ declarePublicHistogram(
 
 # --- In-flight gauges ---
 
-declarePublicGauge(
-  kvstore_sql_inflight_has, "kvstore sqlite in-flight has operations"
-)
-declarePublicGauge(
-  kvstore_sql_inflight_get, "kvstore sqlite in-flight get operations"
-)
-declarePublicGauge(
-  kvstore_sql_inflight_put, "kvstore sqlite in-flight put operations"
-)
+declarePublicGauge(kvstore_sql_inflight_has, "kvstore sqlite in-flight has operations")
+declarePublicGauge(kvstore_sql_inflight_get, "kvstore sqlite in-flight get operations")
+declarePublicGauge(kvstore_sql_inflight_put, "kvstore sqlite in-flight put operations")
 declarePublicGauge(
   kvstore_sql_inflight_delete, "kvstore sqlite in-flight delete operations"
 )

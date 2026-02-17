@@ -48,9 +48,7 @@ proc upsert(
   proc onRow(s: RawStmtPtr) =
     affected.add($sqlite3_column_text_not_null(s, BatchUpsertReturnIdCol.cint))
 
-  discard dsDb.env
-    .queryWithUpsertRecords(queryStr, @records, onRow)
-    .tryGet()
+  discard dsDb.env.queryWithUpsertRecords(queryStr, @records, onRow).tryGet()
   affected
 
 # =============================================================================
@@ -123,40 +121,25 @@ suite "Test query builders":
 
   test "makeBatchUpsertQuery count=1":
     let expected =
-      "    WITH v(id, data, version, ts) AS (\n" &
-      "      VALUES (?, ?, ?, ?)\n" &
-      "    )\n" &
-      "    INSERT INTO Store (id, data, version, timestamp)\n" &
-      "    SELECT id, data, version, ts\n" &
-      "    FROM v\n" &
-      "    WHERE v.version = 1\n" &
+      "    WITH v(id, data, version, ts) AS (\n" & "      VALUES (?, ?, ?, ?)\n" &
+      "    )\n" & "    INSERT INTO Store (id, data, version, timestamp)\n" &
+      "    SELECT id, data, version, ts\n" & "    FROM v\n" & "    WHERE v.version = 1\n" &
       "       OR EXISTS (SELECT 1 FROM Store s WHERE s.id = v.id)\n" &
-      "    ON CONFLICT(id) DO UPDATE SET\n" &
-      "      data = excluded.data,\n" &
-      "      version = Store.version + 1,\n" &
-      "      timestamp = excluded.timestamp\n" &
-      "    WHERE Store.version = excluded.version - 1\n" &
-      "    RETURNING id\n" &
-      "  "
+      "    ON CONFLICT(id) DO UPDATE SET\n" & "      data = excluded.data,\n" &
+      "      version = Store.version + 1,\n" & "      timestamp = excluded.timestamp\n" &
+      "    WHERE Store.version = excluded.version - 1\n" & "    RETURNING id\n" & "  "
     check makeBatchUpsertQuery(1) == expected
 
   test "makeBatchUpsertQuery count=3":
     let expected =
       "    WITH v(id, data, version, ts) AS (\n" &
-      "      VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)\n" &
-      "    )\n" &
+      "      VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)\n" & "    )\n" &
       "    INSERT INTO Store (id, data, version, timestamp)\n" &
-      "    SELECT id, data, version, ts\n" &
-      "    FROM v\n" &
-      "    WHERE v.version = 1\n" &
+      "    SELECT id, data, version, ts\n" & "    FROM v\n" & "    WHERE v.version = 1\n" &
       "       OR EXISTS (SELECT 1 FROM Store s WHERE s.id = v.id)\n" &
-      "    ON CONFLICT(id) DO UPDATE SET\n" &
-      "      data = excluded.data,\n" &
-      "      version = Store.version + 1,\n" &
-      "      timestamp = excluded.timestamp\n" &
-      "    WHERE Store.version = excluded.version - 1\n" &
-      "    RETURNING id\n" &
-      "  "
+      "    ON CONFLICT(id) DO UPDATE SET\n" & "      data = excluded.data,\n" &
+      "      version = Store.version + 1,\n" & "      timestamp = excluded.timestamp\n" &
+      "    WHERE Store.version = excluded.version - 1\n" & "    RETURNING id\n" & "  "
     check makeBatchUpsertQuery(3) == expected
 
   test "makeGetManyParamQuery count=0 returns empty string":
@@ -164,33 +147,23 @@ suite "Test query builders":
 
   test "makeGetManyParamQuery count=1":
     let expected =
-      "    SELECT id, data, version FROM Store\n" &
-      "    WHERE id IN (?)\n" &
-      "  "
+      "    SELECT id, data, version FROM Store\n" & "    WHERE id IN (?)\n" & "  "
     check makeGetManyParamQuery(1) == expected
 
   test "makeGetManyParamQuery count=3":
     let expected =
-      "    SELECT id, data, version FROM Store\n" &
-      "    WHERE id IN (?, ?, ?)\n" &
-      "  "
+      "    SELECT id, data, version FROM Store\n" & "    WHERE id IN (?, ?, ?)\n" & "  "
     check makeGetManyParamQuery(3) == expected
 
   test "makeHasManyParamQuery count=0 returns empty string":
     check makeHasManyParamQuery(0) == ""
 
   test "makeHasManyParamQuery count=1":
-    let expected =
-      "    SELECT id FROM Store\n" &
-      "    WHERE id IN (?)\n" &
-      "  "
+    let expected = "    SELECT id FROM Store\n" & "    WHERE id IN (?)\n" & "  "
     check makeHasManyParamQuery(1) == expected
 
   test "makeHasManyParamQuery count=3":
-    let expected =
-      "    SELECT id FROM Store\n" &
-      "    WHERE id IN (?, ?, ?)\n" &
-      "  "
+    let expected = "    SELECT id FROM Store\n" & "    WHERE id IN (?, ?, ?)\n" & "  "
     check makeHasManyParamQuery(3) == expected
 
   test "makeDeleteManyParamQuery count=0 returns empty string":
@@ -198,15 +171,12 @@ suite "Test query builders":
 
   test "makeDeleteManyParamQuery count=1":
     let expected =
-      "    DELETE FROM Store\n" &
-      "    WHERE (id, version) IN ((?, ?))\n" &
-      "  "
+      "    DELETE FROM Store\n" & "    WHERE (id, version) IN ((?, ?))\n" & "  "
     check makeDeleteManyParamQuery(1) == expected
 
   test "makeDeleteManyParamQuery count=3":
     let expected =
-      "    DELETE FROM Store\n" &
-      "    WHERE (id, version) IN ((?, ?), (?, ?), (?, ?))\n" &
+      "    DELETE FROM Store\n" & "    WHERE (id, version) IN ((?, ?), (?, ?), (?, ?))\n" &
       "  "
     check makeDeleteManyParamQuery(3) == expected
 
@@ -244,8 +214,9 @@ suite "Test batch upsert - CAS insert scenarios":
       v == 1'i64
 
   test "Case 1: insert multiple new keys in one batch":
-    let affected =
-      dsDb.upsert([(key2.id, data1, 1'i64, 1000'i64), (key3.id, data2, 1'i64, 1000'i64)])
+    let affected = dsDb.upsert(
+      [(key2.id, data1, 1'i64, 1000'i64), (key3.id, data2, 1'i64, 1000'i64)]
+    )
 
     check:
       affected.len == 2
@@ -542,9 +513,8 @@ suite "Test batch get (makeGetManyParamQuery + queryWithStrings)":
       versions.add(versionCol(s, GetManyStmtVersionCol)())
 
     let queryStr = makeGetManyParamQuery(3)
-    discard dsDb.env
-      .queryWithStrings(queryStr, [key1.id, key2.id, key3.id], onRow)
-      .tryGet()
+    discard
+      dsDb.env.queryWithStrings(queryStr, [key1.id, key2.id, key3.id], onRow).tryGet()
 
     check:
       ids.len == 3
@@ -763,9 +733,8 @@ suite "Test batch delete (makeDeleteManyParamQuery + queryWithIdVersionPairs)":
       discard
 
     let queryStr = makeDeleteManyParamQuery(1)
-    discard dsDb.env
-      .queryWithIdVersionPairs(queryStr, [(key3.id, 99'i64)], onRow)
-      .tryGet()
+    discard
+      dsDb.env.queryWithIdVersionPairs(queryStr, [(key3.id, 99'i64)], onRow).tryGet()
 
     check:
       dsDb.checkChanges().tryGet() == 0
@@ -815,9 +784,7 @@ suite "Test moveStmt":
       movedKeys.add($sqlite3_column_text_not_null(s, 0.cint))
 
     # substrOffset = len("old") + 1 = 4
-    discard dsDb.moveStmt
-      .query(("new", 4'i64, "old/*", "old"), onRow)
-      .tryGet()
+    discard dsDb.moveStmt.query(("new", 4'i64, "old/*", "old"), onRow).tryGet()
 
     check:
       movedKeys.len == 2
@@ -840,9 +807,7 @@ suite "Test moveStmt":
       movedKeys.add($sqlite3_column_text_not_null(s, 0.cint))
 
     # substrOffset = len("exact") + 1 = 6
-    discard dsDb.moveStmt
-      .query(("renamed", 6'i64, "exact/*", "exact"), onRow)
-      .tryGet()
+    discard dsDb.moveStmt.query(("renamed", 6'i64, "exact/*", "exact"), onRow).tryGet()
 
     check:
       movedKeys.len == 1
@@ -857,9 +822,7 @@ suite "Test moveStmt":
       discard
 
     # substrOffset = len("mv/src") + 1 = 7
-    discard dsDb.moveStmt
-      .query(("mv/dst", 7'i64, "mv/src/*", "mv/src"), onRow)
-      .tryGet()
+    discard dsDb.moveStmt.query(("mv/dst", 7'i64, "mv/src/*", "mv/src"), onRow).tryGet()
 
     let (found, d, v) = dsDb.readSingle("mv/dst")
     check:
