@@ -1,9 +1,9 @@
 {.push raises: [].}
 
 import std/os
+import std/sequtils
 import std/strformat
 import std/strutils
-import std/sequtils
 
 import pkg/questionable
 import pkg/questionable/results
@@ -22,12 +22,8 @@ type
   ContainsStmt* = SQLiteStmt[(string), void]
   QueryStmt* = SQLiteStmt[(string), void]
   GetSingleStmt* = SQLiteStmt[(string), void]
-  # Insert statement: (id, data, timestamp) - version is always 1
-  InsertStmt* = SQLiteStmt[(string, seq[byte], int64), void]
-  # Update statement: (data, timestamp, id, version)
-  UpdateStmt* = SQLiteStmt[(seq[byte], int64, string, int64), void]
   MoveStmt* = SQLiteStmt[(string, int64, string, string), void]
-  UpsertStmt* {.deprecated.} = SQLiteStmt[(string, seq[byte], int64, int64), void]
+
   DeleteStmt* = SQLiteStmt[(string, int64), void]
   GetChangesStmt* = NoParamsStmt
   BeginStmt* = NoParamsStmt
@@ -40,8 +36,6 @@ type
     env*: SQLite
     containsStmt*: ContainsStmt
     getSingleStmt*: GetSingleStmt
-    insertStmt*: InsertStmt
-    updateStmt*: UpdateStmt
     moveStmt*: MoveStmt
     deleteStmt*: DeleteStmt
     getChangesStmt*: GetChangesStmt
@@ -64,7 +58,6 @@ const
   TimestampColType = "INTEGER"
 
   SqliteMemory* = ":memory:"
-  Memory* {.deprecated: "use SqliteMemory".} = SqliteMemory
 
   # https://stackoverflow.com/a/9756276
   # EXISTS returns a boolean value represented by an integer:
@@ -153,62 +146,8 @@ const
 
   HasManyStmtIdCol* = 0
 
-  UpsertStmtDataCol* = 0
-  UpsertStmtVersionCol* = 1
 
-  # Insert statement for token == 0 (insert-only mode)
-  # Uses INSERT OR IGNORE to fail silently if key exists
-  InsertStmtStr* =
-    fmt"""
-    INSERT INTO {TableName}
-    (
-      {IdColName},
-      {DataColName},
-      {VersionColName},
-      {TimestampColName}
-    )
-    VALUES (?, ?, 1, ?)
-    ON CONFLICT({IdColName}) DO NOTHING
-    RETURNING {DataColName}, {VersionColName}
-  """
 
-  # Update statement for token != 0 (update-only mode)
-  # Only updates if key exists AND version matches
-  UpdateStmtStr* =
-    fmt"""
-    UPDATE {TableName}
-    SET
-      {DataColName} = ?,
-      {VersionColName} = {VersionColName} + 1,
-      {TimestampColName} = ?
-    WHERE
-      {IdColName} = ? AND
-      {VersionColName} = ?
-    RETURNING {DataColName}, {VersionColName}
-  """
-
-  # Legacy upsert statement - kept for reference but no longer used
-  # BUG: This incorrectly allows token != 0 to insert when key doesn't exist
-  UpsertStmtStr* {.deprecated: "Use InsertStmtStr or UpdateStmtStr instead".} =
-    fmt"""
-    INSERT INTO {TableName}
-    (
-      {IdColName},
-      {DataColName},
-      {VersionColName},
-      {TimestampColName}
-    )
-    VALUES (?, ?, ? + 1, ?)
-    ON CONFLICT({IdColName}) DO UPDATE
-    SET
-      {DataColName} = excluded.{DataColName},
-      {VersionColName} = excluded.{VersionColName},
-      {TimestampColName} = excluded.{TimestampColName}
-    WHERE
-      {TableName}.{IdColName} = excluded.{IdColName} AND
-      {TableName}.{VersionColName} = excluded.{VersionColName} - 1
-    RETURNING {DataColName}, {VersionColName}
-  """
 
   DeleteStmtStr* =
     fmt"""
@@ -258,6 +197,44 @@ const
   QueryStmtVersionColNoData* = 1 # When value=false: id=0, version=1
   QueryStmtVersionColWithData* = 2 # When value=true: id=0, data=1, version=2
 
+  # Batch upsert: 4 params per row (id, data, version, timestamp)
+  # version = 1 for inserts (token=0), version = token+1 for updates (token!=0)
+  BatchUpsertParamsPerRow* = 4
+  BatchUpsertReturnIdCol* = 0
+
+  # CTE-based upsert:
+  # - Inserts (version=1): inserted directly; conflict -> silently skipped
+  #   (WHERE Store.version = 0 never matches since CHECK(version >= 1))
+  # - Updates (version>1): only attempted if key EXISTS; conflict triggers
+  #   CAS check via WHERE Store.version = excluded.version - 1
+  BatchUpsertStmtStr* =
+    fmt"""
+    WITH v(id, data, version, ts) AS (
+      VALUES $1
+    )
+    INSERT INTO {TableName} ({IdColName}, {DataColName}, {VersionColName}, {TimestampColName})
+    SELECT id, data, version, ts
+    FROM v
+    WHERE v.version = 1
+       OR EXISTS (SELECT 1 FROM {TableName} s WHERE s.{IdColName} = v.id)
+    ON CONFLICT({IdColName}) DO UPDATE SET
+      {DataColName} = excluded.{DataColName},
+      {VersionColName} = {TableName}.{VersionColName} + 1,
+      {TimestampColName} = excluded.{TimestampColName}
+    WHERE {TableName}.{VersionColName} = excluded.{VersionColName} - 1
+    RETURNING {IdColName}
+  """
+
+# Build batch upsert query with (?, ?, ?, ?) value tuples
+proc makeBatchUpsertQuery*(count: int): string {.raises: [].} =
+  if count == 0:
+    return ""
+  let tuples = newSeqWith(count, "(?, ?, ?, ?)").join(", ")
+  try:
+    BatchUpsertStmtStr % tuples
+  except ValueError:
+    raiseAssert("Invalid BatchUpsertStmtStr format")
+
 # Build parameterized GET MANY query with ? placeholders
 # Returns sql_string
 proc makeGetManyParamQuery*(count: int): string {.raises: [].} =
@@ -296,18 +273,6 @@ proc makeDeleteManyParamQuery*(count: int): string {.raises: [].} =
     # Should never happen with controlled placeholders
     raiseAssert("Invalid DeleteManyStmtStr format")
 
-# Legacy templates - deprecated, kept for compatibility
-template makeGetManyStmStr*(
-    ids: openArray[string]
-): ?!string {.deprecated: "Use makeGetManyParamQuery with parameter binding".} =
-  catch (GetManyStmtStr % ids.mapIt("\"" & it & "\"").join(", "))
-
-template makeDeleteManyStmStr*(
-    ids: openArray[(string, uint64)]
-): ?!string {.deprecated: "Use makeDeleteManyParamQuery with parameter binding".} =
-  catch (
-    DeleteManyStmtStr % ids.mapIt("(\"" & it[0] & "\", " & $it[1] & ")").join(", ")
-  )
 
 proc checkColMetadata(s: RawStmtPtr, i: int, expectedName: string) =
   let colName = sqlite3_column_origin_name(s, i.cint)
@@ -424,12 +389,6 @@ proc close*(self: var SQLiteDsDb): ?!void =
   if not RawStmtPtr(self.getSingleStmt).isNil:
     self.getSingleStmt.dispose
 
-  if not RawStmtPtr(self.insertStmt).isNil:
-    self.insertStmt.dispose
-
-  if not RawStmtPtr(self.updateStmt).isNil:
-    self.updateStmt.dispose
-
   if not RawStmtPtr(self.moveStmt).isNil:
     self.moveStmt.dispose
 
@@ -483,8 +442,6 @@ proc open*(
   var
     containsStmt: ContainsStmt
     getSingleStmt: GetSingleStmt
-    insertStmt: InsertStmt
-    updateStmt: UpdateStmt
     moveStmt: MoveStmt
     deleteStmt: DeleteStmt
     getChangesStmt: GetChangesStmt
@@ -494,10 +451,6 @@ proc open*(
 
   if not readOnly:
     checkExec(env.val, CreateStmtStr)
-
-    insertStmt = ?InsertStmt.prepare(env.val, InsertStmtStr, SQLITE_PREPARE_PERSISTENT)
-
-    updateStmt = ?UpdateStmt.prepare(env.val, UpdateStmtStr, SQLITE_PREPARE_PERSISTENT)
 
     moveStmt = ?MoveStmt.prepare(env.val, MoveStmtStr, SQLITE_PREPARE_PERSISTENT)
 
@@ -526,8 +479,6 @@ proc open*(
     env: env.release,
     containsStmt: containsStmt,
     getSingleStmt: getSingleStmt,
-    insertStmt: insertStmt,
-    updateStmt: updateStmt,
     moveStmt: moveStmt,
     deleteStmt: deleteStmt,
     getChangesStmt: getChangesStmt,
