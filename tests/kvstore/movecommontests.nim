@@ -209,3 +209,152 @@ proc moveTests*(ds: KVStore, key: Key) =
         if record =? maybeRecord:
           oldCount += 1
       check oldCount == 0
+
+    # =========================================================================
+    # Exact key (self) matching tests
+    # =========================================================================
+
+    test "moveKeys moves the prefix key itself (not just children)":
+      let
+        oldPrefix = (key / "moveself" / "old").tryGet()
+        newPrefix = (key / "moveself" / "new").tryGet()
+
+      # Store a record AT the prefix key (no child segment)
+      (await ds.put(oldPrefix, "self-value".toBytes)).tryGet()
+
+      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
+      check conflicts.len == 0
+
+      check not (await ds.has(oldPrefix)).tryGet()
+      check (await ds.get(newPrefix)).tryGet().val == "self-value".toBytes
+
+    test "moveKeys moves both prefix key and children":
+      let
+        oldPrefix = (key / "moveboth" / "old").tryGet()
+        newPrefix = (key / "moveboth" / "new").tryGet()
+
+      # Store at the prefix key itself AND children
+      (await ds.put(oldPrefix, "self".toBytes)).tryGet()
+      (await ds.put((oldPrefix / "child1").tryGet(), "c1".toBytes)).tryGet()
+      (await ds.put((oldPrefix / "child2").tryGet(), "c2".toBytes)).tryGet()
+
+      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
+      check conflicts.len == 0
+
+      # All old keys gone
+      check not (await ds.has(oldPrefix)).tryGet()
+      check not (await ds.has((oldPrefix / "child1").tryGet())).tryGet()
+      check not (await ds.has((oldPrefix / "child2").tryGet())).tryGet()
+
+      # All moved to new prefix
+      check (await ds.get(newPrefix)).tryGet().val == "self".toBytes
+      check (await ds.get((newPrefix / "child1").tryGet())).tryGet().val == "c1".toBytes
+      check (await ds.get((newPrefix / "child2").tryGet())).tryGet().val == "c2".toBytes
+
+    test "moveKeysAtomic moves the prefix key itself":
+      let
+        oldPrefix = (key / "moveatomicself" / "old").tryGet()
+        newPrefix = (key / "moveatomicself" / "new").tryGet()
+
+      (await ds.put(oldPrefix, "atomic-self".toBytes)).tryGet()
+
+      (await ds.moveKeysAtomic(oldPrefix, newPrefix)).tryGet()
+
+      check not (await ds.has(oldPrefix)).tryGet()
+      check (await ds.get(newPrefix)).tryGet().val == "atomic-self".toBytes
+
+    # =========================================================================
+    # Multi-prefix move tests
+    # =========================================================================
+
+    test "moveKeysAtomic multi-prefix moves multiple prefix pairs atomically":
+      let
+        oldA = (key / "movemulti" / "oldA").tryGet()
+        newA = (key / "movemulti" / "newA").tryGet()
+        oldB = (key / "movemulti" / "oldB").tryGet()
+        newB = (key / "movemulti" / "newB").tryGet()
+
+      (await ds.put((oldA / "1").tryGet(), "a1".toBytes)).tryGet()
+      (await ds.put((oldA / "2").tryGet(), "a2".toBytes)).tryGet()
+      (await ds.put((oldB / "x").tryGet(), "bx".toBytes)).tryGet()
+
+      (await ds.moveKeysAtomic(@[(oldA, newA), (oldB, newB)])).tryGet()
+
+      # All old keys gone
+      check not (await ds.has((oldA / "1").tryGet())).tryGet()
+      check not (await ds.has((oldA / "2").tryGet())).tryGet()
+      check not (await ds.has((oldB / "x").tryGet())).tryGet()
+
+      # All moved to new prefixes
+      check (await ds.get((newA / "1").tryGet())).tryGet().val == "a1".toBytes
+      check (await ds.get((newA / "2").tryGet())).tryGet().val == "a2".toBytes
+      check (await ds.get((newB / "x").tryGet())).tryGet().val == "bx".toBytes
+
+    test "moveKeysAtomic multi-prefix rolls back all on conflict":
+      let
+        oldA = (key / "movemultirollback" / "oldA").tryGet()
+        newA = (key / "movemultirollback" / "newA").tryGet()
+        oldB = (key / "movemultirollback" / "oldB").tryGet()
+        newB = (key / "movemultirollback" / "newB").tryGet()
+
+      (await ds.put((oldA / "1").tryGet(), "a1".toBytes)).tryGet()
+      (await ds.put((oldB / "x").tryGet(), "bx".toBytes)).tryGet()
+      # Pre-populate destination for B — causes conflict on second pair
+      (await ds.put((newB / "x").tryGet(), "existing".toBytes)).tryGet()
+
+      let result = await ds.moveKeysAtomic(@[(oldA, newA), (oldB, newB)])
+      check result.isErr
+
+      # ALL source keys should still exist (entire transaction rolled back)
+      check (await ds.get((oldA / "1").tryGet())).tryGet().val == "a1".toBytes
+      check (await ds.get((oldB / "x").tryGet())).tryGet().val == "bx".toBytes
+      # Pair A should NOT have been moved (rolled back)
+      check not (await ds.has((newA / "1").tryGet())).tryGet()
+      # Existing destination key unchanged
+      check (await ds.get((newB / "x").tryGet())).tryGet().val == "existing".toBytes
+
+    test "moveKeysAtomic multi-prefix with exact key and children":
+      let
+        oldLeafs = (key / "movefinalize" / "leafs" / "tmp").tryGet()
+        newLeafs = (key / "movefinalize" / "leafs" / "real").tryGet()
+        oldMeta = (key / "movefinalize" / "meta" / "tmp").tryGet()
+        newMeta = (key / "movefinalize" / "meta" / "real").tryGet()
+
+      # Simulate overlay finalization: leafs are children, metadata is exact key
+      (await ds.put((oldLeafs / "0").tryGet(), "leaf0".toBytes)).tryGet()
+      (await ds.put((oldLeafs / "1").tryGet(), "leaf1".toBytes)).tryGet()
+      (await ds.put((oldLeafs / "2").tryGet(), "leaf2".toBytes)).tryGet()
+      (await ds.put(oldMeta, "overlay-metadata".toBytes)).tryGet()
+
+      (await ds.moveKeysAtomic(@[
+        (oldLeafs, newLeafs),
+        (oldMeta, newMeta),
+      ])).tryGet()
+
+      # All old keys gone
+      check not (await ds.has((oldLeafs / "0").tryGet())).tryGet()
+      check not (await ds.has((oldLeafs / "1").tryGet())).tryGet()
+      check not (await ds.has((oldLeafs / "2").tryGet())).tryGet()
+      check not (await ds.has(oldMeta)).tryGet()
+
+      # All at new locations
+      check (await ds.get((newLeafs / "0").tryGet())).tryGet().val == "leaf0".toBytes
+      check (await ds.get((newLeafs / "1").tryGet())).tryGet().val == "leaf1".toBytes
+      check (await ds.get((newLeafs / "2").tryGet())).tryGet().val == "leaf2".toBytes
+      check (await ds.get(newMeta)).tryGet().val == "overlay-metadata".toBytes
+
+    test "moveKeysAtomic multi-prefix with empty list succeeds":
+      let moves: seq[(Key, Key)] = @[]
+      (await ds.moveKeysAtomic(moves)).tryGet()
+
+    test "moveKeysAtomic multi-prefix single pair delegates correctly":
+      let
+        oldPrefix = (key / "movemultisingle" / "old").tryGet()
+        newPrefix = (key / "movemultisingle" / "new").tryGet()
+
+      (await ds.put((oldPrefix / "a").tryGet(), "va".toBytes)).tryGet()
+
+      (await ds.moveKeysAtomic(@[(oldPrefix, newPrefix)])).tryGet()
+
+      check not (await ds.has((oldPrefix / "a").tryGet())).tryGet()
+      check (await ds.get((newPrefix / "a").tryGet())).tryGet().val == "va".toBytes

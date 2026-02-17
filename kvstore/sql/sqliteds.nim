@@ -188,6 +188,21 @@ proc runMoveTask(
   withLock(lock[]):
     ctx[].result = unsafeIsolate(moveSync(db[], oldPrefix, newPrefix, readOnly))
 
+proc runMoveMultiTask(
+    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    moves: seq[(Key, Key)],
+    readOnly: bool,
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runMoveMultiTask", error = res.error
+
+  withLock(lock[]):
+    ctx[].result = unsafeIsolate(moveSyncMulti(db[], moves, readOnly))
+
 proc runNextTask(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]],
     stmt: ptr RawStmtPtr,
@@ -540,6 +555,47 @@ method moveKeysAtomicImpl*(
   ## Single SQL UPDATE is already atomic in autocommit mode.
   ## Delegates to moveKeysImpl (same code path, discards empty conflict list).
   discard ?await self.moveKeysImpl(oldPrefix, newPrefix)
+  success()
+
+method moveKeysImpl*(
+    self: SQLiteKVStore, moves: seq[(Key, Key)]
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ## Move multiple prefix pairs atomically in a single transaction.
+  ## Each pair moves prefix/* and the prefix key itself.
+
+  await checkFairness()
+
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for moveKeysMulti")
+
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
+  defer:
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in moveKeysMulti", error = err
+
+  let taskFut = signal.wait()
+  self.tp.spawn runMoveMultiTask(
+    ctx, addr self.db, addr self.lock, moves, self.readOnly
+  )
+
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  ?await fut
+
+  return extract(ctx[].result)
+
+method moveKeysAtomicImpl*(
+    self: SQLiteKVStore, moves: seq[(Key, Key)]
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Multi-prefix atomic move. All pairs are moved in a single
+  ## SQL transaction — all succeed or all are rolled back.
+  discard ?await self.moveKeysImpl(moves)
   success()
 
 method closeImpl*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
