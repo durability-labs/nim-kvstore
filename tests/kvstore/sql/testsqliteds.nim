@@ -102,7 +102,7 @@ suite "Test Read Only SQLiteKVStore":
       not (await readOnlyDb.has(key)).tryGet()
       not (await dsDb.has(key)).tryGet()
 
-  test "moveKeys rejected on read-only store":
+  test "moveKeysAtomic rejected on read-only store":
     let
       oldPrefix = Key.init("/ro/move/old").tryGet()
       newPrefix = Key.init("/ro/move/new").tryGet()
@@ -111,7 +111,6 @@ suite "Test Read Only SQLiteKVStore":
     (await dsDb.put((oldPrefix / "a").tryGet(), "v".toBytes)).tryGet()
 
     # Move via read-only store should fail
-    check (await readOnlyDb.moveKeys(oldPrefix, newPrefix)).isErr
     check (await readOnlyDb.moveKeysAtomic(oldPrefix, newPrefix)).isErr
 
     # Original should still exist
