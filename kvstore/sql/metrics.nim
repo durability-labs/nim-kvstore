@@ -34,9 +34,11 @@ declarePublicCounter(kvstore_sql_putatomic_total, "kvstore sqlite putAtomic oper
 declarePublicCounter(
   kvstore_sql_deleteatomic_total, "kvstore sqlite deleteAtomic operations"
 )
-declarePublicCounter(kvstore_sql_move_total, "kvstore sqlite moveKeys operations")
 declarePublicCounter(
   kvstore_sql_moveatomic_total, "kvstore sqlite moveKeysAtomic operations"
+)
+declarePublicCounter(
+  kvstore_sql_dropprefix_total, "kvstore sqlite dropPrefix operations"
 )
 declarePublicCounter(kvstore_sql_query_total, "kvstore sqlite query operations")
 
@@ -62,6 +64,9 @@ declarePublicCounter(
 )
 declarePublicCounter(
   kvstore_sql_moveatomic_error_total, "kvstore sqlite moveKeysAtomic failures"
+)
+declarePublicCounter(
+  kvstore_sql_dropprefix_error_total, "kvstore sqlite dropPrefix failures"
 )
 
 # --- Duration histograms ---
@@ -91,13 +96,13 @@ declarePublicHistogram(
   buckets = ioBuckets,
 )
 declarePublicHistogram(
-  kvstore_sql_move_duration_seconds,
-  "kvstore sqlite moveKeys duration",
+  kvstore_sql_moveatomic_duration_seconds,
+  "kvstore sqlite moveKeysAtomic duration",
   buckets = ioBuckets,
 )
 declarePublicHistogram(
-  kvstore_sql_moveatomic_duration_seconds,
-  "kvstore sqlite moveKeysAtomic duration",
+  kvstore_sql_dropprefix_duration_seconds,
+  "kvstore sqlite dropPrefix duration",
   buckets = ioBuckets,
 )
 declarePublicHistogram(

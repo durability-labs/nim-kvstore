@@ -211,6 +211,13 @@ proc exec*(env: SQLite, q: string): ?!void =
 
   success()
 
+type SQLiteStepError* = object of CatchableError
+  code*: cint
+
+proc newSQLiteStepError*(msg: string, code: cint): ref SQLiteStepError =
+  result = newException(SQLiteStepError, msg)
+  result.code = code
+
 proc query*[P](s: SQLiteStmt[P, void], params: P, onData: DataProc): ?!bool =
   let s = RawStmtPtr(s)
 
@@ -228,7 +235,7 @@ proc query*[P](s: SQLiteStmt[P, void], params: P, onData: DataProc): ?!bool =
     of SQLITE_DONE:
       break
     else:
-      res = failure $sqlite3_errstr(v)
+      res = failure(newSQLiteStepError($sqlite3_errstr(v), v))
       break
 
   # release implicit transaction - discard to preserve original error in res
