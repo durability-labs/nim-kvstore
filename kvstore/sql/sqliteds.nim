@@ -175,7 +175,7 @@ proc runDeleteAtomicTask(
     ctx[].result = unsafeIsolate(deleteAtomicSync(db[], records, readOnly))
 
 proc runMoveTask(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[void]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     oldPrefix, newPrefix: Key,
@@ -190,7 +190,7 @@ proc runMoveTask(
     ctx[].result = unsafeIsolate(moveSync(db[], oldPrefix, newPrefix, readOnly))
 
 proc runMoveMultiTask(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[void]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     moves: seq[(Key, Key)],
@@ -203,6 +203,36 @@ proc runMoveMultiTask(
 
   withLock(lock[]):
     ctx[].result = unsafeIsolate(moveSyncMulti(db[], moves, readOnly))
+
+proc runDropPrefixTask(
+    ctx: SharedPtr[TaskCtx[void]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    prefix: Key,
+    readOnly: bool,
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runDropPrefixTask", error = res.error
+
+  withLock(lock[]):
+    ctx[].result = unsafeIsolate(dropPrefixSync(db[], prefix, readOnly))
+
+proc runDropPrefixMultiTask(
+    ctx: SharedPtr[TaskCtx[void]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    prefixes: seq[Key],
+    readOnly: bool,
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runDropPrefixMultiTask", error = res.error
+
+  withLock(lock[]):
+    ctx[].result = unsafeIsolate(dropPrefixSyncMulti(db[], prefixes, readOnly))
 
 proc runNextTask(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]],
@@ -594,17 +624,16 @@ method deleteAtomicImpl*(
 # Move (Key-Prefix Rename)
 # =============================================================================
 
-method moveKeysImpl*(
+method moveKeysAtomicImpl*(
     self: SQLiteKVStore, oldPrefix, newPrefix: Key
-): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  ## Move all keys from oldPrefix/* to newPrefix/* using native SQL UPDATE.
-  ## Single statement in autocommit mode (implicitly atomic).
-  ## Returns empty seq on success (SQL UPDATE has no partial failures).
-
-  kvstore_sql_move_total.inc()
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Move all keys from oldPrefix/* to newPrefix/* atomically.
+  ## Single UPDATE statement in autocommit mode is already atomic.
+  ## Returns KVConflictError if any destination key already exists.
+  kvstore_sql_moveatomic_total.inc()
   let startTime = Moment.now()
   defer:
-    kvstore_sql_move_duration_seconds.observe(
+    kvstore_sql_moveatomic_duration_seconds.observe(
       (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
     )
 
@@ -614,12 +643,14 @@ method moveKeysImpl*(
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
   let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for moveKeys")
+    ?ThreadSignalPtr.new().toKVError(
+      context = "Failed to create signal for moveKeysAtomic"
+    )
 
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
+  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
   defer:
     if err =? signal.close().errorOption:
-      warn "signal.close failed in moveKeys", error = err
+      warn "signal.close failed in moveKeysAtomic", error = err
 
   let taskFut = signal.wait()
   self.tp.spawn runMoveTask(
@@ -631,31 +662,24 @@ method moveKeysImpl*(
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
+  if err =? (await fut).errorOption:
+    kvstore_sql_moveatomic_error_total.inc()
+    return failure(err)
 
-  return extract(ctx[].result)
+  extract(ctx[].result)
 
 method moveKeysAtomicImpl*(
-    self: SQLiteKVStore, oldPrefix, newPrefix: Key
+    self: SQLiteKVStore, moves: seq[(Key, Key)]
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
-  ## Single SQL UPDATE is already atomic in autocommit mode.
-  ## Delegates to moveKeysImpl (same code path, discards empty conflict list).
+  ## Move multiple prefix pairs atomically in a single transaction.
+  ## All pairs succeed or all are rolled back.
+  ## Returns KVConflictError if any destination key already exists.
   kvstore_sql_moveatomic_total.inc()
   let startTime = Moment.now()
   defer:
     kvstore_sql_moveatomic_duration_seconds.observe(
       (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
     )
-  without _ =? (await self.moveKeysImpl(oldPrefix, newPrefix)), err:
-    kvstore_sql_moveatomic_error_total.inc()
-    return failure(err)
-  success()
-
-method moveKeysImpl*(
-    self: SQLiteKVStore, moves: seq[(Key, Key)]
-): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  ## Move multiple prefix pairs atomically in a single transaction.
-  ## Each pair moves prefix/* and the prefix key itself.
 
   await checkFairness()
 
@@ -664,13 +688,13 @@ method moveKeysImpl*(
 
   let signal =
     ?ThreadSignalPtr.new().toKVError(
-      context = "Failed to create signal for moveKeysMulti"
+      context = "Failed to create signal for moveKeysAtomicMulti"
     )
 
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
+  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
   defer:
     if err =? signal.close().errorOption:
-      warn "signal.close failed in moveKeysMulti", error = err
+      warn "signal.close failed in moveKeysAtomicMulti", error = err
 
   let taskFut = signal.wait()
   self.tp.spawn runMoveMultiTask(
@@ -682,17 +706,95 @@ method moveKeysImpl*(
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
+  if err =? (await fut).errorOption:
+    kvstore_sql_moveatomic_error_total.inc()
+    return failure(err)
 
-  return extract(ctx[].result)
+  extract(ctx[].result)
 
-method moveKeysAtomicImpl*(
-    self: SQLiteKVStore, moves: seq[(Key, Key)]
+method dropPrefixImpl*(
+    self: SQLiteKVStore, prefix: Key
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
-  ## Multi-prefix atomic move. All pairs are moved in a single
-  ## SQL transaction — all succeed or all are rolled back.
-  discard ?await self.moveKeysImpl(moves)
-  success()
+  ## Delete all records under prefix/* and the prefix key itself, atomically.
+  ## Idempotent: no-op if no matching keys exist.
+  kvstore_sql_dropprefix_total.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_dropprefix_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+
+  await checkFairness()
+
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for dropPrefix")
+
+  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
+  defer:
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in dropPrefix", error = err
+
+  let taskFut = signal.wait()
+  self.tp.spawn runDropPrefixTask(
+    ctx, addr self.db, addr self.lock, prefix, self.readOnly
+  )
+
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  if err =? (await fut).errorOption:
+    kvstore_sql_dropprefix_error_total.inc()
+    return failure(err)
+
+  extract(ctx[].result)
+
+method dropPrefixImpl*(
+    self: SQLiteKVStore, prefixes: seq[Key]
+): Future[?!void] {.async: (raises: [CancelledError]).} =
+  ## Drop multiple prefixes atomically in a single transaction.
+  ## Idempotent: no-op if no matching keys exist.
+  kvstore_sql_dropprefix_total.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_dropprefix_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+
+  await checkFairness()
+
+  if self.closed:
+    return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
+
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(
+      context = "Failed to create signal for dropPrefixMulti"
+    )
+
+  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
+  defer:
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in dropPrefixMulti", error = err
+
+  let taskFut = signal.wait()
+  self.tp.spawn runDropPrefixMultiTask(
+    ctx, addr self.db, addr self.lock, prefixes, self.readOnly
+  )
+
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
+
+  if err =? (await fut).errorOption:
+    kvstore_sql_dropprefix_error_total.inc()
+    return failure(err)
+
+  extract(ctx[].result)
 
 method closeImpl*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
