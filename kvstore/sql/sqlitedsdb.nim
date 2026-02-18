@@ -23,6 +23,7 @@ type
   QueryStmt* = SQLiteStmt[(string), void]
   GetSingleStmt* = SQLiteStmt[(string), void]
   MoveStmt* = SQLiteStmt[(string, int64, string, string), void]
+  DropPrefixStmt* = SQLiteStmt[(string, string), void]
 
   DeleteStmt* = SQLiteStmt[(string, int64), void]
   GetChangesStmt* = NoParamsStmt
@@ -37,6 +38,7 @@ type
     containsStmt*: ContainsStmt
     getSingleStmt*: GetSingleStmt
     moveStmt*: MoveStmt
+    dropPrefixStmt*: DropPrefixStmt
     deleteStmt*: DeleteStmt
     getChangesStmt*: GetChangesStmt
     beginStmt*: BeginStmt
@@ -167,6 +169,14 @@ const
     SET {IdColName} = ? || SUBSTR({IdColName}, ?)
     WHERE ({IdColName} GLOB ? OR {IdColName} = ?)
     RETURNING {IdColName}, {VersionColName}
+  """
+
+  # Drop all keys under a prefix (children and the prefix key itself)
+  # Idempotent: no-op if no matching keys exist
+  DropPrefixStmtStr* =
+    fmt"""
+    DELETE FROM {TableName}
+    WHERE ({IdColName} GLOB ? OR {IdColName} = ?)
   """
 
   GetChangesStmtStr* =
@@ -388,6 +398,9 @@ proc close*(self: var SQLiteDsDb): ?!void =
   if not RawStmtPtr(self.moveStmt).isNil:
     self.moveStmt.dispose
 
+  if not RawStmtPtr(self.dropPrefixStmt).isNil:
+    self.dropPrefixStmt.dispose
+
   if not RawStmtPtr(self.deleteStmt).isNil:
     self.deleteStmt.dispose
 
@@ -439,6 +452,7 @@ proc open*(
     containsStmt: ContainsStmt
     getSingleStmt: GetSingleStmt
     moveStmt: MoveStmt
+    dropPrefixStmt: DropPrefixStmt
     deleteStmt: DeleteStmt
     getChangesStmt: GetChangesStmt
     beginStmt: BeginStmt
@@ -449,6 +463,9 @@ proc open*(
     checkExec(env.val, CreateStmtStr)
 
     moveStmt = ?MoveStmt.prepare(env.val, MoveStmtStr, SQLITE_PREPARE_PERSISTENT)
+
+    dropPrefixStmt =
+      ?DropPrefixStmt.prepare(env.val, DropPrefixStmtStr, SQLITE_PREPARE_PERSISTENT)
 
     deleteStmt = ?DeleteStmt.prepare(env.val, DeleteStmtStr, SQLITE_PREPARE_PERSISTENT)
 
@@ -476,6 +493,7 @@ proc open*(
     containsStmt: containsStmt,
     getSingleStmt: getSingleStmt,
     moveStmt: moveStmt,
+    dropPrefixStmt: dropPrefixStmt,
     deleteStmt: deleteStmt,
     getChangesStmt: getChangesStmt,
     beginStmt: beginStmt,

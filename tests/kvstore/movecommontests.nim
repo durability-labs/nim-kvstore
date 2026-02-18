@@ -8,111 +8,9 @@ import pkg/questionable/results
 import pkg/kvstore
 
 proc moveTests*(ds: KVStore, key: Key) =
-  ## Tests for moveKeys and moveKeysAtomic operations.
+  ## Tests for moveKeysAtomic and dropPrefix operations.
 
   suite "Move Operations":
-    test "moveKeys moves multiple records under a prefix":
-      let
-        oldPrefix = (key / "move" / "old").tryGet()
-        newPrefix = (key / "move" / "new").tryGet()
-        k1 = (oldPrefix / "rec1").tryGet()
-        k2 = (oldPrefix / "rec2").tryGet()
-        k3 = (oldPrefix / "rec3").tryGet()
-
-      (await ds.put(k1, "v1".toBytes)).tryGet()
-      (await ds.put(k2, "v2".toBytes)).tryGet()
-      (await ds.put(k3, "v3".toBytes)).tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-      # Old keys should be gone
-      check not (await ds.has(k1)).tryGet()
-      check not (await ds.has(k2)).tryGet()
-      check not (await ds.has(k3)).tryGet()
-
-      # New keys should exist with correct values
-      let
-        nk1 = (newPrefix / "rec1").tryGet()
-        nk2 = (newPrefix / "rec2").tryGet()
-        nk3 = (newPrefix / "rec3").tryGet()
-
-      check (await ds.get(nk1)).tryGet().val == "v1".toBytes
-      check (await ds.get(nk2)).tryGet().val == "v2".toBytes
-      check (await ds.get(nk3)).tryGet().val == "v3".toBytes
-
-    test "moveKeys preserves record values":
-      let
-        oldPrefix = (key / "moveval" / "old").tryGet()
-        newPrefix = (key / "moveval" / "new").tryGet()
-
-      let largeData = newSeq[byte](4096)
-      (await ds.put((oldPrefix / "large").tryGet(), largeData)).tryGet()
-      (await ds.put((oldPrefix / "empty").tryGet(), newSeq[byte]())).tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-      check (await ds.get((newPrefix / "large").tryGet())).tryGet().val == largeData
-      check (await ds.get((newPrefix / "empty").tryGet())).tryGet().val.len == 0
-
-    test "moveKeys with no matching records succeeds":
-      let
-        oldPrefix = (key / "moveempty" / "nonexistent").tryGet()
-        newPrefix = (key / "moveempty" / "dest").tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-    test "moveKeys moves a single record":
-      let
-        oldPrefix = (key / "movesingle" / "old").tryGet()
-        newPrefix = (key / "movesingle" / "new").tryGet()
-        k = (oldPrefix / "only").tryGet()
-
-      (await ds.put(k, "solo".toBytes)).tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-      check not (await ds.has(k)).tryGet()
-      check (await ds.get((newPrefix / "only").tryGet())).tryGet().val == "solo".toBytes
-
-    test "moveKeys does not affect records outside the prefix":
-      let
-        oldPrefix = (key / "movescope" / "old").tryGet()
-        newPrefix = (key / "movescope" / "new").tryGet()
-        outsideKey = (key / "movescope" / "outside").tryGet()
-
-      (await ds.put((oldPrefix / "inside").tryGet(), "in".toBytes)).tryGet()
-      (await ds.put(outsideKey, "out".toBytes)).tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-      # Outside key should be untouched
-      check (await ds.get(outsideKey)).tryGet().val == "out".toBytes
-
-      # Inside key moved
-      check not (await ds.has((oldPrefix / "inside").tryGet())).tryGet()
-      check (await ds.get((newPrefix / "inside").tryGet())).tryGet().val == "in".toBytes
-
-    test "moveKeys preserves nested key structure":
-      let
-        oldPrefix = (key / "movenest" / "old").tryGet()
-        newPrefix = (key / "movenest" / "new").tryGet()
-
-      (await ds.put((oldPrefix / "a" / "b").tryGet(), "ab".toBytes)).tryGet()
-      (await ds.put((oldPrefix / "a" / "c").tryGet(), "ac".toBytes)).tryGet()
-      (await ds.put((oldPrefix / "d").tryGet(), "d".toBytes)).tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-      check (await ds.get((newPrefix / "a" / "b").tryGet())).tryGet().val == "ab".toBytes
-      check (await ds.get((newPrefix / "a" / "c").tryGet())).tryGet().val == "ac".toBytes
-      check (await ds.get((newPrefix / "d").tryGet())).tryGet().val == "d".toBytes
-
     test "moveKeysAtomic succeeds with no conflicts":
       let
         oldPrefix = (key / "moveatomic" / "old").tryGet()
@@ -139,6 +37,7 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(oldPrefix, newPrefix)
       check result.isErr
+      check result.error of KVConflictError
 
       # Source should still exist (rolled back)
       check (await ds.get((oldPrefix / "a").tryGet())).tryGet().val == "from-old".toBytes
@@ -157,6 +56,7 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(oldPrefix, newPrefix)
       check result.isErr
+      check result.error of KVConflictError
 
       # Both source keys should still exist (all-or-nothing rollback)
       check (await ds.get((oldPrefix / "a").tryGet())).tryGet().val == "va".toBytes
@@ -214,43 +114,6 @@ proc moveTests*(ds: KVStore, key: Key) =
     # Exact key (self) matching tests
     # =========================================================================
 
-    test "moveKeys moves the prefix key itself (not just children)":
-      let
-        oldPrefix = (key / "moveself" / "old").tryGet()
-        newPrefix = (key / "moveself" / "new").tryGet()
-
-      # Store a record AT the prefix key (no child segment)
-      (await ds.put(oldPrefix, "self-value".toBytes)).tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-      check not (await ds.has(oldPrefix)).tryGet()
-      check (await ds.get(newPrefix)).tryGet().val == "self-value".toBytes
-
-    test "moveKeys moves both prefix key and children":
-      let
-        oldPrefix = (key / "moveboth" / "old").tryGet()
-        newPrefix = (key / "moveboth" / "new").tryGet()
-
-      # Store at the prefix key itself AND children
-      (await ds.put(oldPrefix, "self".toBytes)).tryGet()
-      (await ds.put((oldPrefix / "child1").tryGet(), "c1".toBytes)).tryGet()
-      (await ds.put((oldPrefix / "child2").tryGet(), "c2".toBytes)).tryGet()
-
-      let conflicts = (await ds.moveKeys(oldPrefix, newPrefix)).tryGet()
-      check conflicts.len == 0
-
-      # All old keys gone
-      check not (await ds.has(oldPrefix)).tryGet()
-      check not (await ds.has((oldPrefix / "child1").tryGet())).tryGet()
-      check not (await ds.has((oldPrefix / "child2").tryGet())).tryGet()
-
-      # All moved to new prefix
-      check (await ds.get(newPrefix)).tryGet().val == "self".toBytes
-      check (await ds.get((newPrefix / "child1").tryGet())).tryGet().val == "c1".toBytes
-      check (await ds.get((newPrefix / "child2").tryGet())).tryGet().val == "c2".toBytes
-
     test "moveKeysAtomic moves the prefix key itself":
       let
         oldPrefix = (key / "moveatomicself" / "old").tryGet()
@@ -304,6 +167,7 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(@[(oldA, newA), (oldB, newB)])
       check result.isErr
+      check result.error of KVConflictError
 
       # ALL source keys should still exist (entire transaction rolled back)
       check (await ds.get((oldA / "1").tryGet())).tryGet().val == "a1".toBytes
@@ -355,3 +219,69 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       check not (await ds.has((oldPrefix / "a").tryGet())).tryGet()
       check (await ds.get((newPrefix / "a").tryGet())).tryGet().val == "va".toBytes
+
+    # =========================================================================
+    # dropPrefix tests
+    # =========================================================================
+
+    test "dropPrefix deletes all keys under a prefix":
+      let prefix = (key / "drop" / "tree").tryGet()
+
+      (await ds.put((prefix / "a").tryGet(), "va".toBytes)).tryGet()
+      (await ds.put((prefix / "b").tryGet(), "vb".toBytes)).tryGet()
+      (await ds.put((prefix / "nested" / "c").tryGet(), "vc".toBytes)).tryGet()
+
+      (await ds.dropPrefix(prefix)).tryGet()
+
+      check not (await ds.has((prefix / "a").tryGet())).tryGet()
+      check not (await ds.has((prefix / "b").tryGet())).tryGet()
+      check not (await ds.has((prefix / "nested" / "c").tryGet())).tryGet()
+
+    test "dropPrefix also deletes the prefix key itself":
+      let prefix = (key / "dropself" / "node").tryGet()
+
+      (await ds.put(prefix, "self".toBytes)).tryGet()
+      (await ds.put((prefix / "child").tryGet(), "child".toBytes)).tryGet()
+
+      (await ds.dropPrefix(prefix)).tryGet()
+
+      check not (await ds.has(prefix)).tryGet()
+      check not (await ds.has((prefix / "child").tryGet())).tryGet()
+
+    test "dropPrefix is idempotent on empty prefix":
+      let prefix = (key / "dropempty" / "nothing").tryGet()
+
+      (await ds.dropPrefix(prefix)).tryGet() # no-op
+      (await ds.dropPrefix(prefix)).tryGet() # still no-op
+
+    test "dropPrefix does not affect keys outside the prefix":
+      let
+        prefix = (key / "dropscope" / "target").tryGet()
+        outside = (key / "dropscope" / "keep").tryGet()
+
+      (await ds.put((prefix / "x").tryGet(), "gone".toBytes)).tryGet()
+      (await ds.put(outside, "safe".toBytes)).tryGet()
+
+      (await ds.dropPrefix(prefix)).tryGet()
+
+      check not (await ds.has((prefix / "x").tryGet())).tryGet()
+      check (await ds.get(outside)).tryGet().val == "safe".toBytes
+
+    test "dropPrefix multi drops multiple prefixes atomically":
+      let
+        p1 = (key / "dropmulti" / "p1").tryGet()
+        p2 = (key / "dropmulti" / "p2").tryGet()
+
+      (await ds.put((p1 / "a").tryGet(), "a".toBytes)).tryGet()
+      (await ds.put((p1 / "b").tryGet(), "b".toBytes)).tryGet()
+      (await ds.put((p2 / "x").tryGet(), "x".toBytes)).tryGet()
+
+      (await ds.dropPrefix(@[p1, p2])).tryGet()
+
+      check not (await ds.has((p1 / "a").tryGet())).tryGet()
+      check not (await ds.has((p1 / "b").tryGet())).tryGet()
+      check not (await ds.has((p2 / "x").tryGet())).tryGet()
+
+    test "dropPrefix multi with empty list is a no-op":
+      let prefixes: seq[Key] = @[]
+      (await ds.dropPrefix(prefixes)).tryGet()

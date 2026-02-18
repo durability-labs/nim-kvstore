@@ -100,47 +100,52 @@ method deleteAtomicImpl*(
 # Move (Key-Prefix Rename)
 # =============================================================================
 
-method moveKeysImpl*(
-    self: KVStore, oldPrefix, newPrefix: Key
-): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
-  ## Move all records from oldPrefix/* to newPrefix/* (best-effort).
-  ##
-  ## Returns destination keys that could not be moved (conflicts).
-  ## Empty seq means all keys were moved successfully.
-  ##
-  return failure newException(KVStoreBackendError, "Move not supported by this backend")
-
 method moveKeysAtomicImpl*(
     self: KVStore, oldPrefix, newPrefix: Key
 ): Future[?!void] {.base, gcsafe, async: (raises: [CancelledError]).} =
-  ## Move all records from oldPrefix/* to newPrefix/* atomically
-  ## (all-or-nothing).
+  ## Move all records from oldPrefix/* to newPrefix/* atomically.
   ##
-  ## Either all keys are moved or none are. Fails if any destination
-  ## key already exists.
+  ## Either all keys are moved or none are (full rollback).
+  ## Returns KVConflictError if any destination key already exists.
   ##
   return failure newException(
     KVStoreBackendError, "Atomic move not supported by this backend"
   )
-
-method moveKeysImpl*(
-    self: KVStore, moves: seq[(Key, Key)]
-): Future[?!seq[Key]] {.base, gcsafe, async: (raises: [CancelledError]).} =
-  ## Move multiple prefix pairs (best-effort).
-  ##
-  ## Each pair moves all records from oldPrefix/* to newPrefix/*
-  ## (including the prefix key itself).
-  ##
-  return failure newException(KVStoreBackendError, "Move not supported by this backend")
 
 method moveKeysAtomicImpl*(
     self: KVStore, moves: seq[(Key, Key)]
 ): Future[?!void] {.base, gcsafe, async: (raises: [CancelledError]).} =
   ## Move multiple prefix pairs atomically in a single transaction.
   ##
-  ## All pairs are moved or none are. Fails if any destination
-  ## key already exists.
+  ## All pairs are moved or none are (full rollback).
+  ## Returns KVConflictError if any destination key already exists.
   ##
   return failure newException(
     KVStoreBackendError, "Atomic move not supported by this backend"
+  )
+
+# =============================================================================
+# Drop Prefix (Destructive Bulk Delete)
+# =============================================================================
+
+method dropPrefixImpl*(
+    self: KVStore, prefix: Key
+): Future[?!void] {.base, gcsafe, async: (raises: [CancelledError]).} =
+  ## Delete all records under prefix/* and the prefix key itself, atomically.
+  ##
+  ## Idempotent: no-op if no matching keys exist.
+  ##
+  return failure newException(
+    KVStoreBackendError, "dropPrefix not supported by this backend"
+  )
+
+method dropPrefixImpl*(
+    self: KVStore, prefixes: seq[Key]
+): Future[?!void] {.base, gcsafe, async: (raises: [CancelledError]).} =
+  ## Drop multiple prefixes atomically in a single transaction.
+  ##
+  ## Idempotent: no-op if no matching keys exist.
+  ##
+  return failure newException(
+    KVStoreBackendError, "dropPrefix not supported by this backend"
   )

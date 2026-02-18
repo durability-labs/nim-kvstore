@@ -570,46 +570,47 @@ proc fetchAll*[T](
 # Move Operations (Key-Prefix Rename)
 # =============================================================================
 
-proc moveKeys*(
-    self: KVStore, oldPrefix, newPrefix: Key
-): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
-  ## Move all records from oldPrefix/* to newPrefix/* (best-effort).
-  ##
-  ## Returns destination keys that could not be moved (conflicts).
-  ## Empty seq means all keys were moved successfully.
-  ##
-  self.moveKeysImpl(oldPrefix, newPrefix)
-
 proc moveKeysAtomic*(
     self: KVStore, oldPrefix, newPrefix: Key
 ): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
-  ## Move all records from oldPrefix/* to newPrefix/* atomically
-  ## (all-or-nothing).
+  ## Move all records from oldPrefix/* to newPrefix/* atomically.
   ##
-  ## Either all keys are moved or none are. Fails if any destination
-  ## key already exists.
+  ## Either all keys are moved or none are (full rollback).
+  ## Returns KVConflictError if any destination key already exists.
   ##
   self.moveKeysAtomicImpl(oldPrefix, newPrefix)
-
-proc moveKeys*(
-    self: KVStore, moves: seq[(Key, Key)]
-): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
-  ## Move multiple prefix pairs (best-effort).
-  ##
-  ## Each pair moves all records from oldPrefix/* to newPrefix/*
-  ## (including the prefix key itself).
-  ##
-  self.moveKeysImpl(moves)
 
 proc moveKeysAtomic*(
     self: KVStore, moves: seq[(Key, Key)]
 ): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
   ## Move multiple prefix pairs atomically in a single transaction.
   ##
-  ## All pairs are moved or none are. Fails if any destination
-  ## key already exists.
+  ## All pairs are moved or none are (full rollback).
+  ## Returns KVConflictError if any destination key already exists.
   ##
   self.moveKeysAtomicImpl(moves)
+
+# =============================================================================
+# Drop Prefix (Destructive Bulk Delete)
+# =============================================================================
+
+proc dropPrefix*(
+    self: KVStore, prefix: Key
+): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
+  ## Delete all records under prefix/* and the prefix key itself, atomically.
+  ##
+  ## Idempotent: no-op if no matching keys exist.
+  ##
+  self.dropPrefixImpl(prefix)
+
+proc dropPrefix*(
+    self: KVStore, prefixes: seq[Key]
+): Future[?!void] {.async: (raises: [CancelledError], raw: true).} =
+  ## Drop multiple prefixes atomically in a single transaction.
+  ##
+  ## Idempotent: no-op if no matching keys exist.
+  ##
+  self.dropPrefixImpl(prefixes)
 
 proc close*(self: KVStore): Future[?!void] {.async: (raises: [], raw: true).} =
   self.closeImpl()
