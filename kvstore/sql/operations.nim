@@ -503,17 +503,13 @@ proc nextSync*(stmt: RawStmtPtr, queryValue: bool): ?!Option[RawKVRecord] {.gcsa
 
 proc moveSync*(
     db: SQLiteDsDb, oldPrefix, newPrefix: Key, readOnly: bool
-): ?!seq[Key] {.gcsafe.} =
-  ## Move all records from oldPrefix/* to newPrefix/* using a single
-  ## UPDATE statement. A single statement in SQLite autocommit mode is
-  ## already atomic, so this is used by both moveKeysImpl and
-  ## moveKeysAtomicImpl.
+): ?!void {.gcsafe.} =
+  ## Move all records from oldPrefix/* to newPrefix/* atomically.
   ##
-  ## Matches both prefix children (GLOB prefix/*) and the prefix key
-  ## itself (id = prefix).
+  ## A single UPDATE statement in SQLite autocommit mode is already atomic.
+  ## Matches both prefix children (GLOB prefix/*) and the prefix key itself.
   ##
-  ## Fails on UNIQUE constraint if any destination key already exists.
-  ## Returns empty seq on success (SQL UPDATE has no partial failures).
+  ## Returns KVConflictError if any destination key already exists (full rollback).
   ##
   ?checkWritable(readOnly)
 
@@ -527,24 +523,34 @@ proc moveSync*(
   proc onRow(s: RawStmtPtr) =
     discard # Consume RETURNING clause
 
-  discard ?db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow)
-  success(newSeq[Key]())
+  if err =?
+      db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow).errorOption:
+    # Check if the error is a constraint violation (destination key exists)
+    if err of ref SQLiteStepError and
+        ((ref SQLiteStepError)(err).code.int and 0xff) == SQLITE_CONSTRAINT.int:
+      return failure(
+        newException(KVConflictError, "Move failed: destination key already exists")
+      )
+    # Return the original error for other failures
+    return failure(newException(KVStoreError, "Move failed: " & err.msg))
+
+  success()
 
 proc moveSyncMulti*(
     db: SQLiteDsDb, moves: seq[(Key, Key)], readOnly: bool
-): ?!seq[Key] {.gcsafe.} =
+): ?!void {.gcsafe.} =
   ## Move multiple prefix pairs atomically in a single transaction.
   ##
   ## Each pair moves all records from oldPrefix/* to newPrefix/*
   ## (including the prefix key itself). All moves succeed or all
   ## are rolled back.
   ##
-  ## Fails on UNIQUE constraint if any destination key already exists.
+  ## Returns KVConflictError if any destination key already exists (full rollback).
   ##
   ?checkWritable(readOnly)
 
   if moves.len == 0:
-    return success(newSeq[Key]())
+    return success()
 
   if moves.len == 1:
     return moveSync(db, moves[0][0], moves[0][1], readOnly)
@@ -565,12 +571,74 @@ proc moveSyncMulti*(
     proc onRow(s: RawStmtPtr) =
       discard
 
-    discard
-      ?db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow)
+    let queryResult =
+      db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow)
+    without _ =? queryResult:
+      # Check if the error is a constraint violation (destination key exists)
+      let stepErr = queryResult.error
+      if stepErr of SQLiteStepError and
+          (cast[ref SQLiteStepError](stepErr).code.int and 0xff) == SQLITE_CONSTRAINT.int:
+        return failure(
+          newException(KVConflictError, "Move failed: destination key already exists")
+        )
+      # Return the original error for other failures
+      return failure(newException(KVStoreError, "Move failed: " & stepErr.msg))
 
   ?db.endStmt.exec()
   committed = true
-  success(newSeq[Key]())
+  success()
+
+proc dropPrefixSync*(db: SQLiteDsDb, prefix: Key, readOnly: bool): ?!void {.gcsafe.} =
+  ## Delete all records under prefix/* and the prefix key itself, atomically.
+  ##
+  ## Idempotent: no-op if no matching keys exist.
+  ##
+  ?checkWritable(readOnly)
+
+  let
+    globPattern = prefix.id & "/*"
+    exactKey = prefix.id
+
+  proc onRow(s: RawStmtPtr) =
+    discard
+
+  discard ?db.dropPrefixStmt.query((globPattern, exactKey), onRow)
+  success()
+
+proc dropPrefixSyncMulti*(
+    db: SQLiteDsDb, prefixes: seq[Key], readOnly: bool
+): ?!void {.gcsafe.} =
+  ## Drop multiple prefixes atomically in a single transaction.
+  ##
+  ## All deletes succeed or all are rolled back. Idempotent.
+  ##
+  ?checkWritable(readOnly)
+
+  if prefixes.len == 0:
+    return success()
+
+  if prefixes.len == 1:
+    return dropPrefixSync(db, prefixes[0], readOnly)
+
+  var committed = false
+  ?db.beginStmt.exec()
+  defer:
+    if not committed:
+      discard db.rollbackStmt.exec()
+
+  for prefix in prefixes:
+    let
+      globPattern = prefix.id & "/*"
+      exactKey = prefix.id
+
+    proc onRow(s: RawStmtPtr) =
+      discard
+
+    discard ?db.dropPrefixStmt.query((globPattern, exactKey), onRow)
+
+  ?db.endStmt.exec()
+  committed = true
+  success()
 
 # =============================================================================
 # Statement Disposal
