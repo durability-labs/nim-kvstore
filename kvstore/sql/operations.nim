@@ -525,8 +525,6 @@ proc moveSync*(
 
   if err =?
       db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow).errorOption:
-    static:
-      echo "typeof err ", typeof err
     # Check if the error is a constraint violation (destination key exists)
     if err of ref SQLiteStepError and
         ((ref SQLiteStepError)(err).code.int and 0xff) == SQLITE_CONSTRAINT.int:
