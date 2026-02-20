@@ -4,12 +4,9 @@ when not compileOption("threads"):
   {.error: "FSKVStore requires --threads:on".}
 
 import std/os
-import std/tables
 import std/strutils
-import std/options
-import std/sysrand
-import std/times
 
+import std/algorithm
 import std/sets
 import std/sequtils
 
@@ -17,21 +14,18 @@ import pkg/chronicles
 import pkg/chronos
 import pkg/questionable
 import pkg/questionable/results
-import pkg/stew/endians2
 import pkg/stew/io2
-import pkg/stew/byteutils
 import pkg/taskpools
 
 import ../key
 import ../query
 import ../kvstore
 import ../taskutils
+import ./locks
 import ./metrics
+import ./operations
 
-const
-  TokenBytes = sizeof(uint64)
-  FileExt* = "dsobj"
-  EmptyBytes* = newSeq[byte](0)
+export locks, operations
 
 type
   FSKVStore* = ref object of KVStore
@@ -42,6 +36,7 @@ type
     ## supports the full uint64 range.
     root*: string
     depth: int
+    locks: LockTable
     tasks: HashSet[Future[?!void]]
     disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
     tp: Taskpool
@@ -62,33 +57,6 @@ type
     lock: AsyncLock
     tp: Taskpool
     signal: ThreadSignalPtr
-
-proc generateTempSuffix(): ?!string {.gcsafe.} =
-  ## Generate cryptographically secure random suffix for temp files.
-  ## Returns 16-character hex string (8 random bytes).
-  let bytes =
-    ?catch(urandom(8)).toKVError("Failed to generate random bytes", KVStoreBackendError)
-  success bytes.toHex
-
-proc moveFile(src, dst: string): ?!void {.gcsafe.} =
-  try:
-    os.moveFile(src, dst)
-    success()
-  except Exception as exc:
-    failure newException(
-      KVStoreBackendError, "unable to move '" & src & "' to '" & dst & "': " & exc.msg
-    )
-
-proc syncParentDirectory(path: string) {.gcsafe.} =
-  ## Sync parent directory to ensure rename/delete operations are durable.
-  ## On POSIX: opens directory, fsyncs it, closes it.
-  ## On Windows: no-op (directory sync not supported/undefined behavior).
-  when defined(posix):
-    let dir = parentDir(path)
-    let handle = openFile(dir, {OpenFlags.Read}).valueOr:
-      return # Best effort - don't fail if we can't sync
-    discard fsync(handle)
-    discard closeFile(handle)
 
 proc validDepth*(self: FSKVStore, key: Key): bool =
   key.len <= self.depth
@@ -130,293 +98,6 @@ proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
       failure newException(KVStoreBackendError, "Path is outside of `root` directory!")
 
   return success fullname
-
-# =============================================================================
-# Sync I/O Operations (blocking, called from threadpool workers)
-# =============================================================================
-
-proc readVersioned*(
-    path: string, key: Key, data = true
-): ?!RawKVRecord {.gcsafe, raises: [].} =
-  if not isFile(path):
-    return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
-
-  let handle =
-    ?openFile(path, {OpenFlags.Read}).toKVError(
-      context = "Unable to open file: " & path, errType = KVStoreBackendError
-    )
-
-  defer:
-    discard closeFile(handle)
-
-  let size =
-    ?getFileSize(handle).toKVError(
-      context = "Unable to get file size: " & path, errType = KVStoreBackendError
-    )
-
-  if size < TokenBytes:
-    return failure newException(KVStoreCorruption, "File too small for record: " & path)
-
-  var header: array[TokenBytes, byte]
-  let headerRead =
-    ?readFile(handle, header).toKVError(
-      context = "Unable to read token header", errType = KVStoreCorruption
-    )
-
-  if headerRead != TokenBytes.uint:
-    return failure newException(KVStoreCorruption, "Unable to read token header")
-
-  let token = uint64.fromBytesLE(header)
-  let payloadLen = size - TokenBytes
-
-  let value =
-    if data:
-      var value = newSeq[byte](payloadLen)
-      if payloadLen > 0:
-        let payloadRead =
-          ?readFile(handle, value).toKVError(
-            context = "Unable to read payload", errType = KVStoreBackendError
-          )
-        if payloadRead != payloadLen.uint:
-          return failure newException(KVStoreBackendError, "unable to read payload")
-      value
-    else:
-      EmptyBytes
-
-  return success RawKVRecord.init(key, value, token)
-
-proc writeVersioned*(
-    path: string, token: uint64, value: seq[byte]
-): ?!void {.gcsafe, raises: [].} =
-  if createPath(parentDir(path)).isErr:
-    return
-      failure newException(KVStoreBackendError, "unable to create parent directory")
-
-  let
-    tmp = path & ".tmp-" & ?generateTempSuffix()
-    handle =
-      ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
-        context = "Unable to open temporary file '" & tmp & "'",
-        errType = KVStoreBackendError,
-      )
-
-  defer:
-    discard io2.removeFile(tmp)
-
-  # Write to temp file in a block so handle is closed before rename.
-  # Windows requires file handles to be closed before rename/move.
-  block:
-    defer:
-      discard closeFile(handle)
-
-    let
-      header = token.toBytesLE()
-      headerWritten =
-        ?writeFile(handle, header).toKVError(
-          context = "Failed writing token", errType = KVStoreBackendError
-        )
-
-    if headerWritten != TokenBytes.uint:
-      return failure newException(KVStoreBackendError, "Failed writing token")
-
-    if value.len > 0:
-      let valueWritten =
-        ?writeFile(handle, value).toKVError(
-          context = "Failed writing data", errType = KVStoreBackendError
-        )
-
-      if valueWritten != value.len.uint:
-        return failure newException(KVStoreBackendError, "Failed writing data")
-
-    if fsync(handle).isErr:
-      return failure newException(KVStoreBackendError, "Failed to sync file")
-
-  # Handle is now closed (block exited) - safe to rename on Windows
-  ?moveFile(tmp, path)
-  syncParentDirectory(path)
-
-  return success()
-
-proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
-  if io2.removeFile(path).isErr:
-    return failure newException(KVStoreBackendError, "unable to delete file: " & path)
-  syncParentDirectory(path)
-  success()
-
-proc getSync*(path: string, key: Key): ?!RawKVRecord =
-  return readVersioned(path, key)
-
-proc getSyncMany(keys: seq[(string, Key)]): ?!seq[RawKVRecord] =
-  var records: seq[RawKVRecord]
-  for (path, key) in keys:
-    without record =? readVersioned(path, key), err:
-      if err of KVStoreKeyNotFound:
-        trace "Key not found", key = $key, err = err.msg
-        continue
-      else:
-        return failure(err)
-
-    records.add(record)
-
-  success records
-
-proc putSync*(path: string, record: RawKVRecord): ?!void =
-  if not isFile(path):
-    if record.token != 0:
-      return failure newException(
-        KVConflictError, "Token not 0 for new record " & $record.key
-      )
-    else:
-      ?writeVersioned(path, 1'u64, record.val)
-  else:
-    let current = ?readVersioned(path, record.key)
-    if current.token != record.token:
-      return failure newException(
-        KVConflictError,
-        "Token mismatch for record " & $record.key & ", expected " & $record.token &
-          ", got " & $current.token,
-      )
-    else:
-      ?writeVersioned(path, current.token + 1, record.val)
-
-  return success()
-
-proc putSyncMany*(records: seq[(string, RawKVRecord)]): ?!seq[Key] =
-  var skipped: seq[Key]
-  for (path, record) in records:
-    if err =? putSync(path, record).errorOption:
-      if err of KVConflictError:
-        kvstore_fs_put_conflict_total.inc()
-        trace "Unable to put record due to conflict", key = record.key, err = err.msg
-        skipped.add(record.key)
-      else:
-        error "Error putting record", key = record.key, err = err.msg
-        return failure(err)
-
-  success skipped
-
-proc deleteSync*(path: string, record: KeyKVRecord): ?!void =
-  if not isFile(path):
-    return
-      failure newException(KVConflictError, "KVRecord does not exist: " & $record.key)
-
-  let current = ?readVersioned(path, record.key)
-  if current.token != record.token:
-    return failure newException(
-      KVConflictError,
-      "Token mismatch for record " & $record.key & ", expected " & $record.token &
-        ", got " & $current.token,
-    )
-
-  discard ?catch(deleteFile(path))
-  return success()
-
-proc deleteSyncMany(records: seq[(string, KeyKVRecord)]): ?!seq[Key] =
-  var skipped: seq[Key]
-  for (path, record) in records:
-    if err =? deleteSync(path, record).errorOption:
-      if err of KVConflictError:
-        trace "Unable to delete record due to conflict", key = record.key, err = err.msg
-        skipped.add(record.key)
-      else:
-        error "Error deleting records", err = err.msg
-        return failure err
-
-  success skipped
-
-# =============================================================================
-# Task Workers (top-level procs for threadpool)
-# =============================================================================
-
-proc runHasTask(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runHasTask", error = res.error
-
-  ctx[].result = isolate(success(isFile(path)))
-
-proc runHasTaskMany(
-    ctx: SharedPtr[TaskCtx[seq[string]]], paths: seq[string]
-) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runHasTask", error = res.error
-
-  ctx[].result = isolate(success(paths.filterIt(isFile(it))))
-
-proc runGetTask(
-    ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key
-) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runGetTask", error = res.error
-
-  ctx[].result = unsafeIsolate(getSync(path, key))
-
-proc runGetTaskMany(
-    ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]], keys: seq[(string, Key)]
-) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runGetTask", error = res.error
-
-  ctx[].result = unsafeIsolate(getSyncMany(keys))
-
-proc runPutTask(
-    ctx: SharedPtr[TaskCtx[void]], path: string, record: RawKVRecord
-) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runPutTask", error = res.error
-
-  ctx[].result = unsafeIsolate(putSync(path, record))
-
-proc runPutTaskMany(
-    ctx: SharedPtr[TaskCtx[seq[Key]]], records: seq[(string, RawKVRecord)]
-) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runPutTask", error = res.error
-
-  ctx[].result = unsafeIsolate(putSyncMany(records))
-
-proc runDeleteTask(
-    ctx: SharedPtr[TaskCtx[void]], path: string, record: KeyKVRecord
-) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runDeleteTask", error = res.error
-
-  ctx[].result = unsafeIsolate(deleteSync(path, record))
-
-proc runDeleteTaskMany(
-    ctx: SharedPtr[TaskCtx[seq[Key]]], records: seq[(string, KeyKVRecord)]
-) {.gcsafe.} =
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runDeleteTask", error = res.error
-
-  ctx[].result = unsafeIsolate(deleteSyncMany(records))
-
-proc runReadRecordTask(
-    ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key, includeValue: bool
-) {.gcsafe.} =
-  ## Task worker for reading a single record from disk.
-  ## Walker stepping happens on the async thread; this only does file I/O.
-  defer:
-    let res = ctx[].signal.fireSync()
-    if res.isErr:
-      warn "fireSync failed in runReadRecordTask", error = res.error
-
-  ctx[].result = unsafeIsolate(readVersioned(path, key, includeValue))
 
 # =============================================================================
 # Async Methods (public API)
@@ -511,7 +192,20 @@ method putImpl*(
 
   await checkFairness()
 
-  # Re-check after await - close() may have started during acquire
+  if self.closed:
+    return failure(newException(KVStoreError, "FSKVStore is closed"))
+
+  # Acquire per-key locks in sorted order to prevent deadlocks
+  let sortedKeys = records.mapIt(it.key).deduplicate().sortedByIt(it.id)
+  var heldLocks: seq[(Key, RefCountedLock)]
+  defer:
+    for (key, rcLock) in heldLocks:
+      self.locks.release(key, rcLock)
+
+  for key in sortedKeys:
+    heldLocks.add((key, await self.locks.acquire(key)))
+
+  # Re-check after lock acquisition awaits
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
 
@@ -522,7 +216,6 @@ method putImpl*(
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in put", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runPutTaskMany(ctx, records.deduplicate.mapIt((?self.path(it.key), it)))
@@ -534,9 +227,7 @@ method putImpl*(
 
   ?await fut
 
-  let conflicts = ?extract(ctx[].result)
-
-  return success conflicts
+  return success ?extract(ctx[].result)
 
 method deleteImpl*(
     self: FSKVStore, records: seq[KeyKVRecord]
@@ -545,7 +236,20 @@ method deleteImpl*(
 
   await checkFairness()
 
-  # Re-check after await - close() may have started during acquire
+  if self.closed:
+    return failure(newException(KVStoreError, "FSKVStore is closed"))
+
+  # Acquire per-key locks in sorted order to prevent deadlocks
+  let sortedKeys = records.mapIt(it.key).deduplicate().sortedByIt(it.id)
+  var heldLocks: seq[(Key, RefCountedLock)]
+  defer:
+    for (key, rcLock) in heldLocks:
+      self.locks.release(key, rcLock)
+
+  for key in sortedKeys:
+    heldLocks.add((key, await self.locks.acquire(key)))
+
+  # Re-check after lock acquisition awaits
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
 
@@ -556,7 +260,6 @@ method deleteImpl*(
   defer:
     if err =? signal.close().errorOption:
       warn "signal.close failed in delete", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
   self.tp.spawn runDeleteTaskMany(ctx, records.mapIt((?self.path(it.key), it)))
@@ -781,6 +484,4 @@ proc new*(_: type FSKVStore, root: string, tp: Taskpool, depth = 2): ?!FSKVStore
   if not isDir(root):
     return failure "directory does not exist: " & root
 
-  success FSKVStore(
-    root: root, depth: depth, tp: tp
-  )
+  success FSKVStore(root: root, depth: depth, locks: newLockTable(), tp: tp)
