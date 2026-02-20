@@ -440,8 +440,11 @@ proc setProductionPragmas*(env: SQLite): ?!void =
   # Keep temporary tables and indices in memory
   ?env.execPragma("PRAGMA temp_store = MEMORY;")
 
-  # Checkpoint every 10000 pages instead of default 1000
-  # Reduces checkpoint stalls during large batch writes
+  # Keep temporary tables and indices in memory
+  ?env.execPragma("PRAGMA mmap_size = 536870912000;")
+
+  # Memap file for dbs of up to 500GB
+  # (more than enough for metadata like workflows)
   ?env.execPragma("PRAGMA wal_autocheckpoint = 10000;")
 
   success()

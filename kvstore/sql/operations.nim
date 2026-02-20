@@ -9,6 +9,7 @@ import std/times
 import std/sequtils
 import std/sets
 import std/options
+import std/algorithm except SortOrder # TODO: SortOrder conflicts with Query SortOrder
 
 import pkg/questionable
 import pkg/questionable/results
@@ -31,6 +32,12 @@ const
 # =============================================================================
 # Utilities
 # =============================================================================
+
+proc cmpKeys(a, b: Key): int {.gcsafe.} =
+  cmp($a, $b)
+
+proc cmpRecords[T](a, b: KVRecord[T]): int {.gcsafe.} =
+  cmpKeys(a.key, b.key)
 
 proc timestamp*(t = epochTime()): int64 =
   (t * 1_000_000).int64
@@ -109,8 +116,12 @@ proc hasManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
   if keys.len == 0:
     return success(newSeq[Key]())
 
+  var keys = keys
+  # sort the keys to improve sqlite lookups
+  keys.sort(cmpKeys)
+
   # Build unique IDs list in first-seen order (deduplicates query params)
-  let uniqueIds = keys.deduplicate()
+  let uniqueIds = keys.deduplicate(isSorted = true)
 
   # Collect ids that exist in DB
   var foundIds = initHashSet[Key]()
@@ -158,6 +169,8 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawKVRecord] {.gcsafe.}
   if keys.len == 0:
     return success(newSeq[RawKVRecord]())
 
+  var keys = keys
+  keys.sort(cmpKeys)
   var records: seq[RawKVRecord]
 
   proc onRow(s: RawStmtPtr) =
@@ -199,6 +212,9 @@ proc putSync*(
 
   if records.len == 0:
     return success(newSeq[Key]())
+
+  var records = records
+  records.sort(cmpRecords)
 
   let
     maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
@@ -258,6 +274,9 @@ proc deleteSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
+  var records = records
+  records.sort(cmpRecords)
+
   var
     deletedIds = initHashSet[string]()
     inTransaction = false
@@ -314,6 +333,9 @@ proc putAtomicSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
+  var records = records
+  records.sort(cmpRecords)
+
   let
     maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
     stamp = timestamp()
@@ -364,6 +386,9 @@ proc deleteAtomicSync*(
 
   if records.len == 0:
     return success(newSeq[Key]())
+
+  var records = records
+  records.sort(cmpRecords)
 
   var
     conflicts: seq[Key]
