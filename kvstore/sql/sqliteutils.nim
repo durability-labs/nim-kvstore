@@ -433,18 +433,14 @@ proc setProductionPragmas*(env: SQLite): ?!void =
   # Absorbs batch writes in memory, reduces WAL reads
   ?env.execPragma("PRAGMA cache_size = -65536;")
 
-  # 256MB memory-mapped I/O for read acceleration
-  # Shares pages with OS page cache, reduces read syscalls
-  ?env.execPragma("PRAGMA mmap_size = 268435456;")
-
   # Keep temporary tables and indices in memory
   ?env.execPragma("PRAGMA temp_store = MEMORY;")
 
-  # Keep temporary tables and indices in memory
+  # Memory-mapped I/O for dbs of up to 500GB
   ?env.execPragma("PRAGMA mmap_size = 536870912000;")
 
-  # Memap file for dbs of up to 500GB
-  # (more than enough for metadata like workflows)
+  # Checkpoint every 10000 pages instead of default 1000
+  # Reduces checkpoint stalls during large batch writes
   ?env.execPragma("PRAGMA wal_autocheckpoint = 10000;")
 
   success()
