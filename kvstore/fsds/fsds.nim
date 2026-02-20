@@ -34,12 +34,6 @@ const
   EmptyBytes* = newSeq[byte](0)
 
 type
-  RefCountedLock* = ref object
-    ## AsyncLock with reference counting to safely track waiters.
-    ## Only removed from table when refcount reaches zero.
-    lock*: AsyncLock
-    refCount*: int
-
   FSKVStore* = ref object of KVStore
     ## Filesystem-backed kvstore that stores records as files.
     ##
@@ -48,7 +42,6 @@ type
     ## supports the full uint64 range.
     root*: string
     depth: int
-    locks: Table[Key, RefCountedLock]
     tasks: HashSet[Future[?!void]]
     disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
     tp: Taskpool
@@ -167,11 +160,11 @@ proc readVersioned*(
   var header: array[TokenBytes, byte]
   let headerRead =
     ?readFile(handle, header).toKVError(
-      context = "Unable to read token header", errType = KVStoreBackendError
+      context = "Unable to read token header", errType = KVStoreCorruption
     )
 
   if headerRead != TokenBytes.uint:
-    return failure newException(KVStoreBackendError, "unable to read token header")
+    return failure newException(KVStoreCorruption, "Unable to read token header")
 
   let token = uint64.fromBytesLE(header)
   let payloadLen = size - TokenBytes
@@ -253,6 +246,20 @@ proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
 proc getSync*(path: string, key: Key): ?!RawKVRecord =
   return readVersioned(path, key)
 
+proc getSyncMany(keys: seq[(string, Key)]): ?!seq[RawKVRecord] =
+  var records: seq[RawKVRecord]
+  for (path, key) in keys:
+    without record =? readVersioned(path, key), err:
+      if err of KVStoreKeyNotFound:
+        trace "Key not found", key = $key, err = err.msg
+        continue
+      else:
+        return failure(err)
+
+    records.add(record)
+
+  success records
+
 proc putSync*(path: string, record: RawKVRecord): ?!void =
   if not isFile(path):
     if record.token != 0:
@@ -274,6 +281,20 @@ proc putSync*(path: string, record: RawKVRecord): ?!void =
 
   return success()
 
+proc putSyncMany*(records: seq[(string, RawKVRecord)]): ?!seq[Key] =
+  var skipped: seq[Key]
+  for (path, record) in records:
+    if err =? putSync(path, record).errorOption:
+      if err of KVConflictError:
+        kvstore_fs_put_conflict_total.inc()
+        trace "Unable to put record due to conflict", key = record.key, err = err.msg
+        skipped.add(record.key)
+      else:
+        error "Error putting record", key = record.key, err = err.msg
+        return failure(err)
+
+  success skipped
+
 proc deleteSync*(path: string, record: KeyKVRecord): ?!void =
   if not isFile(path):
     return
@@ -290,6 +311,19 @@ proc deleteSync*(path: string, record: KeyKVRecord): ?!void =
   discard ?catch(deleteFile(path))
   return success()
 
+proc deleteSyncMany(records: seq[(string, KeyKVRecord)]): ?!seq[Key] =
+  var skipped: seq[Key]
+  for (path, record) in records:
+    if err =? deleteSync(path, record).errorOption:
+      if err of KVConflictError:
+        trace "Unable to delete record due to conflict", key = record.key, err = err.msg
+        skipped.add(record.key)
+      else:
+        error "Error deleting records", err = err.msg
+        return failure err
+
+  success skipped
+
 # =============================================================================
 # Task Workers (top-level procs for threadpool)
 # =============================================================================
@@ -302,6 +336,16 @@ proc runHasTask(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
 
   ctx[].result = isolate(success(isFile(path)))
 
+proc runHasTaskMany(
+    ctx: SharedPtr[TaskCtx[seq[string]]], paths: seq[string]
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runHasTask", error = res.error
+
+  ctx[].result = isolate(success(paths.filterIt(isFile(it))))
+
 proc runGetTask(
     ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key
 ) {.gcsafe.} =
@@ -311,6 +355,16 @@ proc runGetTask(
       warn "fireSync failed in runGetTask", error = res.error
 
   ctx[].result = unsafeIsolate(getSync(path, key))
+
+proc runGetTaskMany(
+    ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]], keys: seq[(string, Key)]
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runGetTask", error = res.error
+
+  ctx[].result = unsafeIsolate(getSyncMany(keys))
 
 proc runPutTask(
     ctx: SharedPtr[TaskCtx[void]], path: string, record: RawKVRecord
@@ -322,6 +376,16 @@ proc runPutTask(
 
   ctx[].result = unsafeIsolate(putSync(path, record))
 
+proc runPutTaskMany(
+    ctx: SharedPtr[TaskCtx[seq[Key]]], records: seq[(string, RawKVRecord)]
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runPutTask", error = res.error
+
+  ctx[].result = unsafeIsolate(putSyncMany(records))
+
 proc runDeleteTask(
     ctx: SharedPtr[TaskCtx[void]], path: string, record: KeyKVRecord
 ) {.gcsafe.} =
@@ -331,6 +395,16 @@ proc runDeleteTask(
       warn "fireSync failed in runDeleteTask", error = res.error
 
   ctx[].result = unsafeIsolate(deleteSync(path, record))
+
+proc runDeleteTaskMany(
+    ctx: SharedPtr[TaskCtx[seq[Key]]], records: seq[(string, KeyKVRecord)]
+) {.gcsafe.} =
+  defer:
+    let res = ctx[].signal.fireSync()
+    if res.isErr:
+      warn "fireSync failed in runDeleteTask", error = res.error
+
+  ctx[].result = unsafeIsolate(deleteSyncMany(records))
 
 proc runReadRecordTask(
     ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key, includeValue: bool
@@ -345,40 +419,6 @@ proc runReadRecordTask(
   ctx[].result = unsafeIsolate(readVersioned(path, key, includeValue))
 
 # =============================================================================
-# Per-Key Locking with Reference Counting
-# =============================================================================
-
-proc acquire*(
-    self: FSKVStore, key: Key
-): Future[RefCountedLock] {.async: (raises: [CancelledError]).} =
-  ## Acquire a per-key lock. Refcount is incremented BEFORE await to track waiters.
-  ## This prevents the race where a lock is deleted while tasks are waiting on it.
-  var rcLock =
-    self.locks.mgetOrPut(key, RefCountedLock(lock: newAsyncLock(), refCount: 0))
-  rcLock.refCount += 1 # Increment BEFORE await to count waiters
-  try:
-    await rcLock.lock.acquire()
-  except CancelledError as exc:
-    # If cancelled while waiting, decrement refcount and maybe cleanup
-    rcLock.refCount -= 1
-    if rcLock.refCount == 0:
-      self.locks.del(key)
-    raise exc
-  rcLock
-
-proc release*(self: FSKVStore, key: Key, rcLock: RefCountedLock) {.raises: [].} =
-  ## Release a per-key lock. Only removes from table when refcount reaches zero.
-  if rcLock.lock.locked:
-    try:
-      rcLock.lock.release()
-    except CatchableError as err:
-      raiseAssert(err.msg) # shouldn't happen
-
-  rcLock.refCount -= 1
-  if rcLock.refCount == 0:
-    self.locks.del(key)
-
-# =============================================================================
 # Async Methods (public API)
 # =============================================================================
 
@@ -387,231 +427,148 @@ method hasImpl*(
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## Check existence of multiple keys.
   ## Returns the subset of input keys that exist in the store, in input order.
-  ## Duplicate keys in input are deduplicated (first occurrence wins).
-  ## Note: FS backend checks each file independently (no batching optimization).
-  kvstore_fs_has_total.inc()
-  kvstore_fs_inflight_has.inc()
-  let startTime = Moment.now()
+  ##
+
+  # XXX: don't move after closed, every await introduces concurrency
+  await checkFairness()
+
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
+  writeHasMetrics(keys)
+
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
+
+  let ctx = newSharedPtr(TaskCtx[seq[string]](signal: signal))
   defer:
-    kvstore_fs_has_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_fs_inflight_has.dec()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in has", error = err
+    # SharedPtr handles TaskCtx cleanup automatically
 
-  var existing: seq[Key]
-  var seen = initHashSet[string]()
+  let
+    keys = keys.deduplicate()
+    taskFut = signal.wait()
+  self.tp.spawn runHasTaskMany(ctx, keys.mapIt(?self.path(it)))
 
-  for key in keys:
-    # Skip duplicates
-    if key.id in seen:
-      continue
-    seen.incl(key.id)
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
 
-    # don't move after closed, every await introduces concurrency
-    await checkFairness()
+  ?await fut
+  let hasPaths = (?extract(ctx[].result)).toHashSet
 
-    if self.closed:
-      return failure newException(KVStoreError, "FSKVStore is closed")
-
-    let p = ?self.path(key)
-
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
-
-    let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in has", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
-
-    let taskFut = signal.wait()
-    self.tp.spawn runHasTask(ctx, p)
-
-    let fut = awaitSignal(taskFut)
-    self.tasks.incl(fut)
-    defer:
-      self.tasks.excl(fut)
-
-    ?await fut
-
-    if ?extract(ctx[].result):
-      existing.add(key)
-
-  return success(existing)
+  success keys.filterIt(?self.path(it) in hasPaths)
 
 method getImpl*(
     self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
-  kvstore_fs_get_total.inc()
-  kvstore_fs_inflight_get.inc()
-  let startTime = Moment.now()
+  # XXX: don't move after closed, every await introduces concurrency
+  await checkFairness()
+
+  if self.closed:
+    return failure newException(KVStoreError, "FSKVStore is closed")
+
+  writeGetMetrics(keys)
+
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
+
+  let ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
   defer:
-    kvstore_fs_get_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_fs_inflight_get.dec()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in get", error = err
+    # SharedPtr handles TaskCtx cleanup automatically
 
-  var records: seq[RawKVRecord]
+  let taskFut = signal.wait()
+  self.tp.spawn runGetTaskMany(ctx, keys.deduplicate().mapIt((?self.path(it), it)))
 
-  for key in keys:
-    await checkFairness()
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
 
-    if self.closed:
-      return failure newException(KVStoreError, "FSKVStore is closed")
+  ?await fut
 
-    let p = ?self.path(key)
+  let records = ?extract(ctx[].result)
 
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
-
-    let ctx = newSharedPtr(TaskCtx[RawKVRecord](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in get", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
-
-    let taskFut = signal.wait()
-    self.tp.spawn runGetTask(ctx, p, key)
-
-    let fut = awaitSignal(taskFut)
-    self.tasks.incl(fut)
-    defer:
-      self.tasks.excl(fut)
-
-    ?await fut
-
-    without record =? extract(ctx[].result), err:
-      if err of KVStoreKeyNotFound:
-        continue
-      else:
-        return failure(err)
-
-    kvstore_fs_get_value_bytes.observe(record.val.len.float64)
-    records.add(record)
+  when defined(kvstore_expensive_metrics):
+    kvstore_fs_get_value_bytes.observe(records.mapIt(it.val.len.float64))
 
   return success records
 
 method putImpl*(
     self: FSKVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  kvstore_fs_put_total.inc()
-  kvstore_fs_inflight_put.inc()
-  kvstore_fs_put_batch_size.observe(records.len.float64)
-  for record in records:
-    kvstore_fs_put_value_bytes.observe(record.val.len.float64)
-  let startTime = Moment.now()
-  defer:
-    kvstore_fs_put_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_fs_inflight_put.dec()
-
   if self.closed:
     return failure newException(KVStoreError, "FSKVStore is closed")
 
-  var conflicts: seq[Key]
+  writePutMetrics(records)
 
-  for record in records:
-    await checkFairness()
+  await checkFairness()
 
-    let p = ?self.path(record.key)
+  # Re-check after await - close() may have started during acquire
+  if self.closed:
+    return failure(newException(KVStoreError, "FSKVStore is closed"))
 
-    # Acquire per-key lock BEFORE spawning task
-    let lock = await self.acquire(record.key)
-    defer:
-      self.release(record.key, lock)
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
 
-    # Re-check after await - close() may have started during acquire
-    if self.closed:
-      return failure(newException(KVStoreError, "FSKVStore is closed"))
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
+  defer:
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in put", error = err
+    # SharedPtr handles TaskCtx cleanup automatically
 
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
+  let taskFut = signal.wait()
+  self.tp.spawn runPutTaskMany(ctx, records.deduplicate.mapIt((?self.path(it.key), it)))
 
-    let ctx = newSharedPtr(TaskCtx[void](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in put", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
 
-    let taskFut = signal.wait()
-    self.tp.spawn runPutTask(ctx, p, record)
+  ?await fut
 
-    let fut = awaitSignal(taskFut)
-    self.tasks.incl(fut)
-    defer:
-      self.tasks.excl(fut)
-
-    ?await fut
-
-    if err =? extract(ctx[].result).errorOption:
-      if err of KVConflictError:
-        kvstore_fs_put_conflict_total.inc()
-        conflicts.add(record.key)
-      else:
-        return failure(err)
+  let conflicts = ?extract(ctx[].result)
 
   return success conflicts
 
 method deleteImpl*(
     self: FSKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  kvstore_fs_delete_total.inc()
-  kvstore_fs_inflight_delete.inc()
-  kvstore_fs_delete_batch_size.observe(records.len.float64)
-  let startTime = Moment.now()
+  writeDeleteMetrics(records)
+
+  await checkFairness()
+
+  # Re-check after await - close() may have started during acquire
+  if self.closed:
+    return failure(newException(KVStoreError, "FSKVStore is closed"))
+
+  let signal =
+    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
+
+  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
   defer:
-    kvstore_fs_delete_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_fs_inflight_delete.dec()
+    if err =? signal.close().errorOption:
+      warn "signal.close failed in delete", error = err
+    # SharedPtr handles TaskCtx cleanup automatically
 
-  var skipped: seq[Key]
+  let taskFut = signal.wait()
+  self.tp.spawn runDeleteTaskMany(ctx, records.mapIt((?self.path(it.key), it)))
 
-  for record in records:
-    await checkFairness()
+  let fut = awaitSignal(taskFut)
+  self.tasks.incl(fut)
+  defer:
+    self.tasks.excl(fut)
 
-    if self.closed:
-      return failure newException(KVStoreError, "FSKVStore is closed")
+  ?await fut
 
-    let p = ?self.path(record.key)
-
-    # Acquire per-key lock BEFORE spawning task
-    let lock = await self.acquire(record.key)
-    defer:
-      self.release(record.key, lock)
-
-    # Re-check after await - close() may have started during acquire
-    if self.closed:
-      return failure(newException(KVStoreError, "FSKVStore is closed"))
-
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
-
-    let ctx = newSharedPtr(TaskCtx[void](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in delete", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
-
-    let taskFut = signal.wait()
-    self.tp.spawn runDeleteTask(ctx, p, record)
-
-    let fut = awaitSignal(taskFut)
-    self.tasks.incl(fut)
-    defer:
-      self.tasks.excl(fut)
-
-    ?await fut
-
-    let opResult = extract(ctx[].result)
-    if opResult.isErr and opResult.error of KVConflictError:
-      kvstore_fs_delete_conflict_total.inc()
-      skipped.add(record.key)
-    else:
-      ?opResult
-
-  return success skipped
+  return success ?extract(ctx[].result)
 
 method closeImpl*(self: FSKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
@@ -825,5 +782,5 @@ proc new*(_: type FSKVStore, root: string, tp: Taskpool, depth = 2): ?!FSKVStore
     return failure "directory does not exist: " & root
 
   success FSKVStore(
-    root: root, depth: depth, locks: initTable[Key, RefCountedLock](), tp: tp
+    root: root, depth: depth, tp: tp
   )
