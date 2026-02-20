@@ -3,6 +3,9 @@
 import pkg/metrics
 export metrics
 
+import ../types
+import ../key
+
 # =============================================================================
 # FS Backend Metrics
 # =============================================================================
@@ -90,3 +93,50 @@ declarePublicGauge(
 # --- Active iterators ---
 
 declarePublicGauge(kvstore_fs_active_iterators, "kvstore fs active query iterators")
+
+template writePutMetrics*(records: openArray[RawKVRecord]) =
+  kvstore_fs_put_total.inc()
+  kvstore_fs_inflight_put.inc()
+  kvstore_fs_put_batch_size.observe(records.len.float64)
+
+  when defined(kvstore_expensive_metrics):
+    for record in records:
+      kvstore_fs_put_value_bytes.observe(record.val.len.float64)
+
+  let startTime = Moment.now()
+  defer:
+    kvstore_fs_put_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_fs_inflight_put.dec()
+
+template writeHasMetrics*(keys: openArray[Key]) =
+  kvstore_fs_has_total.inc()
+  kvstore_fs_inflight_has.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_fs_has_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_fs_inflight_has.dec()
+
+template writeGetMetrics*(keys: openArray[Key]) =
+  kvstore_fs_get_total.inc()
+  kvstore_fs_inflight_get.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_fs_get_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_fs_inflight_get.dec()
+
+template writeDeleteMetrics*(records: openArray[KeyKVRecord]) =
+  kvstore_fs_delete_total.inc()
+  kvstore_fs_inflight_delete.inc()
+  kvstore_fs_delete_batch_size.observe(records.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_fs_delete_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_fs_inflight_delete.dec()
