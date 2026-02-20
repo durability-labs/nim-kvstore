@@ -455,9 +455,8 @@ suite "Test Large Batch Operations":
     let existing = (await ds.has(keys)).tryGet()
     check existing.len == count
 
-    # Verify result is in input order
-    for i in 0 ..< count:
-      check existing[i] == keys[i]
+    # Verify all input keys are present
+    check existing.toHashSet == keys.toHashSet
 
   test "has with >1000 keys deduplicates across chunks":
     # Test that duplicate keys across chunk boundaries are handled

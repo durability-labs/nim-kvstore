@@ -9,7 +9,7 @@ import std/times
 import std/sequtils
 import std/sets
 import std/options
-import std/algorithm except SortOrder # TODO: SortOrder conflicts with Query SortOrder
+from std/algorithm import sortedByIt
 
 import pkg/questionable
 import pkg/questionable/results
@@ -32,12 +32,6 @@ const
 # =============================================================================
 # Utilities
 # =============================================================================
-
-proc cmpKeys(a, b: Key): int {.gcsafe.} =
-  cmp($a, $b)
-
-proc cmpRecords[T](a, b: KVRecord[T]): int {.gcsafe.} =
-  cmpKeys(a.key, b.key)
 
 proc timestamp*(t = epochTime()): int64 =
   (t * 1_000_000).int64
@@ -110,18 +104,13 @@ proc hasSync*(db: SQLiteDsDb, keyId: string): ?!bool {.gcsafe.} =
 
 proc hasManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
   ## Synchronous check for multiple keys.
-  ## Returns the subset of input keys that exist in the store, in input order.
-  ## Duplicate keys in input are deduplicated (first occurrence wins).
+  ## Returns the subset of input keys that exist in the store, deduplicated.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
   if keys.len == 0:
     return success(newSeq[Key]())
 
-  var keys = keys
-  # sort the keys to improve sqlite lookups
-  keys.sort(cmpKeys)
-
-  # Build unique IDs list in first-seen order (deduplicates query params)
-  let uniqueIds = keys.deduplicate(isSorted = true)
+  # Sort keys to improve SQLite B-tree page cache locality
+  let uniqueIds = keys.sortedByIt($it).deduplicate(isSorted = true)
 
   # Collect ids that exist in DB
   var foundIds = initHashSet[Key]()
@@ -169,8 +158,7 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawKVRecord] {.gcsafe.}
   if keys.len == 0:
     return success(newSeq[RawKVRecord]())
 
-  var keys = keys
-  keys.sort(cmpKeys)
+  let keys = keys.sortedByIt($it)
   var records: seq[RawKVRecord]
 
   proc onRow(s: RawStmtPtr) =
@@ -213,8 +201,7 @@ proc putSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var records = records
-  records.sort(cmpRecords)
+  let records = records.sortedByIt($it.key)
 
   let
     maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
@@ -274,8 +261,7 @@ proc deleteSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var records = records
-  records.sort(cmpRecords)
+  let records = records.sortedByIt($it.key)
 
   var
     deletedIds = initHashSet[string]()
@@ -333,8 +319,7 @@ proc putAtomicSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var records = records
-  records.sort(cmpRecords)
+  let records = records.sortedByIt($it.key)
 
   let
     maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
@@ -387,8 +372,7 @@ proc deleteAtomicSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  var records = records
-  records.sort(cmpRecords)
+  let records = records.sortedByIt($it.key)
 
   var
     conflicts: seq[Key]
