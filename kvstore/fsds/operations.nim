@@ -120,36 +120,48 @@ proc writeVersioned*(
       return
         failure newException(KVStoreBackendError, "unable to create parent directory")
 
-  let handle =
-    ?openFile(path, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
-      context = "Unable to open file '" & path & "'", errType = KVStoreBackendError
-    )
+  # Write to a temp file then rename atomically. This avoids leaving a partial
+  # or truncation-incorrect file on Windows, where writing shorter content over
+  # a longer file without rename can leave trailing bytes from the old content.
+  let suffix = ?generateTempSuffix()
+  let tmp = path & "." & suffix & ".tmp"
 
-  defer:
-    discard closeFile(handle)
-
-  let
-    header = token.toBytesLE()
-    headerWritten =
-      ?writeFile(handle, header).toKVError(
-        context = "Failed writing token", errType = KVStoreBackendError
+  block writeBlock:
+    let handle =
+      ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
+        context = "Unable to open temp file '" & tmp & "'",
+        errType = KVStoreBackendError,
       )
 
-  if headerWritten != TokenBytes.uint:
-    return failure newException(KVStoreBackendError, "Failed writing token")
+    defer:
+      discard closeFile(handle)
 
-  if value.len > 0:
-    let valueWritten =
-      ?writeFile(handle, value).toKVError(
-        context = "Failed writing data", errType = KVStoreBackendError
-      )
+    let
+      header = token.toBytesLE()
+      headerWritten =
+        ?writeFile(handle, header).toKVError(
+          context = "Failed writing token", errType = KVStoreBackendError
+        )
 
-    if valueWritten != value.len.uint:
-      return failure newException(KVStoreBackendError, "Failed writing data")
+    if headerWritten != TokenBytes.uint:
+      return failure newException(KVStoreBackendError, "Failed writing token")
 
-  # TODO: fsync disabled for benchmarking - restore with configurable sync mode
-  # if fsync(handle).isErr:
-  #   return failure newException(KVStoreBackendError, "Failed to sync file")
+    if value.len > 0:
+      let valueWritten =
+        ?writeFile(handle, value).toKVError(
+          context = "Failed writing data", errType = KVStoreBackendError
+        )
+
+      if valueWritten != value.len.uint:
+        return failure newException(KVStoreBackendError, "Failed writing data")
+
+    # TODO: fsync disabled for benchmarking - restore with configurable sync mode
+    # if fsync(handle).isErr:
+    #   return failure newException(KVStoreBackendError, "Failed to sync file")
+
+  # Handle is closed by defer above before we reach moveFile.
+  # On Windows the file must be closed before it can be renamed.
+  ?moveFile(tmp, path)
   # syncParentDirectory(path)
 
   return success()
