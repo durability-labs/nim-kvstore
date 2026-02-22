@@ -9,7 +9,7 @@ import std/times
 import std/sequtils
 import std/sets
 import std/options
-from std/algorithm import sortedByIt
+from std/algorithm import sortedByIt, sort
 
 import pkg/questionable
 import pkg/questionable/results
@@ -28,6 +28,10 @@ const
   MaxSqliteParams* = 26212
   # For delete, each record uses 2 params (id, token)
   MaxDeleteChunkSize* = MaxSqliteParams div 2
+
+proc makeDeleteManyReturningQuery*(count: int): string {.raises: [].} =
+  ## Delete query with RETURNING clause for tracking which keys were deleted.
+  makeDeleteManyParamQuery(count) & " RETURNING " & IdColName
 
 # =============================================================================
 # Utilities
@@ -124,9 +128,11 @@ proc hasManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
     let
       chunkSize = min(MaxSqliteParams, uniqueIds.len - offset)
       chunk = uniqueIds[offset ..< offset + chunkSize]
-      queryStr = makeHasManyParamQuery(chunk.len)
 
-    discard ?db.env.queryWithStrings(queryStr, chunk.mapIt($it), onRow)
+    {.cast(gcsafe).}:
+      let s = ?db.getOrPrepareStmt(hasManyStmtCache, chunkSize, makeHasManyParamQuery)
+
+    discard ?s.execCachedStrings(chunk.mapIt($it), onRow)
     offset += chunkSize
 
   success uniqueIds.filterIt(it in foundIds)
@@ -152,7 +158,7 @@ proc getSync*(db: SQLiteDsDb, key: Key): ?!RawKVRecord {.gcsafe.} =
 
   success RawKVRecord.init(key, value, token.uint64)
 
-proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawKVRecord] {.gcsafe.} =
+proc getManySync*(db: SQLiteDsDb, keys: sink seq[Key]): ?!seq[RawKVRecord] {.gcsafe.} =
   ## Synchronous get multiple records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
   if keys.len == 0:
@@ -182,16 +188,18 @@ proc getManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[RawKVRecord] {.gcsafe.}
     let
       chunkSize = min(MaxSqliteParams, keys.len - offset)
       chunk = keys[offset ..< offset + chunkSize]
-      queryStr = makeGetManyParamQuery(chunk.len)
-      keyIds = chunk.mapIt(it.id)
 
-    discard ?db.env.queryWithStrings(queryStr, keyIds, onRow)
+    {.cast(gcsafe).}:
+      let s = ?db.getOrPrepareStmt(getManyStmtCache, chunkSize, makeGetManyParamQuery)
+
+    let keyIds = chunk.mapIt(it.id)
+    discard ?s.execCachedStrings(keyIds, onRow)
     offset += chunkSize
 
   success records
 
 proc putSync*(
-    db: SQLiteDsDb, records: seq[RawKVRecord], readOnly: bool
+    db: SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous put records using a single-statement batch upsert.
   ## All records (inserts and updates) are handled in one CTE-based
@@ -201,7 +209,10 @@ proc putSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let records = records.sortedByIt($it.key)
+  records.sort(
+    proc(a, b: auto): int =
+      cmp(a.key.id, b.key.id)
+  )
 
   let
     maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
@@ -224,13 +235,15 @@ proc putSync*(
     let
       chunkSize = min(maxPerChunk, records.len - offset)
       chunk = records[offset ..< offset + chunkSize]
-      queryStr = makeBatchUpsertQuery(chunkSize)
-      params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
 
+    {.cast(gcsafe).}:
+      let s = ?db.getOrPrepareStmt(upsertStmtCache, chunkSize, makeBatchUpsertQuery)
+
+    let params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
     proc onRow(s: RawStmtPtr) =
       affectedIds.incl($sqlite3_column_text_not_null(s, BatchUpsertReturnIdCol.cint))
 
-    discard ?db.env.queryWithUpsertRecords(queryStr, params, onRow)
+    discard ?s.execCachedUpsertRecords(params, onRow)
 
     let changes = ?db.checkChanges()
     if changes > chunkSize:
@@ -252,7 +265,7 @@ proc putSync*(
   success skipped
 
 proc deleteSync*(
-    db: SQLiteDsDb, records: seq[KeyKVRecord], readOnly: bool
+    db: SQLiteDsDb, records: sink seq[KeyKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous delete records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
@@ -261,7 +274,10 @@ proc deleteSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let records = records.sortedByIt($it.key)
+  records.sort(
+    proc(a, b: auto): int =
+      cmp(a.key.id, b.key.id)
+  )
 
   var
     deletedIds = initHashSet[string]()
@@ -285,10 +301,15 @@ proc deleteSync*(
     let
       chunkSize = min(MaxDeleteChunkSize, records.len - offset)
       chunk = records[offset ..< offset + chunkSize]
-      queryStr = makeDeleteManyParamQuery(chunk.len) & " RETURNING " & IdColName
-      pairs = chunk.mapIt((it.key.id, ?boundedToken(it.token)))
 
-    discard ?db.env.queryWithIdVersionPairs(queryStr, pairs, onRow)
+    {.cast(gcsafe).}:
+      let s =
+        ?db.getOrPrepareStmt(
+          deleteManyStmtCache, chunkSize, makeDeleteManyReturningQuery
+        )
+
+    let pairs = chunk.mapIt((it.key.id, ?boundedToken(it.token)))
+    discard ?s.execCachedIdVersionPairs(pairs, onRow)
 
     let changes = ?db.checkChanges()
     totalChanges += changes
@@ -310,7 +331,7 @@ proc deleteSync*(
   success skipped
 
 proc putAtomicSync*(
-    db: SQLiteDsDb, records: seq[RawKVRecord], readOnly: bool
+    db: SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch put using a single-statement batch upsert.
   ## Any conflict (insert or update) rolls back the entire transaction.
@@ -319,7 +340,10 @@ proc putAtomicSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let records = records.sortedByIt($it.key)
+  records.sort(
+    proc(a, b: auto): int =
+      cmp(a.key.id, b.key.id)
+  )
 
   let
     maxPerChunk = MaxSqliteParams div BatchUpsertParamsPerRow
@@ -342,13 +366,15 @@ proc putAtomicSync*(
     let
       chunkSize = min(maxPerChunk, records.len - offset)
       chunk = records[offset ..< offset + chunkSize]
-      queryStr = makeBatchUpsertQuery(chunkSize)
-      params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
 
+    {.cast(gcsafe).}:
+      let s = ?db.getOrPrepareStmt(upsertStmtCache, chunkSize, makeBatchUpsertQuery)
+
+    let params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
     proc onRow(s: RawStmtPtr) =
       affectedIds.incl($sqlite3_column_text_not_null(s, BatchUpsertReturnIdCol.cint))
 
-    discard ?db.env.queryWithUpsertRecords(queryStr, params, onRow)
+    discard ?s.execCachedUpsertRecords(params, onRow)
     offset += chunkSize
 
   # Any record not in the affected set is a conflict
@@ -364,7 +390,7 @@ proc putAtomicSync*(
   success newSeq[Key]()
 
 proc deleteAtomicSync*(
-    db: SQLiteDsDb, records: seq[KeyKVRecord], readOnly: bool
+    db: SQLiteDsDb, records: sink seq[KeyKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch delete
   ?checkWritable(readOnly)
@@ -372,7 +398,10 @@ proc deleteAtomicSync*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let records = records.sortedByIt($it.key)
+  records.sort(
+    proc(a, b: auto): int =
+      cmp(a.key.id, b.key.id)
+  )
 
   var
     conflicts: seq[Key]

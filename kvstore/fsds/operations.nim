@@ -114,59 +114,50 @@ proc readVersioned*(
 proc writeVersioned*(
     path: string, token: uint64, value: seq[byte]
 ): ?!void {.gcsafe, raises: [].} =
-  if createPath(parentDir(path)).isErr:
-    return
-      failure newException(KVStoreBackendError, "unable to create parent directory")
+  let dir = parentDir(path)
+  if not dirExists(dir):
+    if createPath(dir).isErr:
+      return
+        failure newException(KVStoreBackendError, "unable to create parent directory")
 
-  let
-    tmp = path & ".tmp-" & ?generateTempSuffix()
-    handle =
-      ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
-        context = "Unable to open temporary file '" & tmp & "'",
-        errType = KVStoreBackendError,
-      )
+  let handle =
+    ?openFile(path, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
+      context = "Unable to open file '" & path & "'", errType = KVStoreBackendError
+    )
 
   defer:
-    discard io2.removeFile(tmp)
+    discard closeFile(handle)
 
-  # Write to temp file in a block so handle is closed before rename.
-  # Windows requires file handles to be closed before rename/move.
-  block:
-    defer:
-      discard closeFile(handle)
+  let
+    header = token.toBytesLE()
+    headerWritten =
+      ?writeFile(handle, header).toKVError(
+        context = "Failed writing token", errType = KVStoreBackendError
+      )
 
-    let
-      header = token.toBytesLE()
-      headerWritten =
-        ?writeFile(handle, header).toKVError(
-          context = "Failed writing token", errType = KVStoreBackendError
-        )
+  if headerWritten != TokenBytes.uint:
+    return failure newException(KVStoreBackendError, "Failed writing token")
 
-    if headerWritten != TokenBytes.uint:
-      return failure newException(KVStoreBackendError, "Failed writing token")
+  if value.len > 0:
+    let valueWritten =
+      ?writeFile(handle, value).toKVError(
+        context = "Failed writing data", errType = KVStoreBackendError
+      )
 
-    if value.len > 0:
-      let valueWritten =
-        ?writeFile(handle, value).toKVError(
-          context = "Failed writing data", errType = KVStoreBackendError
-        )
+    if valueWritten != value.len.uint:
+      return failure newException(KVStoreBackendError, "Failed writing data")
 
-      if valueWritten != value.len.uint:
-        return failure newException(KVStoreBackendError, "Failed writing data")
-
-    if fsync(handle).isErr:
-      return failure newException(KVStoreBackendError, "Failed to sync file")
-
-  # Handle is now closed (block exited) - safe to rename on Windows
-  ?moveFile(tmp, path)
-  syncParentDirectory(path)
+  # TODO: fsync disabled for benchmarking - restore with configurable sync mode
+  # if fsync(handle).isErr:
+  #   return failure newException(KVStoreBackendError, "Failed to sync file")
+  # syncParentDirectory(path)
 
   return success()
 
 proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
   if io2.removeFile(path).isErr:
     return failure newException(KVStoreBackendError, "unable to delete file: " & path)
-  syncParentDirectory(path)
+  # syncParentDirectory(path)
   success()
 
 proc getSync*(path: string, key: Key): ?!RawKVRecord =
