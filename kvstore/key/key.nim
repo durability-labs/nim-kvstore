@@ -16,9 +16,14 @@ export hashes, namespace
 
 type Key* = object
   namespaces*: seq[Namespace]
+  cachedId*: string
+
+func computeId(namespaces: seq[Namespace]): string =
+  Separator & namespaces.mapIt(it.id).join(Separator)
 
 func init*(T: type Key, namespaces: varargs[Namespace]): ?!T =
-  success T(namespaces: @namespaces)
+  let ns = @namespaces
+  success T(namespaces: ns, cachedId: computeId(ns))
 
 func init*(T: type Key, namespaces: varargs[string]): ?!T =
   var self = T()
@@ -27,10 +32,12 @@ func init*(T: type Key, namespaces: varargs[string]): ?!T =
       ?Namespace.init(it)
     )
 
+  self.cachedId = computeId(self.namespaces)
   return success self
 
 func init*(T: type Key, keys: varargs[Key]): ?!T =
-  success T(namespaces: keys.mapIt(it.namespaces).concat)
+  let ns = keys.mapIt(it.namespaces).concat
+  success T(namespaces: ns, cachedId: computeId(ns))
 
 func list*(self: Key): seq[Namespace] =
   self.namespaces
@@ -49,7 +56,8 @@ iterator items*(key: Key): Namespace =
     yield k
 
 func reverse*(self: Key): Key =
-  Key(namespaces: self.namespaces.reversed)
+  let ns = self.namespaces.reversed
+  Key(namespaces: ns, cachedId: computeId(ns))
 
 func value*(self: Key): string =
   if self.len > 0:
@@ -59,8 +67,8 @@ func field*(self: Key): string =
   if self.len > 0:
     return self[^1].field
 
-func id*(self: Key): string =
-  Separator & self.namespaces.mapIt(it.id).join(Separator)
+func id*(self: Key): string {.inline.} =
+  self.cachedId
 
 func root*(self: Key): bool =
   self.len == 1
@@ -69,7 +77,8 @@ func parent*(self: Key): ?!Key =
   if self.root:
     failure "key has no parent"
   else:
-    success Key(namespaces: self.namespaces[0 ..^ 2])
+    let ns = self.namespaces[0 ..^ 2]
+    success Key(namespaces: ns, cachedId: computeId(ns))
 
 func path*(self: Key): ?!Key =
   let tail =
@@ -81,16 +90,19 @@ func path*(self: Key): ?!Key =
   if self.root:
     return Key.init(tail)
 
-  return success Key(namespaces: (?self.parent).namespaces & @[Namespace(value: tail)])
+  let ns = (?self.parent).namespaces & @[Namespace(value: tail)]
+  return success Key(namespaces: ns, cachedId: computeId(ns))
 
 func child*(self: Key, namespaces: varargs[Namespace]): Key =
-  Key(namespaces: self.namespaces & @namespaces)
+  let ns = self.namespaces & @namespaces
+  Key(namespaces: ns, cachedId: computeId(ns))
 
 func `/`*(self: Key, ns: Namespace): Key =
   self.child(ns)
 
 func child*(self: Key, keys: varargs[Key]): Key =
-  Key(namespaces: self.namespaces & concat(keys.mapIt(it.namespaces)))
+  let ns = self.namespaces & concat(keys.mapIt(it.namespaces))
+  Key(namespaces: ns, cachedId: computeId(ns))
 
 func `/`*(self, key: Key): Key =
   self.child(key)
@@ -112,9 +124,11 @@ func relative*(self: Key, parent: Key): ?!Key =
     return failure "Not a parent of this key!"
 
   if parent.len == self.len:
-    return success Key(namespaces: @[])
+    let ns: seq[Namespace] = @[]
+    return success Key(namespaces: ns, cachedId: computeId(ns))
 
-  return success Key(namespaces: self.namespaces[parent.len ..< self.len])
+  let ns = self.namespaces[parent.len ..< self.len]
+  return success Key(namespaces: ns, cachedId: computeId(ns))
 
 func ancestor*(self, other: Key): bool =
   if other.len <= self.len:

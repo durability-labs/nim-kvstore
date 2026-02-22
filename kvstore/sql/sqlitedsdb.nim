@@ -4,6 +4,7 @@ import std/os
 import std/sequtils
 import std/strformat
 import std/strutils
+import std/tables
 
 import pkg/questionable
 import pkg/questionable/results
@@ -44,6 +45,13 @@ type
     beginStmt*: BeginStmt
     endStmt*: EndStmt
     rollbackStmt*: RollbackStmt
+
+var
+  # Caches for dynamic prepared statements keyed by record count
+  upsertStmtCache*: Table[int, RawStmtPtr]
+  getManyStmtCache*: Table[int, RawStmtPtr]
+  hasManyStmtCache*: Table[int, RawStmtPtr]
+  deleteManyStmtCache*: Table[int, RawStmtPtr]
 
 const
   DbExt* = ".sqlite3"
@@ -358,6 +366,34 @@ proc getDBFilePath*(path: string): ?!string =
 
   return success dbPath
 
+proc getOrPrepareStmt*(
+    self: SQLiteDsDb,
+    cache: var Table[int, RawStmtPtr],
+    count: int,
+    queryBuilder: proc(count: int): string {.gcsafe, raises: [].},
+): ?!RawStmtPtr =
+  ## Get a cached prepared statement or prepare and cache a new one.
+  ## The caller must reset+clear_bindings after use instead of finalizing.
+  let cached = cache.getOrDefault(count)
+  if not cached.isNil:
+    discard sqlite3_reset(cached)
+    discard sqlite3_clear_bindings(cached)
+    return success cached
+
+  let
+    queryStr = queryBuilder(count)
+    flags = SQLITE_PREPARE_PERSISTENT.cuint
+
+  var s: RawStmtPtr
+  let v = sqlite3_prepare_v3(
+    self.env, queryStr.cstring, queryStr.len.cint, flags, addr s, nil
+  )
+  if v != SQLITE_OK:
+    return failure $sqlite3_errstr(v)
+
+  cache[count] = s
+  success s
+
 proc checkChanges*(self: SQLiteDsDb): ?!int =
   var changes = 0
   proc onChanges(s: RawStmtPtr) =
@@ -406,6 +442,24 @@ proc close*(self: var SQLiteDsDb): ?!void =
 
   if not RawStmtPtr(self.getChangesStmt).isNil:
     self.getChangesStmt.dispose
+
+  {.cast(gcsafe).}:
+    # Finalize all cached dynamic statements
+    for s in upsertStmtCache.values:
+      discard sqlite3_finalize(s)
+    upsertStmtCache.clear()
+
+    for s in getManyStmtCache.values:
+      discard sqlite3_finalize(s)
+    getManyStmtCache.clear()
+
+    for s in hasManyStmtCache.values:
+      discard sqlite3_finalize(s)
+    hasManyStmtCache.clear()
+
+    for s in deleteManyStmtCache.values:
+      discard sqlite3_finalize(s)
+    deleteManyStmtCache.clear()
 
   # Now close the database connection
   return closeDb(env)
