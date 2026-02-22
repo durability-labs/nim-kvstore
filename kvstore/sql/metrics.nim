@@ -3,20 +3,23 @@
 import pkg/metrics
 export metrics
 
+import ../types
+import ../key
+
 # =============================================================================
 # SQLite Backend Metrics
 # =============================================================================
 
 const
-  # Custom buckets tuned for I/O latencies: 100µs → 5s
+  # Custom buckets tuned for I/O latencies: 100µs -> 5s
   ioBuckets =
     [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0, Inf]
 
-  # Batch size buckets: 1 → 100k records
+  # Batch size buckets: 1 -> 100k records
   batchBuckets =
     [1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.0, 100000.0, Inf]
 
-  # Value size buckets (bytes): 16B → 64KB (metadata records are small)
+  # Value size buckets (bytes): 16B -> 64KB (metadata records are small)
   sizeBuckets = [
     16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0, 16384.0, 65536.0, Inf
   ]
@@ -156,9 +159,108 @@ declarePublicGauge(
 declarePublicGauge(
   kvstore_sql_inflight_deleteatomic, "kvstore sqlite in-flight deleteAtomic operations"
 )
+declarePublicGauge(
+  kvstore_sql_inflight_moveatomic, "kvstore sqlite in-flight moveKeysAtomic operations"
+)
+declarePublicGauge(
+  kvstore_sql_inflight_dropprefix, "kvstore sqlite in-flight dropPrefix operations"
+)
 
 # --- Active iterators ---
 
 declarePublicGauge(
   kvstore_sql_active_iterators, "kvstore sqlite active query iterators"
 )
+
+# =============================================================================
+# Metric Templates (mirrors FS template pattern)
+# =============================================================================
+
+template writeSqlHasMetrics*(keys: openArray[Key]) =
+  kvstore_sql_has_total.inc()
+  kvstore_sql_inflight_has.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_has_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_has.dec()
+
+template writeSqlGetMetrics*(keys: openArray[Key]) =
+  kvstore_sql_get_total.inc()
+  kvstore_sql_inflight_get.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_get_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_get.dec()
+
+template writeSqlPutMetrics*(records: openArray[RawKVRecord]) =
+  kvstore_sql_put_total.inc()
+  kvstore_sql_inflight_put.inc()
+  kvstore_sql_put_batch_size.observe(records.len.float64)
+
+  when defined(kvstore_expensive_metrics):
+    for record in records:
+      kvstore_sql_put_value_bytes.observe(record.val.len.float64)
+
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_put_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_put.dec()
+
+template writeSqlDeleteMetrics*(records: openArray[KeyKVRecord]) =
+  kvstore_sql_delete_total.inc()
+  kvstore_sql_inflight_delete.inc()
+  kvstore_sql_delete_batch_size.observe(records.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_delete_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_delete.dec()
+
+template writeSqlPutAtomicMetrics*(records: openArray[RawKVRecord]) =
+  kvstore_sql_putatomic_total.inc()
+  kvstore_sql_inflight_putatomic.inc()
+  kvstore_sql_putatomic_batch_size.observe(records.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_putatomic_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_putatomic.dec()
+
+template writeSqlDeleteAtomicMetrics*(records: openArray[KeyKVRecord]) =
+  kvstore_sql_deleteatomic_total.inc()
+  kvstore_sql_inflight_deleteatomic.inc()
+  kvstore_sql_deleteatomic_batch_size.observe(records.len.float64)
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_deleteatomic_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_deleteatomic.dec()
+
+template writeSqlMoveAtomicMetrics*() =
+  kvstore_sql_moveatomic_total.inc()
+  kvstore_sql_inflight_moveatomic.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_moveatomic_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_moveatomic.dec()
+
+template writeSqlDropPrefixMetrics*() =
+  kvstore_sql_dropprefix_total.inc()
+  kvstore_sql_inflight_dropprefix.inc()
+  let startTime = Moment.now()
+  defer:
+    kvstore_sql_dropprefix_duration_seconds.observe(
+      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
+    )
+    kvstore_sql_inflight_dropprefix.dec()

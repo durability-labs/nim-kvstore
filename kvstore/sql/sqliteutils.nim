@@ -284,6 +284,38 @@ proc queryWithStrings*(
   checkErr sqlite3_finalize(s)
   res
 
+proc execCachedStrings*(
+    s: RawStmtPtr, params: openArray[string], onData: DataProc
+): ?!bool =
+  ## Execute a pre-prepared statement with string parameters.
+  ## Uses reset+clear instead of finalize (caller manages statement lifetime).
+
+  # Bind all string parameters
+  for i, param in params:
+    let v = sqlite3_bind_text(s, (i + 1).cint, param.cstring, -1.cint, SQLITE_TRANSIENT)
+    if v != SQLITE_OK:
+      discard sqlite3_reset(s)
+      discard sqlite3_clear_bindings(s)
+      return failure $sqlite3_errstr(v)
+
+  var res = success false
+
+  while true:
+    let v = sqlite3_step(s)
+    case v
+    of SQLITE_ROW:
+      onData(s)
+      res = success true
+    of SQLITE_DONE:
+      break
+    else:
+      res = failure $sqlite3_errstr(v)
+      break
+
+  discard sqlite3_reset(s)
+  discard sqlite3_clear_bindings(s)
+  res
+
 proc queryWithIdVersionPairs*(
     env: SQLite, query: string, pairs: openArray[(string, int64)], onData: DataProc
 ): ?!bool =
@@ -322,6 +354,46 @@ proc queryWithIdVersionPairs*(
       break
 
   checkErr sqlite3_finalize(s)
+  res
+
+proc execCachedIdVersionPairs*(
+    s: RawStmtPtr, pairs: openArray[(string, int64)], onData: DataProc
+): ?!bool =
+  ## Execute a pre-prepared statement with (id, version) pairs.
+  ## Uses reset+clear instead of finalize (caller manages statement lifetime).
+
+  var paramIdx = 1
+  for (id, version) in pairs:
+    var v = sqlite3_bind_text(s, paramIdx.cint, id.cstring, -1.cint, SQLITE_TRANSIENT)
+    if v != SQLITE_OK:
+      discard sqlite3_reset(s)
+      discard sqlite3_clear_bindings(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+    v = sqlite3_bind_int64(s, paramIdx.cint, version)
+    if v != SQLITE_OK:
+      discard sqlite3_reset(s)
+      discard sqlite3_clear_bindings(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+  var res = success false
+
+  while true:
+    let v = sqlite3_step(s)
+    case v
+    of SQLITE_ROW:
+      onData(s)
+      res = success true
+    of SQLITE_DONE:
+      break
+    else:
+      res = failure $sqlite3_errstr(v)
+      break
+
+  discard sqlite3_reset(s)
+  discard sqlite3_clear_bindings(s)
   res
 
 proc queryWithUpsertRecords*(
@@ -382,6 +454,68 @@ proc queryWithUpsertRecords*(
       break
 
   checkErr sqlite3_finalize(s)
+  res
+
+proc execCachedUpsertRecords*(
+    s: RawStmtPtr,
+    records: openArray[(string, seq[byte], int64, int64)],
+    onData: DataProc,
+): ?!bool =
+  ## Execute a pre-prepared upsert statement with (id, data, version, timestamp) tuples.
+  ## Uses reset+clear instead of finalize (caller manages statement lifetime).
+
+  var paramIdx = 1
+  for (id, data, version, stamp) in records:
+    var v = sqlite3_bind_text(s, paramIdx.cint, id.cstring, -1.cint, SQLITE_TRANSIENT)
+    if v != SQLITE_OK:
+      discard sqlite3_reset(s)
+      discard sqlite3_clear_bindings(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+    v =
+      if data.len > 0:
+        sqlite3_bind_blob(
+          s, paramIdx.cint, unsafeAddr data[0], data.len.cint, SQLITE_TRANSIENT
+        )
+      else:
+        sqlite3_bind_null(s, paramIdx.cint)
+    if v != SQLITE_OK:
+      discard sqlite3_reset(s)
+      discard sqlite3_clear_bindings(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+    v = sqlite3_bind_int64(s, paramIdx.cint, version)
+    if v != SQLITE_OK:
+      discard sqlite3_reset(s)
+      discard sqlite3_clear_bindings(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+    v = sqlite3_bind_int64(s, paramIdx.cint, stamp)
+    if v != SQLITE_OK:
+      discard sqlite3_reset(s)
+      discard sqlite3_clear_bindings(s)
+      return failure $sqlite3_errstr(v)
+    inc paramIdx
+
+  var res = success false
+
+  while true:
+    let v = sqlite3_step(s)
+    case v
+    of SQLITE_ROW:
+      onData(s)
+      res = success true
+    of SQLITE_DONE:
+      break
+    else:
+      res = failure $sqlite3_errstr(v)
+      break
+
+  discard sqlite3_reset(s)
+  discard sqlite3_clear_bindings(s)
   res
 
 proc execPragma(env: SQLite, pragma: string): ?!void =

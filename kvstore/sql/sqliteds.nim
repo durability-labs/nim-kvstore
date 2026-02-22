@@ -272,14 +272,7 @@ method hasImpl*(
   ## Returns the subset of input keys that exist in the store.
   ## Result preserves input order; duplicates are deduplicated (first occurrence wins).
 
-  kvstore_sql_has_total.inc()
-  kvstore_sql_inflight_has.inc()
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_has_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_sql_inflight_has.dec()
+  writeSqlHasMetrics(keys)
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -344,14 +337,7 @@ method hasImpl*(
 method getImpl*(
     self: SQLiteKVStore, keys: seq[Key]
 ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
-  kvstore_sql_get_total.inc()
-  kvstore_sql_inflight_get.inc()
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_get_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_sql_inflight_get.dec()
+  writeSqlGetMetrics(keys)
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -388,7 +374,8 @@ method getImpl*(
         return success(newSeq[RawKVRecord]())
       return failure(err)
 
-    kvstore_sql_get_value_bytes.observe(extracted.val.len.float64)
+    when defined(kvstore_expensive_metrics):
+      kvstore_sql_get_value_bytes.observe(extracted.val.len.float64)
     return success(@[extracted])
   else:
     let signal =
@@ -411,24 +398,15 @@ method getImpl*(
     ?await fut
 
     let records = ?extract(ctx[].result)
-    for record in records:
-      kvstore_sql_get_value_bytes.observe(record.val.len.float64)
+    when defined(kvstore_expensive_metrics):
+      for record in records:
+        kvstore_sql_get_value_bytes.observe(record.val.len.float64)
     return success(records)
 
 method putImpl*(
     self: SQLiteKVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  kvstore_sql_put_total.inc()
-  kvstore_sql_inflight_put.inc()
-  kvstore_sql_put_batch_size.observe(records.len.float64)
-  for record in records:
-    kvstore_sql_put_value_bytes.observe(record.val.len.float64)
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_put_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_sql_inflight_put.dec()
+  writeSqlPutMetrics(records)
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -463,15 +441,7 @@ method putImpl*(
 method deleteImpl*(
     self: SQLiteKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
-  kvstore_sql_delete_total.inc()
-  kvstore_sql_inflight_delete.inc()
-  kvstore_sql_delete_batch_size.observe(records.len.float64)
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_delete_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_sql_inflight_delete.dec()
+  writeSqlDeleteMetrics(records)
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -520,15 +490,7 @@ method putAtomicImpl*(
   ## If ANY record has a CAS conflict, NO records are committed.
   ## Returns conflict keys on rollback, empty seq on success.
 
-  kvstore_sql_putatomic_total.inc()
-  kvstore_sql_inflight_putatomic.inc()
-  kvstore_sql_putatomic_batch_size.observe(records.len.float64)
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_putatomic_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_sql_inflight_putatomic.dec()
+  writeSqlPutAtomicMetrics(records)
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -572,15 +534,7 @@ method deleteAtomicImpl*(
   ## All-or-nothing batch delete with CAS.
   ## Same semantics as putAtomic().
 
-  kvstore_sql_deleteatomic_total.inc()
-  kvstore_sql_inflight_deleteatomic.inc()
-  kvstore_sql_deleteatomic_batch_size.observe(records.len.float64)
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_deleteatomic_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
-    kvstore_sql_inflight_deleteatomic.dec()
+  writeSqlDeleteAtomicMetrics(records)
 
   # don't move after closed, every await introduces concurrency
   await checkFairness()
@@ -630,12 +584,7 @@ method moveKeysAtomicImpl*(
   ## Move all keys from oldPrefix/* to newPrefix/* atomically.
   ## Single UPDATE statement in autocommit mode is already atomic.
   ## Returns KVConflictError if any destination key already exists.
-  kvstore_sql_moveatomic_total.inc()
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_moveatomic_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
+  writeSqlMoveAtomicMetrics()
 
   await checkFairness()
 
@@ -674,12 +623,7 @@ method moveKeysAtomicImpl*(
   ## Move multiple prefix pairs atomically in a single transaction.
   ## All pairs succeed or all are rolled back.
   ## Returns KVConflictError if any destination key already exists.
-  kvstore_sql_moveatomic_total.inc()
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_moveatomic_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
+  writeSqlMoveAtomicMetrics()
 
   await checkFairness()
 
@@ -717,12 +661,7 @@ method dropPrefixImpl*(
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Delete all records under prefix/* and the prefix key itself, atomically.
   ## Idempotent: no-op if no matching keys exist.
-  kvstore_sql_dropprefix_total.inc()
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_dropprefix_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
+  writeSqlDropPrefixMetrics()
 
   await checkFairness()
 
@@ -758,12 +697,7 @@ method dropPrefixImpl*(
 ): Future[?!void] {.async: (raises: [CancelledError]).} =
   ## Drop multiple prefixes atomically in a single transaction.
   ## Idempotent: no-op if no matching keys exist.
-  kvstore_sql_dropprefix_total.inc()
-  let startTime = Moment.now()
-  defer:
-    kvstore_sql_dropprefix_duration_seconds.observe(
-      (Moment.now() - startTime).nanos.float64 / 1_000_000_000.0
-    )
+  writeSqlDropPrefixMetrics()
 
   await checkFairness()
 
