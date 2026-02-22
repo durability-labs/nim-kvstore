@@ -47,35 +47,35 @@ type
 # KVRecord Constructors
 # =============================================================================
 
-proc init*[T](_: type KVRecord[T], key: Key, val: T, token = 0'u64): KVRecord[T] =
-  KVRecord[T](key: key, val: val, token: token)
+proc init*[T](_: type KVRecord[T], key: Key, val: sink T, token = 0'u64): KVRecord[T] =
+  KVRecord[T](key: key, val: move val, token: token)
 
 proc init*[void](_: type KVRecord[void], key: Key, token = 0'u64): KVRecord[void] =
   KVRecord[void](key: key, token: token)
 
-proc fromRecord*[T](record: KVRecord[T], val: T): KVRecord[T] =
-  KVRecord[T](key: record.key, val: val, token: record.token)
+proc fromRecord*[T](record: sink KVRecord[T], val: sink T): lent KVRecord[T] =
+  KVRecord[T](key: record.key, val: move val, token: record.token)
 
-proc toRaw*[T](record: KVRecord[T]): RawKVRecord {.inline.} =
+proc toRaw*[T](record: sink KVRecord[T]): RawKVRecord {.inline.} =
   mixin encode
   when T is seq[byte]:
     record
   elif T is not void:
-    RawKVRecord.init(record.key, encode(record.val), record.token)
+    RawKVRecord.init(record.key, encode(move record.val), record.token)
   else:
     RawKVRecord.init(record.key, newSeq[byte](), record.token)
 
-proc toRecord*[T](record: RawKVRecord): ?!KVRecord[T] {.inline.} =
+proc toRecord*[T](record: sink RawKVRecord): ?!KVRecord[T] {.inline.} =
   mixin decode
   when T is seq[byte]:
     success record
   elif T is not void:
-    success KVRecord[T].init(record.key, ?T.decode(record.val), record.token)
+    success KVRecord[T].init(record.key, ?T.decode(move record.val), record.token)
   else:
     success KeyKVRecord.init(record.key, record.token)
 
-proc toRecord*(T: type, record: RawKVRecord): ?!KVRecord[T] {.inline.} =
-  toRecord[T](record)
+proc toRecord*(T: type, record: sink RawKVRecord): ?!KVRecord[T] {.inline.} =
+  toRecord[T](move record)
 
 # KeyKVRecord extraction - for operations that only need key+token
 template toKeyRecord*[T](record: KVRecord[T]): KeyKVRecord =
