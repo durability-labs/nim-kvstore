@@ -53,7 +53,7 @@ proc init*[T](_: type KVRecord[T], key: Key, val: sink T, token = 0'u64): KVReco
 proc init*[void](_: type KVRecord[void], key: Key, token = 0'u64): KVRecord[void] =
   KVRecord[void](key: key, token: token)
 
-proc fromRecord*[T](record: sink KVRecord[T], val: sink T): lent KVRecord[T] =
+proc fromRecord*[T](record: sink KVRecord[T], val: sink T): KVRecord[T] =
   KVRecord[T](key: record.key, val: move val, token: record.token)
 
 proc toRaw*[T](record: sink KVRecord[T]): RawKVRecord {.inline.} =
