@@ -90,8 +90,7 @@ proc path*(self: FSKVStore, key: Key): ?!string {.raises: [].} =
       # `:` are replaced with `/`
       segments.add(ns.field / ns.value)
 
-  let absolute = ?((self.root / segments.joinPath()).absolutePath().catch())
-  let fullname = absolute.addFileExt(FileExt)
+  let fullname = (self.root / segments.joinPath()).addFileExt(FileExt)
 
   if not self.isRootSubdir(fullname):
     return
@@ -117,9 +116,6 @@ method hasImpl*(
     return failure newException(KVStoreError, "FSKVStore is closed")
 
   writeHasMetrics(keys)
-
-  if self.closed:
-    return failure newException(KVStoreError, "FSKVStore is closed")
 
   let signal =
     ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
@@ -195,8 +191,26 @@ method putImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
 
+  # Single pass: deduplicate by key and build (path, record) pairs.
+  # This avoids records.deduplicate (which deep-copies all payloads and
+  # compares seq[byte] with ==) and the separate mapIt (another deep copy).
+  var
+    seen: HashSet[Key]
+    sortedKeys: seq[Key]
+    pairs = newSeqOfCap[(string, RawKVRecord)](records.len)
+
+  for i in 0 ..< records.len:
+    if records[i].key notin seen:
+      seen.incl(records[i].key)
+      sortedKeys.add(records[i].key)
+      pairs.add((?self.path(records[i].key), records[i]))
+
+  sortedKeys.sort(
+    proc(a, b: Key): int =
+      cmp(a.id, b.id)
+  )
+
   # Acquire per-key locks in sorted order to prevent deadlocks
-  let sortedKeys = records.mapIt(it.key).deduplicate().sortedByIt(it.id)
   var heldLocks: seq[(Key, RefCountedLock)]
   defer:
     for (key, rcLock) in heldLocks:
@@ -218,7 +232,7 @@ method putImpl*(
       warn "signal.close failed in put", error = err
 
   let taskFut = signal.wait()
-  self.tp.spawn runPutTaskMany(ctx, records.deduplicate.mapIt((?self.path(it.key), it)))
+  self.tp.spawn runPutTaskMany(ctx, pairs)
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
@@ -385,11 +399,7 @@ method queryImpl*(
       if key != state.queryKey and not state.queryKey.ancestor(key):
         continue
 
-      let absPathRes = catch((state.basePath / relPath).absolutePath())
-      if absPathRes.isErr:
-        return failure(absPathRes.error)
-
-      let absPath = absPathRes.get
+      let absPath = state.basePath / relPath
 
       let ctx = newSharedPtr(TaskCtx[RawKVRecord](signal: state.signal))
 
