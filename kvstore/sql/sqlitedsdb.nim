@@ -438,8 +438,8 @@ proc close*(self: var SQLiteDsDb): ?!void =
   if not RawStmtPtr(self.getChangesStmt).isNil:
     self.getChangesStmt.dispose
 
-  # Deinit all per-instance StmtCache caches.
-  # sqlite3_close_v2 (called below) auto-finalizes any outstanding stmts.
+  # Finalize and free all per-instance StmtCache caches.
+  # Must happen before closeDb so the connection is fully released on Windows.
   self.upsertStmtCache.deinit()
   self.getManyStmtCache.deinit()
   self.hasManyStmtCache.deinit()
