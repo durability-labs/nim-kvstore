@@ -128,7 +128,7 @@ proc writeVersioned*(
 
   block writeBlock:
     let handle =
-      ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate}).toKVError(
+      ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate, OpenFlags.Direct}).toKVError(
         context = "Unable to open temp file '" & tmp & "'",
         errType = KVStoreBackendError,
       )
@@ -155,21 +155,20 @@ proc writeVersioned*(
       if valueWritten != value.len.uint:
         return failure newException(KVStoreBackendError, "Failed writing data")
 
-    # TODO: fsync disabled for benchmarking - restore with configurable sync mode
-    # if fsync(handle).isErr:
-    #   return failure newException(KVStoreBackendError, "Failed to sync file")
+    if fsync(handle).isErr:
+      return failure newException(KVStoreBackendError, "Failed to sync file")
 
   # Handle is closed by defer above before we reach moveFile.
   # On Windows the file must be closed before it can be renamed.
   ?moveFile(tmp, path)
-  # syncParentDirectory(path)
+  syncParentDirectory(path)
 
   return success()
 
 proc deleteFile(path: string): ?!void {.gcsafe, raises: [].} =
   if io2.removeFile(path).isErr:
     return failure newException(KVStoreBackendError, "unable to delete file: " & path)
-  # syncParentDirectory(path)
+  syncParentDirectory(path)
   success()
 
 proc getSync*(path: string, key: Key): ?!RawKVRecord =
