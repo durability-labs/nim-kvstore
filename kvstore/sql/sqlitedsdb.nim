@@ -4,11 +4,11 @@ import std/os
 import std/sequtils
 import std/strformat
 import std/strutils
-import std/tables
 
 import pkg/questionable
 import pkg/questionable/results
 
+import ./stmtcache
 import ./sqliteutils
 
 type
@@ -34,7 +34,7 @@ type
 
   SQLiteDsDb* = object
     readOnly*: bool
-    dbPath*: string
+    dbPath*: cstring
     env*: SQLite
     containsStmt*: ContainsStmt
     getSingleStmt*: GetSingleStmt
@@ -45,13 +45,11 @@ type
     beginStmt*: BeginStmt
     endStmt*: EndStmt
     rollbackStmt*: RollbackStmt
-
-var
-  # Caches for dynamic prepared statements keyed by record count
-  upsertStmtCache*: Table[int, RawStmtPtr]
-  getManyStmtCache*: Table[int, RawStmtPtr]
-  hasManyStmtCache*: Table[int, RawStmtPtr]
-  deleteManyStmtCache*: Table[int, RawStmtPtr]
+    # Caches for dynamic prepared statements keyed by record count
+    upsertStmtCache*: StmtCache
+    getManyStmtCache*: StmtCache
+    hasManyStmtCache*: StmtCache
+    deleteManyStmtCache*: StmtCache
 
 const
   DbExt* = ".sqlite3"
@@ -367,31 +365,28 @@ proc getDBFilePath*(path: string): ?!string =
   return success dbPath
 
 proc getOrPrepareStmt*(
-    self: SQLiteDsDb,
-    cache: var Table[int, RawStmtPtr],
+    self: var SQLiteDsDb,
+    cache: var StmtCache,
     count: int,
     queryBuilder: proc(count: int): string {.gcsafe, raises: [].},
 ): ?!RawStmtPtr =
   ## Get a cached prepared statement or prepare and cache a new one.
   ## The caller must reset+clear_bindings after use instead of finalizing.
-  let cached = cache.getOrDefault(count)
+  let cached = cache.get(count)
   if not cached.isNil:
     discard sqlite3_reset(cached)
     discard sqlite3_clear_bindings(cached)
     return success cached
-
   let
     queryStr = queryBuilder(count)
     flags = SQLITE_PREPARE_PERSISTENT.cuint
-
   var s: RawStmtPtr
   let v = sqlite3_prepare_v3(
     self.env, queryStr.cstring, queryStr.len.cint, flags, addr s, nil
   )
   if v != SQLITE_OK:
     return failure $sqlite3_errstr(v)
-
-  cache[count] = s
+  cache.put(count, s)
   success s
 
 proc checkChanges*(self: SQLiteDsDb): ?!int =
@@ -443,23 +438,12 @@ proc close*(self: var SQLiteDsDb): ?!void =
   if not RawStmtPtr(self.getChangesStmt).isNil:
     self.getChangesStmt.dispose
 
-  {.cast(gcsafe).}:
-    # Finalize all cached dynamic statements
-    for s in upsertStmtCache.values:
-      discard sqlite3_finalize(s)
-    upsertStmtCache.clear()
-
-    for s in getManyStmtCache.values:
-      discard sqlite3_finalize(s)
-    getManyStmtCache.clear()
-
-    for s in hasManyStmtCache.values:
-      discard sqlite3_finalize(s)
-    hasManyStmtCache.clear()
-
-    for s in deleteManyStmtCache.values:
-      discard sqlite3_finalize(s)
-    deleteManyStmtCache.clear()
+  # Deinit all per-instance StmtCache caches.
+  # sqlite3_close_v2 (called below) auto-finalizes any outstanding stmts.
+  self.upsertStmtCache.deinit()
+  self.getManyStmtCache.deinit()
+  self.hasManyStmtCache.deinit()
+  self.deleteManyStmtCache.deinit()
 
   # Now close the database connection
   return closeDb(env)
@@ -540,7 +524,7 @@ proc open*(
   getSingleStmt =
     ?GetSingleStmt.prepare(env.val, GetSingleStmtStr, SQLITE_PREPARE_PERSISTENT)
 
-  success SQLiteDsDb(
+  var db = SQLiteDsDb(
     readOnly: readOnly,
     dbPath: path,
     env: env.release,
@@ -554,3 +538,10 @@ proc open*(
     endStmt: endStmt,
     rollbackStmt: rollbackStmt,
   )
+
+  init(db.upsertStmtCache)
+  init(db.getManyStmtCache)
+  init(db.hasManyStmtCache)
+  init(db.deleteManyStmtCache)
+
+  success db
