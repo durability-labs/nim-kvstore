@@ -128,7 +128,10 @@ proc writeVersioned*(
 
   block writeBlock:
     let handle =
-      ?openFile(tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate, OpenFlags.Direct}).toKVError(
+      ?openFile(
+        tmp, {OpenFlags.Write, OpenFlags.Create, OpenFlags.Truncate, OpenFlags.Direct}
+      )
+      .toKVError(
         context = "Unable to open temp file '" & tmp & "'",
         errType = KVStoreBackendError,
       )
