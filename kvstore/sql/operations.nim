@@ -106,7 +106,7 @@ proc hasSync*(db: SQLiteDsDb, keyId: string): ?!bool {.gcsafe.} =
   discard ?db.containsStmt.query((keyId), onRow)
   success exists
 
-proc hasManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
+proc hasManySync*(db: var SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
   ## Synchronous check for multiple keys.
   ## Returns the subset of input keys that exist in the store, deduplicated.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
@@ -129,8 +129,7 @@ proc hasManySync*(db: SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
       chunkSize = min(MaxSqliteParams, uniqueIds.len - offset)
       chunk = uniqueIds[offset ..< offset + chunkSize]
 
-    {.cast(gcsafe).}:
-      let s = ?db.getOrPrepareStmt(hasManyStmtCache, chunkSize, makeHasManyParamQuery)
+    let s = ?db.getOrPrepareStmt(db.hasManyStmtCache, chunkSize, makeHasManyParamQuery)
 
     discard ?s.execCachedStrings(chunk.mapIt($it), onRow)
     offset += chunkSize
@@ -158,7 +157,9 @@ proc getSync*(db: SQLiteDsDb, key: Key): ?!RawKVRecord {.gcsafe.} =
 
   success RawKVRecord.init(key, value, token.uint64)
 
-proc getManySync*(db: SQLiteDsDb, keys: sink seq[Key]): ?!seq[RawKVRecord] {.gcsafe.} =
+proc getManySync*(
+    db: var SQLiteDsDb, keys: sink seq[Key]
+): ?!seq[RawKVRecord] {.gcsafe.} =
   ## Synchronous get multiple records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
   if keys.len == 0:
@@ -189,8 +190,7 @@ proc getManySync*(db: SQLiteDsDb, keys: sink seq[Key]): ?!seq[RawKVRecord] {.gcs
       chunkSize = min(MaxSqliteParams, keys.len - offset)
       chunk = keys[offset ..< offset + chunkSize]
 
-    {.cast(gcsafe).}:
-      let s = ?db.getOrPrepareStmt(getManyStmtCache, chunkSize, makeGetManyParamQuery)
+    let s = ?db.getOrPrepareStmt(db.getManyStmtCache, chunkSize, makeGetManyParamQuery)
 
     let keyIds = chunk.mapIt(it.id)
     discard ?s.execCachedStrings(keyIds, onRow)
@@ -199,7 +199,7 @@ proc getManySync*(db: SQLiteDsDb, keys: sink seq[Key]): ?!seq[RawKVRecord] {.gcs
   success records
 
 proc putSync*(
-    db: SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
+    db: var SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous put records using a single-statement batch upsert.
   ## All records (inserts and updates) are handled in one CTE-based
@@ -236,8 +236,7 @@ proc putSync*(
       chunkSize = min(maxPerChunk, records.len - offset)
       chunk = records[offset ..< offset + chunkSize]
 
-    {.cast(gcsafe).}:
-      let s = ?db.getOrPrepareStmt(upsertStmtCache, chunkSize, makeBatchUpsertQuery)
+    let s = ?db.getOrPrepareStmt(db.upsertStmtCache, chunkSize, makeBatchUpsertQuery)
 
     let params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
     proc onRow(s: RawStmtPtr) =
@@ -265,7 +264,7 @@ proc putSync*(
   success skipped
 
 proc deleteSync*(
-    db: SQLiteDsDb, records: sink seq[KeyKVRecord], readOnly: bool
+    db: var SQLiteDsDb, records: sink seq[KeyKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous delete records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
@@ -302,11 +301,10 @@ proc deleteSync*(
       chunkSize = min(MaxDeleteChunkSize, records.len - offset)
       chunk = records[offset ..< offset + chunkSize]
 
-    {.cast(gcsafe).}:
-      let s =
-        ?db.getOrPrepareStmt(
-          deleteManyStmtCache, chunkSize, makeDeleteManyReturningQuery
-        )
+    let s =
+      ?db.getOrPrepareStmt(
+        db.deleteManyStmtCache, chunkSize, makeDeleteManyReturningQuery
+      )
 
     let pairs = chunk.mapIt((it.key.id, ?boundedToken(it.token)))
     discard ?s.execCachedIdVersionPairs(pairs, onRow)
@@ -331,7 +329,7 @@ proc deleteSync*(
   success skipped
 
 proc putAtomicSync*(
-    db: SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
+    db: var SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch put using a single-statement batch upsert.
   ## Any conflict (insert or update) rolls back the entire transaction.
@@ -367,8 +365,7 @@ proc putAtomicSync*(
       chunkSize = min(maxPerChunk, records.len - offset)
       chunk = records[offset ..< offset + chunkSize]
 
-    {.cast(gcsafe).}:
-      let s = ?db.getOrPrepareStmt(upsertStmtCache, chunkSize, makeBatchUpsertQuery)
+    let s = ?db.getOrPrepareStmt(db.upsertStmtCache, chunkSize, makeBatchUpsertQuery)
 
     let params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
     proc onRow(s: RawStmtPtr) =
