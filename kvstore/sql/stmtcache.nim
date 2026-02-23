@@ -52,9 +52,10 @@ proc put*(cache: var StmtCache, count: int, stmt: RawStmtPtr) =
   cache.len += 1
 
 proc deinit*(cache: var StmtCache) =
-  ## Free all shared memory. Does NOT finalize statements --
-  ## sqlite3_close_v2 handles that via auto-finalization.
+  ## Finalize all cached prepared statements, then free shared memory.
   if not cache.entries.isNil:
+    for i in 0 ..< cache.len:
+      cache.entries[i].stmt.dispose
     deallocShared(cache.entries)
     cache.entries = nil
   cache.len = 0
