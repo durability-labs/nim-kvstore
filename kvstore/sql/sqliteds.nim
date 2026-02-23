@@ -53,7 +53,7 @@ type
     iterTaskHandle*: Future[?!void] # Track outstanding iterator tasks
     queryValue*: bool # Whether to include value in results
 
-proc path*(self: SQLiteKVStore): string =
+proc path*(self: SQLiteKVStore): cstring =
   self.db.dbPath
 
 proc `readOnly=`*(
