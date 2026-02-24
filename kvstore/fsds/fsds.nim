@@ -40,6 +40,7 @@ type
     tasks: HashSet[Future[?!void]]
     disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
     tp: Taskpool
+    writeConfig*: FsWriteConfig
     closed: bool
 
   # Per-iterator state for query operations.
@@ -232,7 +233,7 @@ method putImpl*(
       warn "signal.close failed in put", error = err
 
   let taskFut = signal.wait()
-  self.tp.spawn runPutTaskMany(ctx, pairs)
+  self.tp.spawn runPutTaskMany(ctx, pairs, self.writeConfig)
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
@@ -276,7 +277,9 @@ method deleteImpl*(
       warn "signal.close failed in delete", error = err
 
   let taskFut = signal.wait()
-  self.tp.spawn runDeleteTaskMany(ctx, records.mapIt((?self.path(it.key), it)))
+  self.tp.spawn runDeleteTaskMany(
+    ctx, records.mapIt((?self.path(it.key), it)), self.writeConfig
+  )
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
@@ -482,7 +485,15 @@ method queryImpl*(
 # Constructor
 # =============================================================================
 
-proc new*(_: type FSKVStore, root: string, tp: Taskpool, depth = 2): ?!FSKVStore =
+proc new*(
+    _: type FSKVStore,
+    root: string,
+    tp: Taskpool,
+    depth = 2,
+    directIO = false,
+    fsyncFile = true,
+    fsyncDir = true,
+): ?!FSKVStore =
   let root =
     ?(
       block:
@@ -494,4 +505,11 @@ proc new*(_: type FSKVStore, root: string, tp: Taskpool, depth = 2): ?!FSKVStore
   if not isDir(root):
     return failure "directory does not exist: " & root
 
-  success FSKVStore(root: root, depth: depth, locks: newLockTable(), tp: tp)
+  success FSKVStore(
+    root: root,
+    depth: depth,
+    locks: newLockTable(),
+    tp: tp,
+    writeConfig:
+      FsWriteConfig(directIO: directIO, fsyncFile: fsyncFile, fsyncDir: fsyncDir),
+  )
