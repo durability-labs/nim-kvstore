@@ -8,6 +8,10 @@
 ##
 ## Linear scan is intentional: typical cardinality is <10 distinct batch sizes,
 ## so a flat array beats hashing and is fully cache-line friendly.
+##
+## Thread safety: NOT thread-safe. Each SQLiteDsDb instance owns its own
+## StmtCache. All access is serialized by the threadpool task model --
+## only one worker thread touches a given SQLiteDsDb at a time.
 
 import ./sqliteutils
 
@@ -25,6 +29,7 @@ type
 
 proc init*(cache: var StmtCache, initialCap: int = DefaultStmtCacheCap) =
   ## Initialize cache. Must be called before use.
+  doAssert initialCap > 0, "StmtCache capacity must be > 0"
   cache.len = 0
   cache.cap = initialCap
   cache.entries = cast[ptr UncheckedArray[StmtCacheEntry]](allocShared0(
