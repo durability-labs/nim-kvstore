@@ -274,9 +274,6 @@ method hasImpl*(
 
   writeSqlHasMetrics(keys)
 
-  # don't move after closed, every await introduces concurrency
-  await checkFairness()
-
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -339,9 +336,6 @@ method getImpl*(
 ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
   writeSqlGetMetrics(keys)
 
-  # don't move after closed, every await introduces concurrency
-  await checkFairness()
-
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -376,6 +370,7 @@ method getImpl*(
 
     when defined(kvstore_expensive_metrics):
       kvstore_sql_get_value_bytes.observe(extracted.val.len.float64)
+
     return success(@[extracted])
   else:
     let signal =
@@ -401,15 +396,13 @@ method getImpl*(
     when defined(kvstore_expensive_metrics):
       for record in records:
         kvstore_sql_get_value_bytes.observe(record.val.len.float64)
+
     return success(records)
 
 method putImpl*(
     self: SQLiteKVStore, records: seq[RawKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   writeSqlPutMetrics(records)
-
-  # don't move after closed, every await introduces concurrency
-  await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
@@ -442,9 +435,6 @@ method deleteImpl*(
     self: SQLiteKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   writeSqlDeleteMetrics(records)
-
-  # don't move after closed, every await introduces concurrency
-  await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
@@ -492,9 +482,6 @@ method putAtomicImpl*(
 
   writeSqlPutAtomicMetrics(records)
 
-  # don't move after closed, every await introduces concurrency
-  await checkFairness()
-
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -535,9 +522,6 @@ method deleteAtomicImpl*(
   ## Same semantics as putAtomic().
 
   writeSqlDeleteAtomicMetrics(records)
-
-  # don't move after closed, every await introduces concurrency
-  await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
@@ -586,8 +570,6 @@ method moveKeysAtomicImpl*(
   ## Returns KVConflictError if any destination key already exists.
   writeSqlMoveAtomicMetrics()
 
-  await checkFairness()
-
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -625,8 +607,6 @@ method moveKeysAtomicImpl*(
   ## Returns KVConflictError if any destination key already exists.
   writeSqlMoveAtomicMetrics()
 
-  await checkFairness()
-
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -663,8 +643,6 @@ method dropPrefixImpl*(
   ## Idempotent: no-op if no matching keys exist.
   writeSqlDropPrefixMetrics()
 
-  await checkFairness()
-
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
@@ -698,8 +676,6 @@ method dropPrefixImpl*(
   ## Drop multiple prefixes atomically in a single transaction.
   ## Idempotent: no-op if no matching keys exist.
   writeSqlDropPrefixMetrics()
-
-  await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
@@ -736,16 +712,18 @@ method closeImpl*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
 
   self.closed = true
 
-  defer:
+  try:
+    let tasks = self.tasks.toSeq().mapIt(it.cancelAndWait())
+    await noCancel allFutures(tasks)
+
+    # Wait for dispose calls to finish (don't cancel them)
+    await noCancel allFutures(self.disposeHandles.toSeq())
+
+    ?self.db.close()
+  finally:
+    # don't change to deffer, otherwise you'll get a double close if
+    # close is called twice
     deinitLock(self.lock) # don't leak resources
-
-  let tasks = self.tasks.toSeq().mapIt(it.cancelAndWait())
-  await noCancel allFutures(tasks)
-
-  # Wait for dispose calls to finish (don't cancel them)
-  await noCancel allFutures(self.disposeHandles.toSeq())
-
-  ?self.db.close()
 
   return success()
 
@@ -773,9 +751,6 @@ method queryImpl*(
 
   let asyncLock = newAsyncLock()
   proc next(): Future[?!(?RawKVRecord)] {.async: (raises: [CancelledError]).} =
-    # don't move after closed, every await introduces concurrency
-    await checkFairness()
-
     if self.closed or state.isDisposed or state.finished.load():
       return failure newException(
         KVStoreError, "SQLiteKVStore is closed or iterator disposed/finished"

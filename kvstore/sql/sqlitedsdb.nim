@@ -333,7 +333,10 @@ proc dataCol*(s: RawStmtPtr, index: int): BoundDataCol =
       dataLen = sqlite3_column_bytes(s, i)
       dataBytes = cast[ptr UncheckedArray[byte]](blob)
 
-    @(toOpenArray(dataBytes, 0, dataLen - 1))
+    if not dataBytes.isNil:
+      @(toOpenArray(dataBytes, 0, dataLen - 1))
+    else:
+      @[]
 
 proc timestampCol*(s: RawStmtPtr, index: int): BoundTimestampCol =
   checkColMetadata(s, index, TimestampColName)
