@@ -78,6 +78,12 @@ proc hash*[T](fut: Future[T]): Hash =
   ## Hash a chronos Future by its pointer address.
   hash(cast[pointer](fut))
 
+proc boundedToken*(token: uint64): ?!int64 =
+  if token > uint64(high(int64)):
+    return failure(newException(KVStoreCorruption, "Token overflow"))
+
+  success token.int64
+
 template toKVError*[T, E](
     self: Result[T, E], context: string = "Error", errType: typedesc = KVStoreError
 ): ?!T =
@@ -115,29 +121,3 @@ var
   fairnessTimeSlot {.global.}: Moment
   fairnessLastCalled {.global.}: Moment
   fairnessInitialized {.global.}: bool = false
-
-proc checkFairness*() {.async: (raises: [CancelledError]).} =
-  ## Yield to prevent event loop starvation during bursty operations.
-  ##
-  ## Only yields when calls are frequent (bursty). Sparse calls reset the
-  ## time slot without yielding, so occasional operations don't pay the cost.
-  ##
-  ## Uses sleepAsync(0) for minimal yielding - just processes pending callbacks.
-
-  if not fairnessInitialized:
-    fairnessTimeSlot = Moment.now() + TimeSlotDuration
-    fairnessLastCalled = Moment.now()
-    fairnessInitialized = true
-
-  let now = Moment.now()
-
-  if (now - fairnessLastCalled) >= LastCalledInterval:
-    # Sparse call - new burst starting, reset deadline
-    fairnessTimeSlot = now + TimeSlotDuration
-  elif now >= fairnessTimeSlot:
-    # Bursty and past deadline - yield and set next deadline
-    # sleepAsync(0) just yields without timer overhead
-    await sleepAsync(0)
-    fairnessTimeSlot = Moment.now() + TimeSlotDuration
-
-  fairnessLastCalled = now
