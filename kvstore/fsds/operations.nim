@@ -76,16 +76,25 @@ proc syncParentDirectory(path: string, config: FsWriteConfig) {.gcsafe.} =
 # Sync I/O Operations (blocking, called from threadpool workers)
 # =============================================================================
 
+proc openFileOrKeyNotFound(path: string): ?!IoHandle =
+  ## Open file, mapping ENOENT to KVStoreKeyNotFound
+  let res = openFile(path, {OpenFlags.Read})
+  if res.isErr:
+    let errCode = res.error
+    # ENOENT = 2 on most systems
+    if errCode == 2.IoErrorCode:
+      return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
+    return failure newException(
+      KVStoreBackendError, "Unable to open file: " & path & " (error: " & $errCode & ")"
+    )
+  success res.value
+
 proc readVersioned*(
     path: string, key: Key, data = true
 ): ?!RawKVRecord {.gcsafe, raises: [].} =
-  if not isFile(path):
-    return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
-
-  let handle =
-    ?openFile(path, {OpenFlags.Read}).toKVError(
-      context = "Unable to open file: " & path, errType = KVStoreBackendError
-    )
+  # Optimization: Removed isFile check - saves 1 syscall
+  # openFileOrKeyNotFound maps ENOENT to KeyNotFound
+  let handle = ?openFileOrKeyNotFound(path)
 
   defer:
     discard closeFile(handle)
@@ -98,36 +107,28 @@ proc readVersioned*(
   if size < TokenBytes:
     return failure newException(KVStoreCorruption, "File too small for record: " & path)
 
-  var header: array[TokenBytes, byte]
-  let headerRead =
-    ?readFile(handle, header).toKVError(
-      context = "Unable to read token header", errType = KVStoreCorruption
+  # Optimization: Read entire file in one operation instead of separate header + payload reads
+  var entireFile = newSeq[byte](size.int)
+  let bytesRead =
+    ?readFile(handle, entireFile).toKVError(
+      context = "Unable to read file: " & path, errType = KVStoreBackendError
     )
 
-  if headerRead != TokenBytes.uint:
-    return failure newException(KVStoreCorruption, "Unable to read token header")
+  if bytesRead != size.uint:
+    return failure newException(KVStoreBackendError, "unable to read complete file")
 
-  let token = uint64.fromBytesLE(header)
-  let payloadLen = size - TokenBytes
+  let token = uint64.fromBytesLE(entireFile[0 ..< TokenBytes])
 
   let value =
     if data:
-      var value = newSeq[byte](payloadLen)
-      if payloadLen > 0:
-        let payloadRead =
-          ?readFile(handle, value).toKVError(
-            context = "Unable to read payload", errType = KVStoreBackendError
-          )
-        if payloadRead != payloadLen.uint:
-          return failure newException(KVStoreBackendError, "unable to read payload")
-      value
+      entireFile[TokenBytes ..< entireFile.len]
     else:
       EmptyBytes
 
   return success RawKVRecord.init(key, value, token)
 
 proc writeVersioned*(
-    path: string, token: uint64, value: seq[byte], config = DefaultFsWriteConfig
+    path: string, token: int64, value: seq[byte], config = DefaultFsWriteConfig
 ): ?!void {.gcsafe, raises: [].} =
   let dir = parentDir(path)
   if not dirExists(dir):
@@ -162,7 +163,7 @@ proc writeVersioned*(
       discard closeFile(handle)
 
     let
-      header = token.toBytesLE()
+      header = token.uint64.toBytesLE()
       headerWritten =
         ?writeFile(handle, header).toKVError(
           context = "Failed writing token", errType = KVStoreBackendError
@@ -223,7 +224,7 @@ proc putSync*(
         KVConflictError, "Token not 0 for new record " & $record.key
       )
     else:
-      ?writeVersioned(path, 1'u64, record.val, config)
+      ?writeVersioned(path, 1, record.val, config)
   else:
     let current = ?readVersioned(path, record.key)
     if current.token != record.token:
@@ -233,7 +234,9 @@ proc putSync*(
           ", got " & $current.token,
       )
     else:
-      ?writeVersioned(path, current.token + 1, record.val, config)
+      ?writeVersioned(
+        path, ?boundedToken((current.token + 1).uint64), record.val, config
+      )
 
   return success()
 
