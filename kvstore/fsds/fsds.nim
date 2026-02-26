@@ -27,6 +27,9 @@ import ./operations
 
 export locks, operations
 
+logScope:
+  topics = "kvstore fsds"
+
 type
   FSKVStore* = ref object of KVStore
     ## Filesystem-backed kvstore that stores records as files.
@@ -110,9 +113,6 @@ method hasImpl*(
   ## Returns the subset of input keys that exist in the store, in input order.
   ##
 
-  # XXX: don't move after closed, every await introduces concurrency
-  await checkFairness()
-
   if self.closed:
     return failure newException(KVStoreError, "FSKVStore is closed")
 
@@ -145,39 +145,66 @@ method hasImpl*(
 method getImpl*(
     self: FSKVStore, keys: seq[Key]
 ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
-  # XXX: don't move after closed, every await introduces concurrency
-  await checkFairness()
-
   if self.closed:
     return failure newException(KVStoreError, "FSKVStore is closed")
 
   writeGetMetrics(keys)
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
+  let
+    uniqueKeys = keys.deduplicate()
+    keyPaths = uniqueKeys.mapIt((?self.path(it), it))
 
-  let ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in get", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
+    # Parallel read - chunk keys and spawn multiple workers
+    maxParallel = min(self.tp.numThreads, 8)
+    numChunks = min(keyPaths.len, maxParallel)
+    chunkSize = (keyPaths.len + numChunks - 1) div max(numChunks, 1)
 
-  let taskFut = signal.wait()
-  self.tp.spawn runGetTaskMany(ctx, keys.deduplicate().mapIt((?self.path(it), it)))
+  var chunkFuts: seq[
+    (Future[?!void].Raising([CancelledError]), SharedPtr[TaskCtx[seq[RawKVRecord]]])
+  ]
+  for i in 0 ..< numChunks:
+    trace "Getting batch chunk", size = numChunks
+    let
+      start = i * chunkSize
+      chunkEnd = min((i + 1) * chunkSize, keyPaths.len)
+      chunk = keyPaths[start ..< chunkEnd]
+      signal =
+        ?ThreadSignalPtr.new().toKVError(
+          context = "Failed to create signal for get chunk " & $i
+        )
+      ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
+      taskFut = signal.wait()
 
-  let fut = awaitSignal(taskFut)
-  self.tasks.incl(fut)
-  defer:
+    self.tp.spawn runGetTaskMany(ctx, chunk)
+    let fut = awaitSignal(taskFut)
+    self.tasks.incl(fut)
+    chunkFuts.add((fut, ctx))
+
+  # Wait for all chunks and collect results
+  # Use allFinished to wait for all futures at once
+  let finishedFuts = (await allFinished(chunkFuts.mapIt(it[0]))).toHashSet
+  for fut in finishedFuts:
     self.tasks.excl(fut)
 
-  ?await fut
-
-  let records = ?extract(ctx[].result)
+  # Check for errors and collect results
+  var allRecords: seq[RawKVRecord]
+  for i, (fut, ctx) in chunkFuts:
+    try:
+      # Extract results from context
+      ?await fut
+      let records = ?extract(ctx[].result)
+      trace "Got records from store", records = records.len
+      allRecords.add(records)
+    finally:
+      # Close the signal for this chunk
+      if err =? ctx[].signal.close().errorOption:
+        warn "signal.close failed in get chunk", error = err, chunk = i
 
   when defined(kvstore_expensive_metrics):
-    kvstore_fs_get_value_bytes.observe(records.mapIt(it.val.len.float64))
+    kvstore_fs_get_value_bytes.observe(allRecords.mapIt(it.val.len.float64))
 
-  return success records
+  trace "Got total records from store", records = allRecords.len
+  return success allRecords
 
 method putImpl*(
     self: FSKVStore, records: seq[RawKVRecord]
@@ -186,8 +213,6 @@ method putImpl*(
     return failure newException(KVStoreError, "FSKVStore is closed")
 
   writePutMetrics(records)
-
-  await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
@@ -248,8 +273,6 @@ method deleteImpl*(
     self: FSKVStore, records: seq[KeyKVRecord]
 ): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   writeDeleteMetrics(records)
-
-  await checkFairness()
 
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
@@ -357,9 +380,6 @@ method queryImpl*(
   state.isDisposed = false
 
   proc next(): Future[?!(?RawKVRecord)] {.async: (raises: [CancelledError]).} =
-    # don't move to after close/disposed/finished checks due to concurrency
-    await checkFairness()
-
     if self.closed or state.isDisposed or state.finished:
       return failure newException(
         KVStoreError, "FSKVStore is closed or iterator disposed/finished"
