@@ -38,6 +38,7 @@ type
   # Error types
   KVStoreError* = object of CatchableError
   KVConflictError* = object of KVStoreError
+  KVStoreDuplicateKeyError* = object of KVStoreError
   KVStoreMaxRetriesError* = object of KVStoreError
   KVStoreBackendError* = object of KVStoreError
   KVStoreKeyNotFound* = object of KVStoreBackendError
