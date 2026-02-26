@@ -53,11 +53,6 @@ proc newRollbackError*(
 ): ref RollbackError =
   newRollbackError(rbErr, opErr.msg)
 
-proc boundedToken*(token: uint64): ?!int64 =
-  if token > uint64(high(int64)):
-    return failure(newException(KVStoreCorruption, "SQLite token overflow"))
-  success token.int64
-
 proc checkWritable*(readOnly: bool): ?!void =
   if readOnly:
     return failure(newException(KVStoreBackendError, "SQLite store opened read-only"))
