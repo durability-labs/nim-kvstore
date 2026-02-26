@@ -1,6 +1,6 @@
 {.push raises: [].}
 
-import std/sequtils
+import std/[sequtils, sets]
 
 import pkg/chronos
 import pkg/questionable
@@ -11,6 +11,22 @@ import ./types
 import ./kvstore
 import ./query
 import ./metrics
+
+# =============================================================================
+# Duplicate Key Detection
+# =============================================================================
+
+proc checkDuplicates[T](records: seq[KVRecord[T]]): ?!void =
+  var seen = initHashSet[string]()
+  for rec in records:
+    if rec.key.id in seen:
+      return failure(
+        newException(
+          KVStoreDuplicateKeyError, "Duplicate key in atomic batch: " & rec.key.id
+        )
+      )
+    seen.incl(rec.key.id)
+  success()
 
 # =============================================================================
 # Single KVRecord Convenience Wrappers
@@ -142,15 +158,17 @@ proc contains*(
 
 proc putAtomic*[T](
     self: KVStore, records: seq[KVRecord[T]]
-): Future[?!seq[Key]] {.async: (raises: [CancelledError], raw: true).} =
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
   ## Atomic batch put - all succeed or all fail
+  ?checkDuplicates(records)
+
   let rawRecords =
     when T isnot seq[byte]:
       records.mapIt(it.toRaw)
     else:
       records
 
-  self.putAtomicImpl(rawRecords)
+  await self.putAtomicImpl(rawRecords)
 
 proc putAtomic*[T](
     self: KVStore, record: KVRecord[T]
@@ -186,9 +204,11 @@ proc deleteAtomic*(
 # RawKVRecord overloads for deleteAtomic
 proc deleteAtomic*[T](
     self: KVStore, records: seq[KVRecord[T]]
-): Future[?!seq[Key]] {.async: (raw: true, raises: [CancelledError]).} =
+): Future[?!seq[Key]] {.async: (raises: [CancelledError]).} =
+  ?checkDuplicates(records)
+
   let keyRecords = when T is void: records else: records.toKeyRecord
-  self.deleteAtomicImpl(keyRecords)
+  await self.deleteAtomicImpl(keyRecords)
 
 proc deleteAtomic*[T](
     self: KVStore, record: KVRecord[T]
@@ -410,6 +430,8 @@ proc tryPutAtomic*[T](
   if records.len == 0:
     return success()
 
+  ?checkDuplicates(records)
+
   if not self.supportsAtomicBatch():
     return failure newException(
       KVStoreBackendError, "Atomic batch not supported by this backend"
@@ -437,8 +459,11 @@ proc tryPutAtomic*[T](
       )
 
     current = ?(await middleware(current, conflicts))
-    if current.len != records.len:
-      return failure newException(KVStoreError, "Middleware returned empty or invalid batch")
+
+    # Validate middleware returned valid batch with same key set
+    ?checkDuplicates(current)
+    if toHashSet(records.mapIt(it.key.id)) != toHashSet(current.mapIt(it.key.id)):
+      return failure newException(KVStoreError, "Middleware returned different key set")
 
     dec remaining
 
@@ -467,6 +492,8 @@ proc tryDeleteAtomic*(
   if records.len == 0:
     return success()
 
+  ?checkDuplicates(records)
+
   if not self.supportsAtomicBatch():
     return failure newException(
       KVStoreBackendError, "Atomic batch not supported by this backend"
@@ -494,8 +521,11 @@ proc tryDeleteAtomic*(
       )
 
     current = ?(await middleware(current, conflicts))
-    if current.len == 0:
-      return failure newException(KVStoreError, "Middleware returned empty batch")
+
+    # Validate middleware returned valid batch with same key set
+    ?checkDuplicates(current)
+    if toHashSet(records.mapIt(it.key.id)) != toHashSet(current.mapIt(it.key.id)):
+      return failure newException(KVStoreError, "Middleware returned different key set")
 
     dec remaining
 
