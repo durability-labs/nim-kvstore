@@ -453,7 +453,8 @@ proc tryPutAtomic*[T](
 
     current = ?(await middleware(current, conflicts))
     if current.len != records.len:
-      return failure newException(KVStoreError, "Middleware returned empty or invalid batch")
+      return
+        failure newException(KVStoreError, "Middleware returned empty or invalid batch")
 
     dec remaining
 
