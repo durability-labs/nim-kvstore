@@ -62,10 +62,11 @@ suite "KVStore duplicate key rejection (SQLite)":
     tp.shutdown()
 
   test "should reject duplicate keys in atomic put batch":
-    let records = @[
-      RawKVRecord.init(key1, "value1".toBytes, 0),
-      RawKVRecord.init(key1, "value2".toBytes, 0) # duplicate key
-    ]
+    let records =
+      @[
+        RawKVRecord.init(key1, "value1".toBytes, 0),
+        RawKVRecord.init(key1, "value2".toBytes, 0), # duplicate key
+      ]
     let res = await ds.putAtomic(records)
     check res.isErr
     check res.error of KVStoreDuplicateKeyError
@@ -75,10 +76,11 @@ suite "KVStore duplicate key rejection (SQLite)":
     (await ds.put(RawKVRecord.init(key1, "value1".toBytes, 0))).tryGet()
 
     # Try to delete with duplicate key in batch
-    let records = @[
-      KeyKVRecord.init(key1, 1),
-      KeyKVRecord.init(key1, 2) # duplicate key with different token
-    ]
+    let records =
+      @[
+        KeyKVRecord.init(key1, 1),
+        KeyKVRecord.init(key1, 2), # duplicate key with different token
+      ]
     let res = await ds.deleteAtomic(records)
     check res.isErr
     check res.error of KVStoreDuplicateKeyError
@@ -122,17 +124,17 @@ suite "KVStore middleware key-set validation":
 
     # TryPutAtomic with stale tokens to force conflict (middleware will be invoked)
     let middleware = proc(
-      failed: seq[RawKVRecord],
-      conflicts: seq[Key]
+        failed: seq[RawKVRecord], conflicts: seq[Key]
     ): Future[?!seq[RawKVRecord]] {.async: (raises: [CancelledError]).} =
       # Try to return different keys than original
       let newKey = Key.init("middleware/tampered").get()
       success(@[RawKVRecord.init(newKey, "newval".toBytes, 0)])
 
-    let records = @[
-      RawKVRecord.init(key1, "value1".toBytes, 0),  # stale token - will conflict
-      RawKVRecord.init(key2, "value2".toBytes, 0)  # stale token - will conflict
-    ]
+    let records =
+      @[
+        RawKVRecord.init(key1, "value1".toBytes, 0), # stale token - will conflict
+        RawKVRecord.init(key2, "value2".toBytes, 0), # stale token - will conflict
+      ]
 
     let res = await ds.tryPutAtomic(records, maxRetries = 1, middleware)
     check res.isErr
@@ -148,17 +150,17 @@ suite "KVStore middleware key-set validation":
 
     # TryDeleteAtomic with stale tokens to force conflict (middleware will be invoked)
     let middleware = proc(
-      failed: seq[KeyKVRecord],
-      conflicts: seq[Key]
+        failed: seq[KeyKVRecord], conflicts: seq[Key]
     ): Future[?!seq[KeyKVRecord]] {.async: (raises: [CancelledError]).} =
       # Try to return different keys than original
       let newKey = Key.init("middleware/tampered").get()
       success(@[KeyKVRecord.init(newKey, 1)])
 
-    let records = @[
-      KeyKVRecord.init(key1, 0),  # stale token - will conflict
-      KeyKVRecord.init(key2, 0)   # stale token - will conflict
-    ]
+    let records =
+      @[
+        KeyKVRecord.init(key1, 0), # stale token - will conflict
+        KeyKVRecord.init(key2, 0), # stale token - will conflict
+      ]
 
     let res = await ds.tryDeleteAtomic(records, maxRetries = 1, middleware)
     check res.isErr
