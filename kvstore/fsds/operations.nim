@@ -81,9 +81,15 @@ proc openFileOrKeyNotFound(path: string): ?!IoHandle =
   let res = openFile(path, {OpenFlags.Read})
   if res.isErr:
     let errCode = res.error
-    # ENOENT = 2 on most systems
-    if errCode == 2.IoErrorCode:
-      return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
+    when defined(windows):
+      # XXX: Windows can return ERROR_PATH_NOT_FOUND for missing files,
+      # and ERROR_FILE_NOT_FOUND for missing files or directories.
+      if errCode == 2.IoErrorCode or errCode == 3.IoErrorCode:
+        return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
+    else:
+      # ENOENT is the standard "file not found" error code on POSIX
+      if errCode == 2.IoErrorCode:
+        return failure newException(KVStoreKeyNotFound, "file does not exist: " & path)
     return failure newException(
       KVStoreBackendError, "Unable to open file: " & path & " (error: " & $errCode & ")"
     )
