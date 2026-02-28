@@ -117,7 +117,32 @@ template toKVError*[T, E](
         newException(errType, context & ": " & $e)
     )
 
-var
-  fairnessTimeSlot {.global.}: Moment
-  fairnessLastCalled {.global.}: Moment
-  fairnessInitialized {.global.}: bool = false
+template batchChunks*(items: typed, maxChunkSize: int, chunkName, body: untyped) =
+  ## Iterate over `items` in size-limited chunks (max `maxChunkSize` items per chunk).
+  ##
+  ## Injects `chunkName` as the current chunk slice and `chunkIdx` as
+  ## the zero-based chunk index. The body is executed once per chunk.
+  ##
+  ## This is useful when operations have a hard limit on items per batch
+  ## (e.g., SQLite parameter limits, API batch size limits).
+  ##
+  ## Usage:
+  ##   batchChunks(mySeq, 1000, chunk):
+  ##     # `chunk` has at most 1000 items, `chunkIdx` is 0-based
+  ##     processBatch(chunk)
+
+  let
+    batchLen = items.len
+    batchNumChunks =
+      if batchLen == 0 or maxChunkSize <= 0:
+        0
+      else:
+        (batchLen + maxChunkSize - 1) div maxChunkSize # Ceiling division
+    batchChunkSize = maxChunkSize
+
+  for chunkIdx {.inject.} in 0 ..< batchNumChunks:
+    let
+      batchStart = chunkIdx * batchChunkSize
+      batchEnd = min(batchStart + batchChunkSize, batchLen)
+      chunkName = items[batchStart ..< batchEnd]
+    body
