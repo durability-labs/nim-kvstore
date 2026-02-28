@@ -156,21 +156,17 @@ method getImpl*(
 
     # Parallel read - chunk keys and spawn multiple workers
     maxParallel = min(self.tp.numThreads, 8)
-    numChunks = min(keyPaths.len, maxParallel)
-    chunkSize = (keyPaths.len + numChunks - 1) div max(numChunks, 1)
 
   var chunkFuts: seq[
     (Future[?!void].Raising([CancelledError]), SharedPtr[TaskCtx[seq[RawKVRecord]]])
   ]
-  for i in 0 ..< numChunks:
-    trace "Getting batch chunk", size = numChunks
+
+  batchChunks(keyPaths, maxParallel, chunk):
+    trace "Getting batch chunk", size = chunk.len, chunkIdx
     let
-      start = i * chunkSize
-      chunkEnd = min((i + 1) * chunkSize, keyPaths.len)
-      chunk = keyPaths[start ..< chunkEnd]
       signal =
         ?ThreadSignalPtr.new().toKVError(
-          context = "Failed to create signal for get chunk " & $i
+          context = "Failed to create signal for get chunk " & $chunkIdx
         )
       ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
       taskFut = signal.wait()
