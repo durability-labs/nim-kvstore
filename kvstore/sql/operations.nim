@@ -118,16 +118,9 @@ proc hasManySync*(db: var SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
     foundIds.incl(Key.init(keyId).expect("Invalid key from DB"))
 
   # Chunk unique IDs to stay within SQLite parameter limits
-  var offset = 0
-  while offset < uniqueIds.len:
-    let
-      chunkSize = min(MaxSqliteParams, uniqueIds.len - offset)
-      chunk = uniqueIds[offset ..< offset + chunkSize]
-
-    let s = ?db.getOrPrepareStmt(db.hasManyStmtCache, chunkSize, makeHasManyParamQuery)
-
+  batchChunks(uniqueIds, MaxSqliteParams, chunk):
+    let s = ?db.getOrPrepareStmt(db.hasManyStmtCache, chunk.len, makeHasManyParamQuery)
     discard ?s.execCachedStrings(chunk.mapIt($it), onRow)
-    offset += chunkSize
 
   success uniqueIds.filterIt(it in foundIds)
 
@@ -179,17 +172,10 @@ proc getManySync*(
     )
 
   # Chunk keys to stay within SQLite parameter limits
-  var offset = 0
-  while offset < keys.len:
-    let
-      chunkSize = min(MaxSqliteParams, keys.len - offset)
-      chunk = keys[offset ..< offset + chunkSize]
-
-    let s = ?db.getOrPrepareStmt(db.getManyStmtCache, chunkSize, makeGetManyParamQuery)
-
+  batchChunks(keys, MaxSqliteParams, chunk):
+    let s = ?db.getOrPrepareStmt(db.getManyStmtCache, chunk.len, makeGetManyParamQuery)
     let keyIds = chunk.mapIt(it.id)
     discard ?s.execCachedStrings(keyIds, onRow)
-    offset += chunkSize
 
   success records
 
@@ -225,13 +211,8 @@ proc putSync*(
     if inTransaction and not committed:
       discard db.rollbackStmt.exec()
 
-  var offset = 0
-  while offset < records.len:
-    let
-      chunkSize = min(maxPerChunk, records.len - offset)
-      chunk = records[offset ..< offset + chunkSize]
-
-    let s = ?db.getOrPrepareStmt(db.upsertStmtCache, chunkSize, makeBatchUpsertQuery)
+  batchChunks(records, maxPerChunk, chunk):
+    let s = ?db.getOrPrepareStmt(db.upsertStmtCache, chunk.len, makeBatchUpsertQuery)
 
     let params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
     proc onRow(s: RawStmtPtr) =
@@ -240,16 +221,14 @@ proc putSync*(
     discard ?s.execCachedUpsertRecords(params, onRow)
 
     let changes = ?db.checkChanges()
-    if changes > chunkSize:
+    if changes > chunk.len:
       return failure(
         newException(
           KVStoreCorruption,
           "Batch upsert affected more rows (" & $changes & ") than records (" &
-            $chunkSize & ")",
+            $chunk.len & ")",
         )
       )
-
-    offset += chunkSize
 
   ?db.endStmt.exec()
   committed = true
@@ -290,15 +269,10 @@ proc deleteSync*(
     deletedIds.incl($sqlite3_column_text_not_null(s, 0.cint))
 
   # Chunk records to stay within SQLite parameter limits (2 params per record)
-  var offset = 0
-  while offset < records.len:
-    let
-      chunkSize = min(MaxDeleteChunkSize, records.len - offset)
-      chunk = records[offset ..< offset + chunkSize]
-
+  batchChunks(records, MaxDeleteChunkSize, chunk):
     let s =
       ?db.getOrPrepareStmt(
-        db.deleteManyStmtCache, chunkSize, makeDeleteManyReturningQuery
+        db.deleteManyStmtCache, chunk.len, makeDeleteManyReturningQuery
       )
 
     let pairs = chunk.mapIt((it.key.id, ?boundedToken(it.token)))
@@ -306,7 +280,6 @@ proc deleteSync*(
 
     let changes = ?db.checkChanges()
     totalChanges += changes
-    offset += chunkSize
 
   if totalChanges > records.len:
     return failure(
@@ -354,20 +327,14 @@ proc putAtomicSync*(
     if inTransaction and not committed:
       discard db.rollbackStmt.exec()
 
-  var offset = 0
-  while offset < records.len:
-    let
-      chunkSize = min(maxPerChunk, records.len - offset)
-      chunk = records[offset ..< offset + chunkSize]
-
-    let s = ?db.getOrPrepareStmt(db.upsertStmtCache, chunkSize, makeBatchUpsertQuery)
+  batchChunks(records, maxPerChunk, chunk):
+    let s = ?db.getOrPrepareStmt(db.upsertStmtCache, chunk.len, makeBatchUpsertQuery)
 
     let params = chunk.mapIt((it.key.id, it.val, ?upsertVersion(it.token), stamp))
     proc onRow(s: RawStmtPtr) =
       affectedIds.incl($sqlite3_column_text_not_null(s, BatchUpsertReturnIdCol.cint))
 
     discard ?s.execCachedUpsertRecords(params, onRow)
-    offset += chunkSize
 
   # Any record not in the affected set is a conflict
   let conflicts = records.filterIt(it.key.id notin affectedIds).mapIt(it.key)
