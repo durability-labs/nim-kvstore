@@ -572,7 +572,7 @@ proc moveSyncMulti*(
 
     let queryResult =
       db.moveStmt.query((newPrefixStr, substrOffset, globPattern, exactKey), onRow)
-    without _ =? queryResult:
+    if queryResult.isErr:
       # Check if the error is a constraint violation (destination key exists)
       let stepErr = queryResult.error
       if stepErr of SQLiteStepError and
