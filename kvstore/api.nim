@@ -16,7 +16,7 @@ import ./metrics
 # Duplicate Key Detection
 # =============================================================================
 
-proc checkDuplicates[T](records: seq[KVRecord[T]]): ?!void =
+proc checkDuplicates[T](records: openArray[KVRecord[T]]): ?!void =
   var seen = initHashSet[string]()
   for rec in records:
     if rec.key.id in seen:

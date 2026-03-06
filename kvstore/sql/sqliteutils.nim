@@ -570,8 +570,8 @@ proc setProductionPragmas*(env: SQLite): ?!void =
   # Keep temporary tables and indices in memory
   ?env.execPragma("PRAGMA temp_store = MEMORY;")
 
-  # Memory-mapped I/O for dbs of up to 500GB
-  ?env.execPragma("PRAGMA mmap_size = 536870912000;")
+  # Memory-mapped I/O for dbs of up to 32GB
+  ?env.execPragma("PRAGMA mmap_size = 34359738368;")
 
   # Checkpoint every 10000 pages instead of default 1000
   # Reduces checkpoint stalls during large batch writes
