@@ -144,5 +144,5 @@ template batchChunks*(items: typed, maxChunkSize: int, chunkName, body: untyped)
     let
       batchStart = chunkIdx * batchChunkSize
       batchEnd = min(batchStart + batchChunkSize, batchLen)
-      chunkName = items[batchStart ..< batchEnd]
+    var chunkName = items[batchStart ..< batchEnd]
     body

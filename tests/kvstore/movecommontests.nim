@@ -190,10 +190,7 @@ proc moveTests*(ds: KVStore, key: Key) =
       (await ds.put((oldLeafs / "2").tryGet(), "leaf2".toBytes)).tryGet()
       (await ds.put(oldMeta, "overlay-metadata".toBytes)).tryGet()
 
-      (await ds.moveKeysAtomic(@[
-        (oldLeafs, newLeafs),
-        (oldMeta, newMeta),
-      ])).tryGet()
+      (await ds.moveKeysAtomic(@[(oldLeafs, newLeafs), (oldMeta, newMeta)])).tryGet()
 
       # All old keys gone
       check not (await ds.has((oldLeafs / "0").tryGet())).tryGet()

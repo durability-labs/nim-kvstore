@@ -23,8 +23,7 @@ proc acquire*(
 ): Future[RefCountedLock] {.async: (raises: [CancelledError]).} =
   ## Acquire a per-key lock. Refcount is incremented BEFORE await to track waiters.
   ## This prevents the race where a lock is deleted while tasks are waiting on it.
-  var rcLock =
-    locks.mgetOrPut(key, RefCountedLock(lock: newAsyncLock(), refCount: 0))
+  var rcLock = locks.mgetOrPut(key, RefCountedLock(lock: newAsyncLock(), refCount: 0))
   rcLock.refCount += 1
   try:
     await rcLock.lock.acquire()
@@ -35,9 +34,7 @@ proc acquire*(
     raise exc
   rcLock
 
-proc release*(
-    locks: LockTable, key: Key, rcLock: RefCountedLock
-) {.raises: [].} =
+proc release*(locks: LockTable, key: Key, rcLock: RefCountedLock) {.raises: [].} =
   ## Release a per-key lock. Only removes from table when refcount reaches zero.
   if rcLock.lock.locked:
     try:

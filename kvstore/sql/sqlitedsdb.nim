@@ -154,9 +154,6 @@ const
 
   HasManyStmtIdCol* = 0
 
-
-
-
   DeleteStmtStr* =
     fmt"""
     DELETE FROM {TableName}
@@ -288,7 +285,6 @@ proc makeDeleteManyParamQuery*(count: int): string {.raises: [].} =
   except ValueError:
     # Should never happen with controlled placeholders
     raiseAssert("Invalid DeleteManyStmtStr format")
-
 
 proc checkColMetadata(s: RawStmtPtr, i: int, expectedName: string) =
   let colName = sqlite3_column_origin_name(s, i.cint)
