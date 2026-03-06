@@ -92,7 +92,7 @@ template withTransaction*(db: SQLiteDsDb, body: untyped): ?!void =
 # Sync Operations
 # =============================================================================
 
-proc hasSync*(db: SQLiteDsDb, keyId: string): ?!bool {.gcsafe.} =
+proc hasSync*(db: SQLiteDsDb, keyId: sink string): ?!bool {.gcsafe.} =
   ## Synchronous check if key exists
   var exists = false
   proc onRow(s: RawStmtPtr) =
@@ -101,7 +101,9 @@ proc hasSync*(db: SQLiteDsDb, keyId: string): ?!bool {.gcsafe.} =
   discard ?db.containsStmt.query((keyId), onRow)
   success exists
 
-proc hasManySync*(db: var SQLiteDsDb, keys: seq[Key]): ?!seq[Key] {.gcsafe.} =
+proc hasManySync*(
+    db: var SQLiteDsDb, keys: sink openArray[Key]
+): ?!seq[Key] {.gcsafe.} =
   ## Synchronous check for multiple keys.
   ## Returns the subset of input keys that exist in the store, deduplicated.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
@@ -146,7 +148,7 @@ proc getSync*(db: SQLiteDsDb, key: Key): ?!RawKVRecord {.gcsafe.} =
   success RawKVRecord.init(key, value, token.uint64)
 
 proc getManySync*(
-    db: var SQLiteDsDb, keys: sink seq[Key]
+    db: var SQLiteDsDb, keys: sink openArray[Key]
 ): ?!seq[RawKVRecord] {.gcsafe.} =
   ## Synchronous get multiple records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
@@ -180,7 +182,7 @@ proc getManySync*(
   success records
 
 proc putSync*(
-    db: var SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
+    db: var SQLiteDsDb, records: sink openArray[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous put records using a single-statement batch upsert.
   ## All records (inserts and updates) are handled in one CTE-based
@@ -238,7 +240,7 @@ proc putSync*(
   success skipped
 
 proc deleteSync*(
-    db: var SQLiteDsDb, records: sink seq[KeyKVRecord], readOnly: bool
+    db: var SQLiteDsDb, records: sink openArray[KeyKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous delete records.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
@@ -297,7 +299,7 @@ proc deleteSync*(
   success skipped
 
 proc putAtomicSync*(
-    db: var SQLiteDsDb, records: sink seq[RawKVRecord], readOnly: bool
+    db: var SQLiteDsDb, records: sink openArray[RawKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch put using a single-statement batch upsert.
   ## Any conflict (insert or update) rolls back the entire transaction.
@@ -349,7 +351,7 @@ proc putAtomicSync*(
   success newSeq[Key]()
 
 proc deleteAtomicSync*(
-    db: SQLiteDsDb, records: sink seq[KeyKVRecord], readOnly: bool
+    db: SQLiteDsDb, records: sink openArray[KeyKVRecord], readOnly: bool
 ): ?!seq[Key] {.gcsafe.} =
   ## Synchronous all-or-nothing batch delete
   ?checkWritable(readOnly)
@@ -534,7 +536,7 @@ proc moveSync*(
   success()
 
 proc moveSyncMulti*(
-    db: SQLiteDsDb, moves: seq[(Key, Key)], readOnly: bool
+    db: SQLiteDsDb, moves: sink openArray[(Key, Key)], readOnly: bool
 ): ?!void {.gcsafe.} =
   ## Move multiple prefix pairs atomically in a single transaction.
   ##
@@ -603,7 +605,7 @@ proc dropPrefixSync*(db: SQLiteDsDb, prefix: Key, readOnly: bool): ?!void {.gcsa
   success()
 
 proc dropPrefixSyncMulti*(
-    db: SQLiteDsDb, prefixes: seq[Key], readOnly: bool
+    db: SQLiteDsDb, prefixes: sink openArray[Key], readOnly: bool
 ): ?!void {.gcsafe.} =
   ## Drop multiple prefixes atomically in a single transaction.
   ##
