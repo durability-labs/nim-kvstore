@@ -7,6 +7,7 @@
 --styleCheck:
   error
 --mm:orc
+--define:"useMalloc" # needed to avoid TLSF bugs and cross thread mem alloc/free limitations
 
 when (NimMajor, NimMinor) == (1, 2):
   switch("hint", "Processing:off")

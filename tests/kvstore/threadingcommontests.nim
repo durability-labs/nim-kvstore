@@ -602,6 +602,14 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
     # All tasks wait at the gate, then try to update with the same initial token
     var futures: seq[Future[?!void]]
     for i in 0 ..< numTasks:
+      let record = RawKVRecord.init(testKey, makeValue("update" & $i), initial.token)
+      futures.add(
+        (
+          proc(): Future[?!void] {.async: (raises: [CancelledError]).} =
+            await event.wait()
+            await ds.put(record)
+        )()
+      )
 
     # Release all tasks simultaneously
     event.fire()
@@ -609,6 +617,7 @@ proc interleavingTests*(factory: StoreFactory, key: Key) =
     let completed = await withTimeout(allFutures(futures), BlockingTestTimeout)
     check completed
 
+    var successCount = 0
     for fut in futures:
       if (await fut).isOk:
         inc successCount
