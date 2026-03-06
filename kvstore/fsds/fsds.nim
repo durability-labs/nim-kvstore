@@ -129,8 +129,9 @@ method hasImpl*(
 
   let
     keys = keys.deduplicate()
+    paths = newSharedPtr(keys.mapIt(?self.path(it)))
     taskFut = signal.wait()
-  self.tp.spawn runHasTaskMany(ctx, keys.mapIt(?self.path(it)))
+  self.tp.spawn runHasTaskMany(ctx, paths)
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
@@ -169,9 +170,10 @@ method getImpl*(
           context = "Failed to create signal for get chunk " & $chunkIdx
         )
       ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
+      sharedChunk = newSharedPtr(move chunk)
       taskFut = signal.wait()
 
-    self.tp.spawn runGetTaskMany(ctx, chunk)
+    self.tp.spawn runGetTaskMany(ctx, sharedChunk)
     let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
     chunkFuts.add((fut, ctx))
@@ -253,8 +255,11 @@ method putImpl*(
     if err =? signal.close().errorOption:
       warn "signal.close failed in put", error = err
 
-  let taskFut = signal.wait()
-  self.tp.spawn runPutTaskMany(ctx, pairs, self.writeConfig)
+  let
+    taskFut = signal.wait()
+    sharedPairs = newSharedPtr(move pairs)
+
+  self.tp.spawn runPutTaskMany(ctx, sharedPairs, self.writeConfig)
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
@@ -295,10 +300,11 @@ method deleteImpl*(
     if err =? signal.close().errorOption:
       warn "signal.close failed in delete", error = err
 
-  let taskFut = signal.wait()
-  self.tp.spawn runDeleteTaskMany(
-    ctx, records.mapIt((?self.path(it.key), it)), self.writeConfig
-  )
+  let
+    taskFut = signal.wait()
+    sharedRecords = newSharedPtr(records.mapIt((?self.path(it.key), it)))
+
+  self.tp.spawn runDeleteTaskMany(ctx, sharedRecords, self.writeConfig)
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)

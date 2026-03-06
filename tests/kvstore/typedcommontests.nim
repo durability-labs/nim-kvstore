@@ -64,7 +64,11 @@ proc typedHelperTests*(ds: KVStore, key: Key) =
 
     # Insert initial records
     let records =
-      @[KVRecord[int].init(key1, 1), KVRecord[int].init(key2, 2), KVRecord[int].init(key3, 3)]
+      @[
+        KVRecord[int].init(key1, 1),
+        KVRecord[int].init(key2, 2),
+        KVRecord[int].init(key3, 3),
+      ]
     discard (await ds.tryPut(records)).tryGet()
 
     # Update with one stale token

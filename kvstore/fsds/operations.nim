@@ -207,7 +207,7 @@ proc deleteFile(path: string, config: FsWriteConfig): ?!void {.gcsafe, raises: [
 proc getSync*(path: string, key: Key): ?!RawKVRecord =
   return readVersioned(path, key)
 
-proc getSyncMany*(keys: seq[(string, Key)]): ?!seq[RawKVRecord] =
+proc getSyncMany*(keys: openArray[(string, Key)]): ?!seq[RawKVRecord] =
   var records: seq[RawKVRecord]
   for (path, key) in keys:
     without record =? readVersioned(path, key), err:
@@ -247,7 +247,7 @@ proc putSync*(
   return success()
 
 proc putSyncMany*(
-    records: seq[(string, RawKVRecord)], config = DefaultFsWriteConfig
+    records: openArray[(string, RawKVRecord)], config = DefaultFsWriteConfig
 ): ?!seq[Key] =
   var skipped: seq[Key]
   for (path, record) in records:
@@ -281,7 +281,7 @@ proc deleteSync*(
   return success()
 
 proc deleteSyncMany*(
-    records: seq[(string, KeyKVRecord)], config = DefaultFsWriteConfig
+    records: openArray[(string, KeyKVRecord)], config = DefaultFsWriteConfig
 ): ?!seq[Key] =
   var skipped: seq[Key]
   for (path, record) in records:
@@ -305,17 +305,19 @@ proc runHasTask*(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
     if res.isErr:
       warn "fireSync failed in runHasTask", error = res.error
 
-  ctx[].result = isolate(success(isFile(path)))
+  var r = success(isFile(path))
+  ctx[].result = unsafeIsolate(move r)
 
 proc runHasTaskMany*(
-    ctx: SharedPtr[TaskCtx[seq[string]]], paths: seq[string]
+    ctx: SharedPtr[TaskCtx[seq[string]]], paths: SharedPtr[seq[string]]
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runHasTask", error = res.error
 
-  ctx[].result = isolate(success(paths.filterIt(isFile(it))))
+  var r = success(paths[].filterIt(isFile(it)))
+  ctx[].result = unsafeIsolate(move r)
 
 proc runGetTask*(
     ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key
@@ -325,17 +327,19 @@ proc runGetTask*(
     if res.isErr:
       warn "fireSync failed in runGetTask", error = res.error
 
-  ctx[].result = unsafeIsolate(getSync(path, key))
+  var r = getSync(path, key)
+  ctx[].result = unsafeIsolate(move r)
 
 proc runGetTaskMany*(
-    ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]], keys: seq[(string, Key)]
+    ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]], keys: SharedPtr[seq[(string, Key)]]
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runGetTask", error = res.error
 
-  ctx[].result = unsafeIsolate(getSyncMany(keys))
+  var r = getSyncMany(keys[])
+  ctx[].result = unsafeIsolate(move r)
 
 proc runPutTask*(
     ctx: SharedPtr[TaskCtx[void]],
@@ -347,18 +351,20 @@ proc runPutTask*(
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
-  ctx[].result = unsafeIsolate(putSync(path, record, config))
+  var r = putSync(path, record, config)
+  ctx[].result = unsafeIsolate(move r)
 
 proc runPutTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
-    records: seq[(string, RawKVRecord)],
+    records: SharedPtr[seq[(string, RawKVRecord)]],
     config: FsWriteConfig,
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
-  ctx[].result = unsafeIsolate(putSyncMany(records, config))
+  var r = putSyncMany(records[], config)
+  ctx[].result = unsafeIsolate(move r)
 
 proc runDeleteTask*(
     ctx: SharedPtr[TaskCtx[void]],
@@ -370,18 +376,20 @@ proc runDeleteTask*(
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
-  ctx[].result = unsafeIsolate(deleteSync(path, record, config))
+  var r = deleteSync(path, record, config)
+  ctx[].result = unsafeIsolate(move r)
 
 proc runDeleteTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
-    records: seq[(string, KeyKVRecord)],
+    records: SharedPtr[seq[(string, KeyKVRecord)]],
     config: FsWriteConfig,
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
-  ctx[].result = unsafeIsolate(deleteSyncMany(records, config))
+  var r = deleteSyncMany(records[], config)
+  ctx[].result = unsafeIsolate(move r)
 
 proc runReadRecordTask*(
     ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key, includeValue: bool
@@ -393,4 +401,5 @@ proc runReadRecordTask*(
     if res.isErr:
       warn "fireSync failed in runReadRecordTask", error = res.error
 
-  ctx[].result = unsafeIsolate(readVersioned(path, key, includeValue))
+  var r = readVersioned(path, key, includeValue)
+  ctx[].result = unsafeIsolate(move r)

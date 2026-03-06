@@ -73,13 +73,14 @@ proc runHasTask(
       warn "fireSync failed in runHasTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(hasSync(db[], keyId))
+    var r = hasSync(db[], keyId)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runHasManyTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    keys: seq[Key],
+    keys: SharedPtr[seq[Key]],
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -87,7 +88,8 @@ proc runHasManyTask(
       warn "fireSync failed in runHasManyTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(hasManySync(db[], keys))
+    var r = hasManySync(db[], keys[])
+    ctx[].result = unsafeIsolate(move r)
 
 proc runGetTask(
     ctx: SharedPtr[TaskCtx[RawKVRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
@@ -98,13 +100,14 @@ proc runGetTask(
       warn "fireSync failed in runGetTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(getSync(db[], key))
+    var r = getSync(db[], key)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runGetManyTask(
     ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    keys: seq[Key],
+    keys: SharedPtr[seq[Key]],
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -112,13 +115,14 @@ proc runGetManyTask(
       warn "fireSync failed in runGetManyTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(getManySync(db[], keys))
+    var r = getManySync(db[], move keys[])
+    ctx[].result = unsafeIsolate(move r)
 
 proc runPutTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[RawKVRecord],
+    records: SharedPtr[seq[RawKVRecord]],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -127,13 +131,14 @@ proc runPutTask(
       warn "fireSync failed in runPutTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(putSync(db[], records, readOnly))
+    var r = putSync(db[], move records[], readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runDeleteTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[KeyKVRecord],
+    records: SharedPtr[seq[KeyKVRecord]],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -142,13 +147,14 @@ proc runDeleteTask(
       warn "fireSync failed in runDeleteTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(deleteSync(db[], records, readOnly))
+    var r = deleteSync(db[], move records[], readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runPutAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[RawKVRecord],
+    records: SharedPtr[seq[RawKVRecord]],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -157,13 +163,14 @@ proc runPutAtomicTask(
       warn "fireSync failed in runPutAtomicTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(putAtomicSync(db[], records, readOnly))
+    var r = putAtomicSync(db[], move records[], readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runDeleteAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: seq[KeyKVRecord],
+    records: SharedPtr[seq[KeyKVRecord]],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -172,7 +179,8 @@ proc runDeleteAtomicTask(
       warn "fireSync failed in runDeleteAtomicTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(deleteAtomicSync(db[], records, readOnly))
+    var r = deleteAtomicSync(db[], move records[], readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runMoveTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -187,13 +195,14 @@ proc runMoveTask(
       warn "fireSync failed in runMoveTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(moveSync(db[], oldPrefix, newPrefix, readOnly))
+    var r = moveSync(db[], oldPrefix, newPrefix, readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runMoveMultiTask(
     ctx: SharedPtr[TaskCtx[void]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    moves: seq[(Key, Key)],
+    moves: SharedPtr[seq[(Key, Key)]],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -202,7 +211,8 @@ proc runMoveMultiTask(
       warn "fireSync failed in runMoveMultiTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(moveSyncMulti(db[], moves, readOnly))
+    var r = moveSyncMulti(db[], moves[], readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runDropPrefixTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -217,13 +227,14 @@ proc runDropPrefixTask(
       warn "fireSync failed in runDropPrefixTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(dropPrefixSync(db[], prefix, readOnly))
+    var r = dropPrefixSync(db[], prefix, readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runDropPrefixMultiTask(
     ctx: SharedPtr[TaskCtx[void]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    prefixes: seq[Key],
+    prefixes: SharedPtr[seq[Key]],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -232,7 +243,8 @@ proc runDropPrefixMultiTask(
       warn "fireSync failed in runDropPrefixMultiTask", error = res.error
 
   withLock(lock[]):
-    ctx[].result = unsafeIsolate(dropPrefixSyncMulti(db[], prefixes, readOnly))
+    var r = dropPrefixSyncMulti(db[], prefixes[], readOnly)
+    ctx[].result = unsafeIsolate(move r)
 
 proc runNextTask(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]],
@@ -250,16 +262,21 @@ proc runNextTask(
 
   # Check finished atomically before acquiring lock
   if finished[].load():
-    ctx[].result = isolate(success(RawKVRecord.none))
+    var r = success(RawKVRecord.none)
+
+    ctx[].result = unsafeIsolate(move r)
     return
 
   withLock(lock[]):
     # Double-check after acquiring lock
     if finished[].load():
-      ctx[].result = isolate(success(RawKVRecord.none))
+      var r = success(RawKVRecord.none)
+
+      ctx[].result = unsafeIsolate(move r)
       return
 
-    ctx[].result = unsafeIsolate(nextSync(stmt[], queryValue))
+    var r = nextSync(stmt[], queryValue)
+    ctx[].result = unsafeIsolate(move r)
 
 # =============================================================================
 # Async Methods (public API)
@@ -320,7 +337,8 @@ method hasImpl*(
       # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
-    self.tp.spawn runHasManyTask(ctx, addr self.db, addr self.lock, keys)
+    let sharedKeys = newSharedPtr(keys)
+    self.tp.spawn runHasManyTask(ctx, addr self.db, addr self.lock, sharedKeys)
 
     let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
@@ -383,7 +401,8 @@ method getImpl*(
       # SharedPtr handles TaskCtx cleanup automatically
 
     let taskFut = signal.wait()
-    self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, keys)
+    let sharedKeys = newSharedPtr(keys)
+    self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, sharedKeys)
 
     let fut = awaitSignal(taskFut)
     self.tasks.incl(fut)
@@ -417,7 +436,10 @@ method putImpl*(
     # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
-  self.tp.spawn runPutTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
+  let sharedRecords = newSharedPtr(records)
+  self.tp.spawn runPutTask(
+    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
+  )
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
@@ -452,7 +474,10 @@ method deleteImpl*(
     # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
-  self.tp.spawn runDeleteTask(ctx, addr self.db, addr self.lock, records, self.readOnly)
+  let sharedRecords = newSharedPtr(records)
+  self.tp.spawn runDeleteTask(
+    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
+  )
 
   let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
@@ -498,8 +523,9 @@ method putAtomicImpl*(
     # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
+  let sharedRecords = newSharedPtr(records)
   self.tp.spawn runPutAtomicTask(
-    ctx, addr self.db, addr self.lock, records, self.readOnly
+    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
   )
 
   let fut = awaitSignal(taskFut)
@@ -541,8 +567,9 @@ method deleteAtomicImpl*(
     # SharedPtr handles TaskCtx cleanup automatically
 
   let taskFut = signal.wait()
+  let sharedRecords = newSharedPtr(records)
   self.tp.spawn runDeleteAtomicTask(
-    ctx, addr self.db, addr self.lock, records, self.readOnly
+    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
   )
 
   let fut = awaitSignal(taskFut)
@@ -621,8 +648,9 @@ method moveKeysAtomicImpl*(
       warn "signal.close failed in moveKeysAtomicMulti", error = err
 
   let taskFut = signal.wait()
+  let sharedMoves = newSharedPtr(moves)
   self.tp.spawn runMoveMultiTask(
-    ctx, addr self.db, addr self.lock, moves, self.readOnly
+    ctx, addr self.db, addr self.lock, sharedMoves, self.readOnly
   )
 
   let fut = awaitSignal(taskFut)
@@ -691,8 +719,9 @@ method dropPrefixImpl*(
       warn "signal.close failed in dropPrefixMulti", error = err
 
   let taskFut = signal.wait()
+  let sharedPrefixes = newSharedPtr(prefixes)
   self.tp.spawn runDropPrefixMultiTask(
-    ctx, addr self.db, addr self.lock, prefixes, self.readOnly
+    ctx, addr self.db, addr self.lock, sharedPrefixes, self.readOnly
   )
 
   let fut = awaitSignal(taskFut)
@@ -813,7 +842,6 @@ method queryImpl*(
       # Cancel iter task before acquiring lock (so next() can release it)
       if not state.iterTaskHandle.isNil:
         await noCancel state.iterTaskHandle.cancelAndWait()
-
     finally:
       if err =? state.signal.close().errorOption:
         warn "signal.close failed in query next", error = err
