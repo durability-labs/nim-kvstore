@@ -101,7 +101,9 @@ proc hasSync*(db: SQLiteDsDb, keyId: sink string): ?!bool {.gcsafe.} =
   discard ?db.containsStmt.query((keyId), onRow)
   success exists
 
-proc hasManySync*(db: var SQLiteDsDb, keys: sink openArray[Key]): ?!seq[Key] {.gcsafe.} =
+proc hasManySync*(
+    db: var SQLiteDsDb, keys: sink openArray[Key]
+): ?!seq[Key] {.gcsafe.} =
   ## Synchronous check for multiple keys.
   ## Returns the subset of input keys that exist in the store, deduplicated.
   ## Automatically chunks large batches to stay within SQLite parameter limits.
