@@ -306,10 +306,10 @@ proc runHasTask*(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
       warn "fireSync failed in runHasTask", error = res.error
 
   var r = success(isFile(path))
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runHasTaskMany*(
-    ctx: SharedPtr[TaskCtx[seq[string]]], paths: SharedPtr[seq[string]]
+    ctx: SharedPtr[TaskCtx[seq[string]]], paths: ptr seq[string]
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -317,7 +317,7 @@ proc runHasTaskMany*(
       warn "fireSync failed in runHasTask", error = res.error
 
   var r = success(paths[].filterIt(isFile(it)))
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runGetTask*(
     ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key
@@ -328,7 +328,7 @@ proc runGetTask*(
       warn "fireSync failed in runGetTask", error = res.error
 
   var r = getSync(path, key)
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runGetTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]], keys: SharedPtr[seq[(string, Key)]]
@@ -339,7 +339,7 @@ proc runGetTaskMany*(
       warn "fireSync failed in runGetTask", error = res.error
 
   var r = getSyncMany(keys[])
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runPutTask*(
     ctx: SharedPtr[TaskCtx[void]],
@@ -352,11 +352,11 @@ proc runPutTask*(
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
   var r = putSync(path, record, config)
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runPutTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
-    records: SharedPtr[seq[(string, RawKVRecord)]],
+    records: ptr seq[(string, RawKVRecord)],
     config: FsWriteConfig,
 ) {.gcsafe.} =
   defer:
@@ -364,7 +364,7 @@ proc runPutTaskMany*(
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
   var r = putSyncMany(records[], config)
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runDeleteTask*(
     ctx: SharedPtr[TaskCtx[void]],
@@ -377,11 +377,11 @@ proc runDeleteTask*(
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
   var r = deleteSync(path, record, config)
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runDeleteTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
-    records: SharedPtr[seq[(string, KeyKVRecord)]],
+    records: ptr seq[(string, KeyKVRecord)],
     config: FsWriteConfig,
 ) {.gcsafe.} =
   defer:
@@ -389,17 +389,27 @@ proc runDeleteTaskMany*(
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
   var r = deleteSyncMany(records[], config)
-  ctx[].result = unsafeIsolate(move r)
+  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runReadRecordTask*(
-    ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key, includeValue: bool
+    ctx: SharedPtr[TaskCtx[?RawKVRecord]], path: string, key: Key, includeValue: bool
 ) {.gcsafe.} =
   ## Task worker for reading a single record from disk.
   ## Walker stepping happens on the async thread; this only does file I/O.
+  ## Vanished files (TOCTOU between walk and read) surface as none, not as
+  ## a typed error, so the iterator skips them.
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runReadRecordTask", error = res.error
 
-  var r = readVersioned(path, key, includeValue)
-  ctx[].result = unsafeIsolate(move r)
+  let r = readVersioned(path, key, includeValue)
+  var res: ThreadSpawnRes[?RawKVRecord]
+  if err =? r.errorOption:
+    if err of KVStoreKeyNotFound:
+      res = ThreadSpawnRes[?RawKVRecord].ok(RawKVRecord.none)
+    else:
+      res = ThreadSpawnRes[?RawKVRecord].err(err.msg)
+  else:
+    res = ThreadSpawnRes[?RawKVRecord].ok(some(r.value))
+  ctx[].result = unsafeIsolate(move res)

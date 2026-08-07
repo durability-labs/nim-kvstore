@@ -150,3 +150,33 @@ suite "batchChunks":
         # Verify ceiling division: numChunks = ceil(total / maxChunkSize)
         let expectedChunks = (total + maxChunkSize - 1) div maxChunkSize
         check chunkCount == expectedChunks
+
+suite "fromSpawn":
+  test "converts string errors to KVStoreError with message preserved":
+    let res = Result[int, string].err("worker failure")
+
+    let converted = res.fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVStoreError
+    check converted.error.msg == "worker failure"
+
+  test "preserves KVStoreError subtypes":
+    let conflictErr = newException(KVConflictError, "test conflict")
+    let res = Result[int, ref CatchableError].err(conflictErr)
+
+    let converted = res.fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVConflictError
+    check converted.error.msg == "test conflict"
+
+  test "wraps generic CatchableError with message preserved":
+    let genericErr = newException(CatchableError, "generic error")
+    let res = Result[int, ref CatchableError].err(genericErr)
+
+    let converted = res.fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVStoreError
+    check converted.error.msg == "generic error"
