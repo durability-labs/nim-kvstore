@@ -1,4 +1,5 @@
 import std/sequtils
+import std/strutils
 
 import pkg/asynctest/chronos/unittest2
 import pkg/chronos
@@ -37,7 +38,8 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(oldPrefix, newPrefix)
       check result.isErr
-      check result.error of KVConflictError
+      check result.error of KVStoreError
+      check "Move failed" in result.error.msg
 
       # Source should still exist (rolled back)
       check (await ds.get((oldPrefix / "a").tryGet())).tryGet().val == "from-old".toBytes
@@ -56,7 +58,8 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(oldPrefix, newPrefix)
       check result.isErr
-      check result.error of KVConflictError
+      check result.error of KVStoreError
+      check "Move failed" in result.error.msg
 
       # Both source keys should still exist (all-or-nothing rollback)
       check (await ds.get((oldPrefix / "a").tryGet())).tryGet().val == "va".toBytes
@@ -167,7 +170,8 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(@[(oldA, newA), (oldB, newB)])
       check result.isErr
-      check result.error of KVConflictError
+      check result.error of KVStoreError
+      check "Move failed" in result.error.msg
 
       # ALL source keys should still exist (entire transaction rolled back)
       check (await ds.get((oldA / "1").tryGet())).tryGet().val == "a1".toBytes

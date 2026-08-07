@@ -35,8 +35,8 @@ type
     db: SQLiteDsDb
     lock: Lock # Serializes access to shared prepared statements
     tp: Taskpool # Injected threadpool for async operations
-    tasks: HashSet[Future[?!void]] # Track outstanding tasks for close()
-    disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
+    tasks: HashSet[FutureBase] # Track outstanding tasks for close()
+    disposeHandles: HashSet[FutureBase] # Track dispose calls (wait, don't cancel)
     closed: bool
 
   # Per-iterator state for query operations
@@ -50,7 +50,7 @@ type
     isDisposed*: bool
     tp*: Taskpool # For spawning next() workers
     signal: ThreadSignalPtr
-    iterTaskHandle*: Future[?!void] # Track outstanding iterator tasks
+    iterTaskHandle*: FutureBase # Track outstanding iterator tasks
     queryValue*: bool # Whether to include value in results
 
 proc path*(self: SQLiteKVStore): cstring =
@@ -74,13 +74,13 @@ proc runHasTask(
 
   withLock(lock[]):
     var r = hasSync(db[], keyId)
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runHasManyTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    keys: SharedPtr[seq[Key]],
+    keys: ptr seq[Key],
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -89,10 +89,10 @@ proc runHasManyTask(
 
   withLock(lock[]):
     var r = hasManySync(db[], keys[])
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runGetTask(
-    ctx: SharedPtr[TaskCtx[RawKVRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
+    ctx: SharedPtr[TaskCtx[?RawKVRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -100,14 +100,22 @@ proc runGetTask(
       warn "fireSync failed in runGetTask", error = res.error
 
   withLock(lock[]):
-    var r = getSync(db[], key)
-    ctx[].result = unsafeIsolate(move r)
+    let r = getSync(db[], key)
+    var res: ThreadSpawnRes[?RawKVRecord]
+    if err =? r.errorOption:
+      if err of KVStoreKeyNotFound:
+        res = ThreadSpawnRes[?RawKVRecord].ok(RawKVRecord.none)
+      else:
+        res = ThreadSpawnRes[?RawKVRecord].err(err.msg)
+    else:
+      res = ThreadSpawnRes[?RawKVRecord].ok(some(r.value))
+    ctx[].result = unsafeIsolate(move res)
 
 proc runGetManyTask(
     ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    keys: SharedPtr[seq[Key]],
+    keys: ptr seq[Key],
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -115,14 +123,14 @@ proc runGetManyTask(
       warn "fireSync failed in runGetManyTask", error = res.error
 
   withLock(lock[]):
-    var r = getManySync(db[], move keys[])
-    ctx[].result = unsafeIsolate(move r)
+    var r = getManySync(db[], keys[])
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runPutTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: SharedPtr[seq[RawKVRecord]],
+    records: ptr seq[RawKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -131,14 +139,14 @@ proc runPutTask(
       warn "fireSync failed in runPutTask", error = res.error
 
   withLock(lock[]):
-    var r = putSync(db[], move records[], readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    var r = putSync(db[], records[], readOnly)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runDeleteTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: SharedPtr[seq[KeyKVRecord]],
+    records: ptr seq[KeyKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -147,14 +155,14 @@ proc runDeleteTask(
       warn "fireSync failed in runDeleteTask", error = res.error
 
   withLock(lock[]):
-    var r = deleteSync(db[], move records[], readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    var r = deleteSync(db[], records[], readOnly)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runPutAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: SharedPtr[seq[RawKVRecord]],
+    records: ptr seq[RawKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -163,14 +171,14 @@ proc runPutAtomicTask(
       warn "fireSync failed in runPutAtomicTask", error = res.error
 
   withLock(lock[]):
-    var r = putAtomicSync(db[], move records[], readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    var r = putAtomicSync(db[], records[], readOnly)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runDeleteAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    records: SharedPtr[seq[KeyKVRecord]],
+    records: ptr seq[KeyKVRecord],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -179,8 +187,8 @@ proc runDeleteAtomicTask(
       warn "fireSync failed in runDeleteAtomicTask", error = res.error
 
   withLock(lock[]):
-    var r = deleteAtomicSync(db[], move records[], readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    var r = deleteAtomicSync(db[], records[], readOnly)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runMoveTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -196,13 +204,13 @@ proc runMoveTask(
 
   withLock(lock[]):
     var r = moveSync(db[], oldPrefix, newPrefix, readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runMoveMultiTask(
     ctx: SharedPtr[TaskCtx[void]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    moves: SharedPtr[seq[(Key, Key)]],
+    moves: ptr seq[(Key, Key)],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -212,7 +220,7 @@ proc runMoveMultiTask(
 
   withLock(lock[]):
     var r = moveSyncMulti(db[], moves[], readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runDropPrefixTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -228,13 +236,13 @@ proc runDropPrefixTask(
 
   withLock(lock[]):
     var r = dropPrefixSync(db[], prefix, readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runDropPrefixMultiTask(
     ctx: SharedPtr[TaskCtx[void]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
-    prefixes: SharedPtr[seq[Key]],
+    prefixes: ptr seq[Key],
     readOnly: bool,
 ) {.gcsafe.} =
   defer:
@@ -244,7 +252,7 @@ proc runDropPrefixMultiTask(
 
   withLock(lock[]):
     var r = dropPrefixSyncMulti(db[], prefixes[], readOnly)
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 proc runNextTask(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]],
@@ -263,20 +271,18 @@ proc runNextTask(
   # Check finished atomically before acquiring lock
   if finished[].load():
     var r = success(RawKVRecord.none)
-
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
     return
 
   withLock(lock[]):
     # Double-check after acquiring lock
     if finished[].load():
       var r = success(RawKVRecord.none)
-
-      ctx[].result = unsafeIsolate(move r)
+      ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
       return
 
     var r = nextSync(stmt[], queryValue)
-    ctx[].result = unsafeIsolate(move r)
+    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
 
 # =============================================================================
 # Async Methods (public API)
@@ -299,26 +305,15 @@ method hasImpl*(
 
   if keys.len == 1:
     # Single-key optimization: use existing runHasTask
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
-
-    let ctx = newSharedPtr(TaskCtx[bool](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in has", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
-
-    let taskFut = signal.wait()
-    self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, keys[0].id)
-
-    let fut = awaitSignal(taskFut)
+    let fut = spawnJoin[bool](
+      proc(ctx: SharedPtr[TaskCtx[bool]]) {.gcsafe, raises: [].} =
+        self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, keys[0].id)
+    )
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
 
-    ?await fut
-
-    let exists = ?extract(ctx[].result)
+    let exists = ?((await fut).fromSpawn())
     return success(
       if exists:
         @[keys[0]]
@@ -327,27 +322,15 @@ method hasImpl*(
     )
   else:
     # Multi-key path
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
-
-    let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in has", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
-
-    let taskFut = signal.wait()
-    let sharedKeys = newSharedPtr(keys)
-    self.tp.spawn runHasManyTask(ctx, addr self.db, addr self.lock, sharedKeys)
-
-    let fut = awaitSignal(taskFut)
+    let fut = spawnJoin[seq[Key]](
+      proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
+        self.tp.spawn runHasManyTask(ctx, addr self.db, addr self.lock, addr keys)
+    )
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
 
-    ?await fut
-
-    return extract(ctx[].result)
+    return success ?((await fut).fromSpawn())
 
 method getImpl*(
     self: SQLiteKVStore, keys: seq[Key]
@@ -361,57 +344,34 @@ method getImpl*(
     return success(newSeq[RawKVRecord]())
 
   if keys.len == 1:
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
-
-    let ctx = newSharedPtr(TaskCtx[RawKVRecord](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in get", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
-
-    let taskFut = signal.wait()
-    self.tp.spawn runGetTask(ctx, addr self.db, addr self.lock, keys[0])
-
-    let fut = awaitSignal(taskFut)
+    let fut = spawnJoin[?RawKVRecord](
+      proc(ctx: SharedPtr[TaskCtx[?RawKVRecord]]) {.gcsafe, raises: [].} =
+        self.tp.spawn runGetTask(ctx, addr self.db, addr self.lock, keys[0])
+    )
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
-
-    ?await fut
 
     # Match batch get semantics: return empty seq for missing key, not error
-    without extracted =? extract(ctx[].result), err:
-      if err of KVStoreKeyNotFound:
-        return success(newSeq[RawKVRecord]())
+    without rec =? (await fut).fromSpawn(), err:
       return failure(err)
+    if rec.isNone:
+      return success(newSeq[RawKVRecord]())
 
     when defined(kvstore_expensive_metrics):
-      kvstore_sql_get_value_bytes.observe(extracted.val.len.float64)
+      kvstore_sql_get_value_bytes.observe(rec.get.val.len.float64)
 
-    return success(@[extracted])
+    return success(@[rec.get])
   else:
-    let signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for get")
-
-    let ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
-    defer:
-      if err =? signal.close().errorOption:
-        warn "signal.close failed in get", error = err
-      # SharedPtr handles TaskCtx cleanup automatically
-
-    let taskFut = signal.wait()
-    let sharedKeys = newSharedPtr(keys)
-    self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, sharedKeys)
-
-    let fut = awaitSignal(taskFut)
+    let fut = spawnJoin[seq[RawKVRecord]](
+      proc(ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]]) {.gcsafe, raises: [].} =
+        self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, addr keys)
+    )
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
 
-    ?await fut
-
-    let records = ?extract(ctx[].result)
+    let records = ?((await fut).fromSpawn())
     when defined(kvstore_expensive_metrics):
       for record in records:
         kvstore_sql_get_value_bytes.observe(record.val.len.float64)
@@ -426,29 +386,17 @@ method putImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
-
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in put", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
-
-  let taskFut = signal.wait()
-  let sharedRecords = newSharedPtr(records)
-  self.tp.spawn runPutTask(
-    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
+  let fut = spawnJoin[seq[Key]](
+    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runPutTask(
+        ctx, addr self.db, addr self.lock, addr records, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
-
-  let skipped = ?extract(ctx[].result)
+  let skipped = ?((await fut).fromSpawn())
   if skipped.len > 0:
     kvstore_sql_put_conflict_total.inc(skipped.len.int64)
   return success(skipped)
@@ -464,29 +412,17 @@ method deleteImpl*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
-
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in delete", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
-
-  let taskFut = signal.wait()
-  let sharedRecords = newSharedPtr(records)
-  self.tp.spawn runDeleteTask(
-    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
+  let fut = spawnJoin[seq[Key]](
+    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runDeleteTask(
+        ctx, addr self.db, addr self.lock, addr records, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
-
-  let skipped = ?extract(ctx[].result)
+  let skipped = ?((await fut).fromSpawn())
   if skipped.len > 0:
     kvstore_sql_delete_conflict_total.inc(skipped.len.int64)
   return success(skipped)
@@ -513,29 +449,17 @@ method putAtomicImpl*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for putAtomic")
-
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in putAtomic", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
-
-  let taskFut = signal.wait()
-  let sharedRecords = newSharedPtr(records)
-  self.tp.spawn runPutAtomicTask(
-    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
+  let fut = spawnJoin[seq[Key]](
+    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runPutAtomicTask(
+        ctx, addr self.db, addr self.lock, addr records, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
-
-  let conflicts = ?extract(ctx[].result)
+  let conflicts = ?((await fut).fromSpawn())
   if conflicts.len > 0:
     kvstore_sql_putatomic_conflict_total.inc(conflicts.len.int64)
     kvstore_sql_putatomic_rollback_total.inc()
@@ -555,31 +479,17 @@ method deleteAtomicImpl*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(
-      context = "Failed to create signal for deleteAtomic"
-    )
-
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in deleteAtomic", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
-
-  let taskFut = signal.wait()
-  let sharedRecords = newSharedPtr(records)
-  self.tp.spawn runDeleteAtomicTask(
-    ctx, addr self.db, addr self.lock, sharedRecords, self.readOnly
+  let fut = spawnJoin[seq[Key]](
+    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runDeleteAtomicTask(
+        ctx, addr self.db, addr self.lock, addr records, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
-
-  let conflicts = ?extract(ctx[].result)
+  let conflicts = ?((await fut).fromSpawn())
   if conflicts.len > 0:
     kvstore_sql_deleteatomic_conflict_total.inc(conflicts.len.int64)
     kvstore_sql_deleteatomic_rollback_total.inc()
@@ -600,31 +510,21 @@ method moveKeysAtomicImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(
-      context = "Failed to create signal for moveKeysAtomic"
-    )
-
-  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in moveKeysAtomic", error = err
-
-  let taskFut = signal.wait()
-  self.tp.spawn runMoveTask(
-    ctx, addr self.db, addr self.lock, oldPrefix, newPrefix, self.readOnly
+  let fut = spawnJoin[void](
+    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runMoveTask(
+        ctx, addr self.db, addr self.lock, oldPrefix, newPrefix, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  if err =? (await fut).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_moveatomic_error_total.inc()
     return failure(err)
 
-  extract(ctx[].result)
+  success()
 
 method moveKeysAtomicImpl*(
     self: SQLiteKVStore, moves: seq[(Key, Key)]
@@ -637,32 +537,21 @@ method moveKeysAtomicImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(
-      context = "Failed to create signal for moveKeysAtomicMulti"
-    )
-
-  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in moveKeysAtomicMulti", error = err
-
-  let taskFut = signal.wait()
-  let sharedMoves = newSharedPtr(moves)
-  self.tp.spawn runMoveMultiTask(
-    ctx, addr self.db, addr self.lock, sharedMoves, self.readOnly
+  let fut = spawnJoin[void](
+    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runMoveMultiTask(
+        ctx, addr self.db, addr self.lock, addr moves, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  if err =? (await fut).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_moveatomic_error_total.inc()
     return failure(err)
 
-  extract(ctx[].result)
+  success()
 
 method dropPrefixImpl*(
     self: SQLiteKVStore, prefix: Key
@@ -674,29 +563,21 @@ method dropPrefixImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for dropPrefix")
-
-  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in dropPrefix", error = err
-
-  let taskFut = signal.wait()
-  self.tp.spawn runDropPrefixTask(
-    ctx, addr self.db, addr self.lock, prefix, self.readOnly
+  let fut = spawnJoin[void](
+    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runDropPrefixTask(
+        ctx, addr self.db, addr self.lock, prefix, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  if err =? (await fut).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_dropprefix_error_total.inc()
     return failure(err)
 
-  extract(ctx[].result)
+  success()
 
 method dropPrefixImpl*(
     self: SQLiteKVStore, prefixes: seq[Key]
@@ -708,32 +589,21 @@ method dropPrefixImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(
-      context = "Failed to create signal for dropPrefixMulti"
-    )
-
-  let ctx = newSharedPtr(TaskCtx[void](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in dropPrefixMulti", error = err
-
-  let taskFut = signal.wait()
-  let sharedPrefixes = newSharedPtr(prefixes)
-  self.tp.spawn runDropPrefixMultiTask(
-    ctx, addr self.db, addr self.lock, sharedPrefixes, self.readOnly
+  let fut = spawnJoin[void](
+    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runDropPrefixMultiTask(
+        ctx, addr self.db, addr self.lock, addr prefixes, self.readOnly
+      )
   )
-
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  if err =? (await fut).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_dropprefix_error_total.inc()
     return failure(err)
 
-  extract(ctx[].result)
+  success()
 
 method closeImpl*(self: SQLiteKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
@@ -807,13 +677,17 @@ method queryImpl*(
     let ctx = newSharedPtr(TaskCtx[?RawKVRecord](signal: state.signal))
 
     let taskFut = signal.wait()
+    if taskFut.failed():
+      state.finished.store(true)
+      return failure(taskFut.error())
+
     state.tp.spawn runNextTask(
       ctx, addr state.stmt, addr state.lock, addr state.finished, state.queryValue
     )
 
-    let fut = awaitSignal(
+    let fut = awaitSpawn(
       taskFut,
-      onError = proc() {.async: (raises: [CancelledError]).} =
+      onError = proc() {.async: (raises: []).} =
         state.finished.store(true),
     )
 
@@ -826,7 +700,7 @@ method queryImpl*(
 
     ?await fut
 
-    let r = extract(ctx[].result)
+    let r = extract(ctx[].result).fromSpawn()
     if r.isErr or (r.isOk and r.get.isNone):
       state.finished.store(true)
     return r

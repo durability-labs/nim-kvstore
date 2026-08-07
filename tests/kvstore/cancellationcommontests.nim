@@ -10,7 +10,8 @@
 ##
 ## IMPORTANT: These tests do NOT assert whether cancellation actually happened.
 ## Operations may complete before cancellation occurs - that's fine.
-## The deterministic cancellation tests are in testtaskutils.nim (awaitSignal tests).
+## The deterministic cancellation tests are in the threadspawn package's
+## testthreadspawn.nim (awaitSpawn cancellation tests).
 ##
 ## Uses cancelAfterSteps() to attempt cancellation after N poll cycles.
 

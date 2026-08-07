@@ -98,7 +98,7 @@ suite "KVStore token overflow protection":
     let overflowValue: uint64 = uint64(high(int64)) + 1
     let res = boundedToken(overflowValue)
     check res.isErr
-    check res.error of KVStoreCorruption
+    check res.error of KVStoreError
 
 suite "KVStore middleware key-set validation":
   var

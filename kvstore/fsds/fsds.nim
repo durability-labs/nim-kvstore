@@ -40,8 +40,8 @@ type
     root*: string
     depth: int
     locks: LockTable
-    tasks: HashSet[Future[?!void]]
-    disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
+    tasks: HashSet[FutureBase]
+    disposeHandles: HashSet[FutureBase] # Track dispose calls (wait, don't cancel)
     tp: Taskpool
     writeConfig*: FsWriteConfig
     closed: bool
@@ -57,7 +57,7 @@ type
     queryValue: bool
     finished: bool
     isDisposed: bool
-    iterTaskHandle: Future[?!void]
+    iterTaskHandle: FutureBase
     lock: AsyncLock
     tp: Taskpool
     signal: ThreadSignalPtr
@@ -118,28 +118,19 @@ method hasImpl*(
 
   writeHasMetrics(keys)
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for has")
-
-  let ctx = newSharedPtr(TaskCtx[seq[string]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in has", error = err
-    # SharedPtr handles TaskCtx cleanup automatically
-
   let
     keys = keys.deduplicate()
-    paths = newSharedPtr(keys.mapIt(?self.path(it)))
-    taskFut = signal.wait()
-  self.tp.spawn runHasTaskMany(ctx, paths)
+    paths = keys.mapIt(?self.path(it))
+    fut = spawnJoin[seq[string]](
+      proc(ctx: SharedPtr[TaskCtx[seq[string]]]) {.gcsafe, raises: [].} =
+        self.tp.spawn runHasTaskMany(ctx, addr paths)
+    )
 
-  let fut = awaitSignal(taskFut)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
-  let hasPaths = (?extract(ctx[].result)).toHashSet
+  let hasPaths = (?((await fut).fromSpawn())).toHashSet
 
   success keys.filterIt(?self.path(it) in hasPaths)
 
@@ -158,45 +149,32 @@ method getImpl*(
     # Parallel read - chunk keys and spawn multiple workers
     maxParallel = min(self.tp.numThreads, 8)
 
-  var chunkFuts: seq[
-    (Future[?!void].Raising([CancelledError]), SharedPtr[TaskCtx[seq[RawKVRecord]]])
-  ]
+  var chunkFuts: seq[Future[?!seq[RawKVRecord]].Raising([CancelledError])]
 
   batchChunks(keyPaths, maxParallel, chunk):
     trace "Getting batch chunk", size = chunk.len, chunkIdx
-    let
-      signal =
-        ?ThreadSignalPtr.new().toKVError(
-          context = "Failed to create signal for get chunk " & $chunkIdx
-        )
-      ctx = newSharedPtr(TaskCtx[seq[RawKVRecord]](signal: signal))
-      sharedChunk = newSharedPtr(move chunk)
-      taskFut = signal.wait()
-
-    self.tp.spawn runGetTaskMany(ctx, sharedChunk)
-    let fut = awaitSignal(taskFut)
+    # Ownership-transfer exception: chunk's storage slot may be reused by the
+    # next loop iteration while this chunk's worker still runs - SharedPtr(move)
+    # required.
+    let sharedChunk = newSharedPtr(move chunk)
+    let fut = spawnJoin[seq[RawKVRecord]](
+      proc(ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]]) {.gcsafe, raises: [].} =
+        self.tp.spawn runGetTaskMany(ctx, sharedChunk)
+    )
     self.tasks.incl(fut)
-    chunkFuts.add((fut, ctx))
+    chunkFuts.add(fut)
 
   # Wait for all chunks and collect results
   # Use allFinished to wait for all futures at once
-  let finishedFuts = (await allFinished(chunkFuts.mapIt(it[0]))).toHashSet
+  let finishedFuts = (await allFinished(chunkFuts)).toHashSet
   for fut in finishedFuts:
     self.tasks.excl(fut)
 
   # Check for errors and collect results
   var allRecords: seq[RawKVRecord]
-  for i, (fut, ctx) in chunkFuts:
-    try:
-      # Extract results from context
-      ?await fut
-      let records = ?extract(ctx[].result)
-      trace "Got records from store", records = records.len
-      allRecords.add(records)
-    finally:
-      # Close the signal for this chunk
-      if err =? ctx[].signal.close().errorOption:
-        warn "signal.close failed in get chunk", error = err, chunk = i
+  for fut in chunkFuts:
+    allRecords.add(?((await fut).fromSpawn()))
+    trace "Got records from store", records = allRecords.len
 
   when defined(kvstore_expensive_metrics):
     kvstore_fs_get_value_bytes.observe(allRecords.mapIt(it.val.len.float64))
@@ -247,28 +225,15 @@ method putImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for put")
-
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in put", error = err
-
-  let
-    taskFut = signal.wait()
-    sharedPairs = newSharedPtr(move pairs)
-
-  self.tp.spawn runPutTaskMany(ctx, sharedPairs, self.writeConfig)
-
-  let fut = awaitSignal(taskFut)
+  let fut = spawnJoin[seq[Key]](
+    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runPutTaskMany(ctx, addr pairs, self.writeConfig)
+  )
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
-
-  return success ?extract(ctx[].result)
+  return success ?((await fut).fromSpawn())
 
 method deleteImpl*(
     self: FSKVStore, records: seq[KeyKVRecord]
@@ -292,28 +257,16 @@ method deleteImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
 
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for delete")
-
-  let ctx = newSharedPtr(TaskCtx[seq[Key]](signal: signal))
-  defer:
-    if err =? signal.close().errorOption:
-      warn "signal.close failed in delete", error = err
-
-  let
-    taskFut = signal.wait()
-    sharedRecords = newSharedPtr(records.mapIt((?self.path(it.key), it)))
-
-  self.tp.spawn runDeleteTaskMany(ctx, sharedRecords, self.writeConfig)
-
-  let fut = awaitSignal(taskFut)
+  let recPairs = records.mapIt((?self.path(it.key), it))
+  let fut = spawnJoin[seq[Key]](
+    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
+      self.tp.spawn runDeleteTaskMany(ctx, addr recPairs, self.writeConfig)
+  )
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
 
-  ?await fut
-
-  return success ?extract(ctx[].result)
+  return success ?((await fut).fromSpawn())
 
 method closeImpl*(self: FSKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
@@ -426,13 +379,17 @@ method queryImpl*(
 
       let absPath = state.basePath / relPath
 
-      let ctx = newSharedPtr(TaskCtx[RawKVRecord](signal: state.signal))
+      let ctx = newSharedPtr(TaskCtx[?RawKVRecord](signal: state.signal))
 
       let taskFut = signal.wait()
+      if taskFut.failed():
+        state.finished = true
+        return failure(taskFut.error())
+
       state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
-      let fut = awaitSignal(
+      let fut = awaitSpawn(
         taskFut,
-        onError = proc() {.async: (raises: [CancelledError]).} =
+        onError = proc() {.async: (raises: []).} =
           state.finished = true,
       )
 
@@ -445,8 +402,10 @@ method queryImpl*(
 
       ?await fut
 
-      let record = ?extract(ctx[].result)
-      return success(record.some)
+      let record = ?extract(ctx[].result).fromSpawn()
+      if record.isNone:
+        continue # file vanished between walk and read - skip it
+      return success(record)
 
   proc isFinished(): bool =
     state.finished
