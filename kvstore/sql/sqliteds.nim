@@ -35,8 +35,9 @@ type
     db: SQLiteDsDb
     lock: Lock # Serializes access to shared prepared statements
     tp: Taskpool # Injected threadpool for async operations
-    tasks: HashSet[FutureBase] # Track outstanding tasks for close()
-    disposeHandles: HashSet[FutureBase] # Track dispose calls (wait, don't cancel)
+    tasks: HashSet[FutureBase]
+      # Track outstanding tasks for close(); heterogeneous spawnJoin futures
+    disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
     closed: bool
 
   # Per-iterator state for query operations
@@ -50,7 +51,7 @@ type
     isDisposed*: bool
     tp*: Taskpool # For spawning next() workers
     signal: ThreadSignalPtr
-    iterTaskHandle*: FutureBase # Track outstanding iterator tasks
+    iterTaskHandle*: Future[?!void] # Track outstanding iterator tasks
     queryValue*: bool # Whether to include value in results
 
 proc path*(self: SQLiteKVStore): cstring =
@@ -313,7 +314,7 @@ method hasImpl*(
     defer:
       self.tasks.excl(fut)
 
-    let exists = ?((await fut).fromSpawn())
+    let exists = ?((await fut).toKVStoreError())
     return success(
       if exists:
         @[keys[0]]
@@ -330,7 +331,7 @@ method hasImpl*(
     defer:
       self.tasks.excl(fut)
 
-    return success ?((await fut).fromSpawn())
+    return success ?((await fut).toKVStoreError())
 
 method getImpl*(
     self: SQLiteKVStore, keys: seq[Key]
@@ -353,7 +354,7 @@ method getImpl*(
       self.tasks.excl(fut)
 
     # Match batch get semantics: return empty seq for missing key, not error
-    without rec =? (await fut).fromSpawn(), err:
+    without rec =? (await fut).toKVStoreError(), err:
       return failure(err)
     if rec.isNone:
       return success(newSeq[RawKVRecord]())
@@ -371,7 +372,7 @@ method getImpl*(
     defer:
       self.tasks.excl(fut)
 
-    let records = ?((await fut).fromSpawn())
+    let records = ?((await fut).toKVStoreError())
     when defined(kvstore_expensive_metrics):
       for record in records:
         kvstore_sql_get_value_bytes.observe(record.val.len.float64)
@@ -396,7 +397,7 @@ method putImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let skipped = ?((await fut).fromSpawn())
+  let skipped = ?((await fut).toKVStoreError())
   if skipped.len > 0:
     kvstore_sql_put_conflict_total.inc(skipped.len.int64)
   return success(skipped)
@@ -422,7 +423,7 @@ method deleteImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let skipped = ?((await fut).fromSpawn())
+  let skipped = ?((await fut).toKVStoreError())
   if skipped.len > 0:
     kvstore_sql_delete_conflict_total.inc(skipped.len.int64)
   return success(skipped)
@@ -459,7 +460,7 @@ method putAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let conflicts = ?((await fut).fromSpawn())
+  let conflicts = ?((await fut).toKVStoreError())
   if conflicts.len > 0:
     kvstore_sql_putatomic_conflict_total.inc(conflicts.len.int64)
     kvstore_sql_putatomic_rollback_total.inc()
@@ -489,7 +490,7 @@ method deleteAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let conflicts = ?((await fut).fromSpawn())
+  let conflicts = ?((await fut).toKVStoreError())
   if conflicts.len > 0:
     kvstore_sql_deleteatomic_conflict_total.inc(conflicts.len.int64)
     kvstore_sql_deleteatomic_rollback_total.inc()
@@ -520,7 +521,7 @@ method moveKeysAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).fromSpawn()).errorOption:
+  if err =? ((await fut).toKVStoreError()).errorOption:
     kvstore_sql_moveatomic_error_total.inc()
     return failure(err)
 
@@ -547,7 +548,7 @@ method moveKeysAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).fromSpawn()).errorOption:
+  if err =? ((await fut).toKVStoreError()).errorOption:
     kvstore_sql_moveatomic_error_total.inc()
     return failure(err)
 
@@ -573,7 +574,7 @@ method dropPrefixImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).fromSpawn()).errorOption:
+  if err =? ((await fut).toKVStoreError()).errorOption:
     kvstore_sql_dropprefix_error_total.inc()
     return failure(err)
 
@@ -599,7 +600,7 @@ method dropPrefixImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).fromSpawn()).errorOption:
+  if err =? ((await fut).toKVStoreError()).errorOption:
     kvstore_sql_dropprefix_error_total.inc()
     return failure(err)
 

@@ -40,8 +40,8 @@ type
     root*: string
     depth: int
     locks: LockTable
-    tasks: HashSet[FutureBase]
-    disposeHandles: HashSet[FutureBase] # Track dispose calls (wait, don't cancel)
+    tasks: HashSet[FutureBase] # heterogeneous spawnJoin futures; Future[T] is invariant
+    disposeHandles: HashSet[Future[?!void]] # Track dispose calls (wait, don't cancel)
     tp: Taskpool
     writeConfig*: FsWriteConfig
     closed: bool
@@ -57,7 +57,7 @@ type
     queryValue: bool
     finished: bool
     isDisposed: bool
-    iterTaskHandle: FutureBase
+    iterTaskHandle: Future[?!void]
     lock: AsyncLock
     tp: Taskpool
     signal: ThreadSignalPtr
@@ -130,7 +130,7 @@ method hasImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let hasPaths = (?((await fut).fromSpawn())).toHashSet
+  let hasPaths = (?((await fut).toKVStoreError())).toHashSet
 
   success keys.filterIt(?self.path(it) in hasPaths)
 
@@ -173,7 +173,7 @@ method getImpl*(
   # Check for errors and collect results
   var allRecords: seq[RawKVRecord]
   for fut in chunkFuts:
-    allRecords.add(?((await fut).fromSpawn()))
+    allRecords.add(?((await fut).toKVStoreError()))
     trace "Got records from store", records = allRecords.len
 
   when defined(kvstore_expensive_metrics):
@@ -233,7 +233,7 @@ method putImpl*(
   defer:
     self.tasks.excl(fut)
 
-  return success ?((await fut).fromSpawn())
+  return success ?((await fut).toKVStoreError())
 
 method deleteImpl*(
     self: FSKVStore, records: seq[KeyKVRecord]
@@ -266,7 +266,7 @@ method deleteImpl*(
   defer:
     self.tasks.excl(fut)
 
-  return success ?((await fut).fromSpawn())
+  return success ?((await fut).toKVStoreError())
 
 method closeImpl*(self: FSKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:

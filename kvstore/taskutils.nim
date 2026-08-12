@@ -3,7 +3,8 @@
 ## Common utilities for threading support in kvstore backends.
 ##
 ## Bridges threadspawn results (ThreadSpawnRes[T], string errors) to ?!T
-## at the async boundary via fromSpawn.
+## at the async boundary via fromSpawn; normalizes spawnJoin ?!T errors to
+## KVStoreError via toKVStoreError.
 
 when not compileOption("threads"):
   {.error: "taskutils requires --threads:on".}
@@ -27,21 +28,26 @@ const
   TimeSlotDuration = 1.milliseconds
   LastCalledInterval = 10.milliseconds
 
-template fromSpawn*[T, E](res: Result[T, E]): ?!T =
+template fromSpawn*[T](res: ThreadSpawnRes[T]): ?!T =
   ## Convert a threadspawn bridge result to a KVStore error result.
-  ## ThreadSpawnRes string errors become KVStoreError with the message
-  ## preserved; ref CatchableError results keep KVStoreError subtypes.
+  ## The string error becomes a KVStoreError with the message preserved.
+  ## Restricted to ThreadSpawnRes: only string errors cross the thread
+  ## boundary, and only they belong here.
   res.mapErr(
-    proc(e: E): ref CatchableError =
-      when E is string:
-        newException(KVStoreError, e)
-      elif E is ref CatchableError:
-        if e of KVStoreError:
-          e
-        else:
-          newException(KVStoreError, e.msg)
+    proc(e: string): ref CatchableError =
+      newException(KVStoreError, e)
+  )
+
+template toKVStoreError*[T](res: ?!T): ?!T =
+  ## Normalize a spawnJoin result (caller-side ref errors) to KVStoreError:
+  ## KVStoreError subtypes are preserved, everything else is wrapped with
+  ## its message.
+  res.mapErr(
+    proc(e: ref CatchableError): ref CatchableError =
+      if e of KVStoreError:
+        e
       else:
-        newException(KVStoreError, $e)
+        newException(KVStoreError, e.msg)
   )
 
 proc hash*(fut: FutureBase): Hash =
