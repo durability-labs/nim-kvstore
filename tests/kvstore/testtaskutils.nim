@@ -161,11 +161,12 @@ suite "fromSpawn":
     check converted.error of KVStoreError
     check converted.error.msg == "worker failure"
 
+suite "toKVStoreError":
   test "preserves KVStoreError subtypes":
     let conflictErr = newException(KVConflictError, "test conflict")
     let res = Result[int, ref CatchableError].err(conflictErr)
 
-    let converted = res.fromSpawn()
+    let converted = res.toKVStoreError()
 
     check converted.isErr
     check converted.error of KVConflictError
@@ -175,7 +176,7 @@ suite "fromSpawn":
     let genericErr = newException(CatchableError, "generic error")
     let res = Result[int, ref CatchableError].err(genericErr)
 
-    let converted = res.fromSpawn()
+    let converted = res.toKVStoreError()
 
     check converted.isErr
     check converted.error of KVStoreError
