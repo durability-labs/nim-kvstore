@@ -14,6 +14,7 @@ import std/hashes
 
 import pkg/chronos
 import pkg/questionable/results
+import pkg/taskpools
 import pkg/threadspawn
 
 import ./types
@@ -21,6 +22,17 @@ import ./types
 export locks
 export types
 export threadspawn
+
+template spawnJoinOn*[T](
+    tp: Taskpool, worker: untyped, args: varargs[untyped]
+): untyped =
+  ## Spawn `worker(ctx, args...)` on `tp` and join via `spawnJoin`.
+  ## Collapses the repetitive SpawnFn wrapper at every call site.
+  ## Returns `untyped` so the expansion's typed-raises future flows through.
+  spawnJoin[T](
+    proc(ctx: SharedPtr[TaskCtx[T]]) {.gcsafe, raises: [].} =
+      tp.spawn worker(ctx, args)
+  )
 
 const
   ## Duration of fairness time slot. If exceeded, operations yield.

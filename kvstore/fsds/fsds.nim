@@ -121,10 +121,7 @@ method hasImpl*(
   let
     keys = keys.deduplicate()
     paths = keys.mapIt(?self.path(it))
-    fut = spawnJoin[seq[string]](
-      proc(ctx: SharedPtr[TaskCtx[seq[string]]]) {.gcsafe, raises: [].} =
-        self.tp.spawn runHasTaskMany(ctx, addr paths)
-    )
+    fut = spawnJoinOn[seq[string]](self.tp, runHasTaskMany, addr paths)
 
   self.tasks.incl(fut)
   defer:
@@ -157,10 +154,7 @@ method getImpl*(
     # next loop iteration while this chunk's worker still runs - SharedPtr(move)
     # required.
     let sharedChunk = newSharedPtr(move chunk)
-    let fut = spawnJoin[seq[RawKVRecord]](
-      proc(ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]]) {.gcsafe, raises: [].} =
-        self.tp.spawn runGetTaskMany(ctx, sharedChunk)
-    )
+    let fut = spawnJoinOn[seq[RawKVRecord]](self.tp, runGetTaskMany, sharedChunk)
     self.tasks.incl(fut)
     chunkFuts.add(fut)
 
@@ -225,10 +219,7 @@ method putImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "FSKVStore is closed"))
 
-  let fut = spawnJoin[seq[Key]](
-    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runPutTaskMany(ctx, addr pairs, self.writeConfig)
-  )
+  let fut = spawnJoinOn[seq[Key]](self.tp, runPutTaskMany, addr pairs, self.writeConfig)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
@@ -258,10 +249,8 @@ method deleteImpl*(
     return failure(newException(KVStoreError, "FSKVStore is closed"))
 
   let recPairs = records.mapIt((?self.path(it.key), it))
-  let fut = spawnJoin[seq[Key]](
-    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runDeleteTaskMany(ctx, addr recPairs, self.writeConfig)
-  )
+  let fut =
+    spawnJoinOn[seq[Key]](self.tp, runDeleteTaskMany, addr recPairs, self.writeConfig)
   self.tasks.incl(fut)
   defer:
     self.tasks.excl(fut)
