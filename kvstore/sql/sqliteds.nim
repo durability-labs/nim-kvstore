@@ -306,10 +306,8 @@ method hasImpl*(
 
   if keys.len == 1:
     # Single-key optimization: use existing runHasTask
-    let fut = spawnJoin[bool](
-      proc(ctx: SharedPtr[TaskCtx[bool]]) {.gcsafe, raises: [].} =
-        self.tp.spawn runHasTask(ctx, addr self.db, addr self.lock, keys[0].id)
-    )
+    let fut =
+      spawnJoinOn[bool](self.tp, runHasTask, addr self.db, addr self.lock, keys[0].id)
     self.tasks.incl(fut)
     defer:
       self.tasks.excl(fut)
@@ -323,9 +321,8 @@ method hasImpl*(
     )
   else:
     # Multi-key path
-    let fut = spawnJoin[seq[Key]](
-      proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
-        self.tp.spawn runHasManyTask(ctx, addr self.db, addr self.lock, addr keys)
+    let fut = spawnJoinOn[seq[Key]](
+      self.tp, runHasManyTask, addr self.db, addr self.lock, addr keys
     )
     self.tasks.incl(fut)
     defer:
@@ -345,9 +342,8 @@ method getImpl*(
     return success(newSeq[RawKVRecord]())
 
   if keys.len == 1:
-    let fut = spawnJoin[?RawKVRecord](
-      proc(ctx: SharedPtr[TaskCtx[?RawKVRecord]]) {.gcsafe, raises: [].} =
-        self.tp.spawn runGetTask(ctx, addr self.db, addr self.lock, keys[0])
+    let fut = spawnJoinOn[?RawKVRecord](
+      self.tp, runGetTask, addr self.db, addr self.lock, keys[0]
     )
     self.tasks.incl(fut)
     defer:
@@ -364,9 +360,8 @@ method getImpl*(
 
     return success(@[rec.get])
   else:
-    let fut = spawnJoin[seq[RawKVRecord]](
-      proc(ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]]) {.gcsafe, raises: [].} =
-        self.tp.spawn runGetManyTask(ctx, addr self.db, addr self.lock, addr keys)
+    let fut = spawnJoinOn[seq[RawKVRecord]](
+      self.tp, runGetManyTask, addr self.db, addr self.lock, addr keys
     )
     self.tasks.incl(fut)
     defer:
@@ -387,11 +382,8 @@ method putImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let fut = spawnJoin[seq[Key]](
-    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runPutTask(
-        ctx, addr self.db, addr self.lock, addr records, self.readOnly
-      )
+  let fut = spawnJoinOn[seq[Key]](
+    self.tp, runPutTask, addr self.db, addr self.lock, addr records, self.readOnly
   )
   self.tasks.incl(fut)
   defer:
@@ -413,11 +405,8 @@ method deleteImpl*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let fut = spawnJoin[seq[Key]](
-    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runDeleteTask(
-        ctx, addr self.db, addr self.lock, addr records, self.readOnly
-      )
+  let fut = spawnJoinOn[seq[Key]](
+    self.tp, runDeleteTask, addr self.db, addr self.lock, addr records, self.readOnly
   )
   self.tasks.incl(fut)
   defer:
@@ -450,11 +439,8 @@ method putAtomicImpl*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let fut = spawnJoin[seq[Key]](
-    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runPutAtomicTask(
-        ctx, addr self.db, addr self.lock, addr records, self.readOnly
-      )
+  let fut = spawnJoinOn[seq[Key]](
+    self.tp, runPutAtomicTask, addr self.db, addr self.lock, addr records, self.readOnly
   )
   self.tasks.incl(fut)
   defer:
@@ -480,11 +466,13 @@ method deleteAtomicImpl*(
   if records.len == 0:
     return success(newSeq[Key]())
 
-  let fut = spawnJoin[seq[Key]](
-    proc(ctx: SharedPtr[TaskCtx[seq[Key]]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runDeleteAtomicTask(
-        ctx, addr self.db, addr self.lock, addr records, self.readOnly
-      )
+  let fut = spawnJoinOn[seq[Key]](
+    self.tp,
+    runDeleteAtomicTask,
+    addr self.db,
+    addr self.lock,
+    addr records,
+    self.readOnly,
   )
   self.tasks.incl(fut)
   defer:
@@ -511,11 +499,14 @@ method moveKeysAtomicImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let fut = spawnJoin[void](
-    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runMoveTask(
-        ctx, addr self.db, addr self.lock, oldPrefix, newPrefix, self.readOnly
-      )
+  let fut = spawnJoinOn[void](
+    self.tp,
+    runMoveTask,
+    addr self.db,
+    addr self.lock,
+    oldPrefix,
+    newPrefix,
+    self.readOnly,
   )
   self.tasks.incl(fut)
   defer:
@@ -538,11 +529,8 @@ method moveKeysAtomicImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let fut = spawnJoin[void](
-    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runMoveMultiTask(
-        ctx, addr self.db, addr self.lock, addr moves, self.readOnly
-      )
+  let fut = spawnJoinOn[void](
+    self.tp, runMoveMultiTask, addr self.db, addr self.lock, addr moves, self.readOnly
   )
   self.tasks.incl(fut)
   defer:
@@ -564,11 +552,8 @@ method dropPrefixImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let fut = spawnJoin[void](
-    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runDropPrefixTask(
-        ctx, addr self.db, addr self.lock, prefix, self.readOnly
-      )
+  let fut = spawnJoinOn[void](
+    self.tp, runDropPrefixTask, addr self.db, addr self.lock, prefix, self.readOnly
   )
   self.tasks.incl(fut)
   defer:
@@ -590,11 +575,13 @@ method dropPrefixImpl*(
   if self.closed:
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
-  let fut = spawnJoin[void](
-    proc(ctx: SharedPtr[TaskCtx[void]]) {.gcsafe, raises: [].} =
-      self.tp.spawn runDropPrefixMultiTask(
-        ctx, addr self.db, addr self.lock, addr prefixes, self.readOnly
-      )
+  let fut = spawnJoinOn[void](
+    self.tp,
+    runDropPrefixMultiTask,
+    addr self.db,
+    addr self.lock,
+    addr prefixes,
+    self.readOnly,
   )
   self.tasks.incl(fut)
   defer:
