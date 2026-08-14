@@ -38,7 +38,7 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(oldPrefix, newPrefix)
       check result.isErr
-      check result.error of KVStoreError
+      check result.error of KVConflictError
       check "Move failed" in result.error.msg
 
       # Source should still exist (rolled back)
@@ -58,7 +58,7 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(oldPrefix, newPrefix)
       check result.isErr
-      check result.error of KVStoreError
+      check result.error of KVConflictError
       check "Move failed" in result.error.msg
 
       # Both source keys should still exist (all-or-nothing rollback)
@@ -170,7 +170,7 @@ proc moveTests*(ds: KVStore, key: Key) =
 
       let result = await ds.moveKeysAtomic(@[(oldA, newA), (oldB, newB)])
       check result.isErr
-      check result.error of KVStoreError
+      check result.error of KVConflictError
       check "Move failed" in result.error.msg
 
       # ALL source keys should still exist (entire transaction rolled back)
