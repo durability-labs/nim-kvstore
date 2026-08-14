@@ -161,6 +161,43 @@ suite "fromSpawn":
     check converted.error of KVStoreError
     check converted.error.msg == "worker failure"
 
+  test "maps encoded conflict kind to KVConflictError":
+    let res = Result[int, string].err("conflict:destination exists")
+
+    let converted = res.fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVConflictError
+    check converted.error.msg == "destination exists"
+
+  test "maps encoded keyNotFound kind to KVStoreKeyNotFound":
+    let res = Result[int, string].err("keyNotFound:no such key")
+
+    let converted = res.fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVStoreKeyNotFound
+    check converted.error.msg == "no such key"
+
+  test "roundtrips a typed conflict through encode and decode":
+    let conflictErr = newException(KVConflictError, "move blocked")
+    let res = Result[int, ref CatchableError].err(conflictErr)
+
+    let converted = res.toSpawnRes().fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVConflictError
+    check converted.error.msg == "move blocked"
+
+  test "keeps the message intact when it contains a colon":
+    let res = Result[int, string].err("generic:move failed: retry later")
+
+    let converted = res.fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVStoreError
+    check converted.error.msg == "move failed: retry later"
+
 suite "toKVStoreError":
   test "preserves KVStoreError subtypes":
     let conflictErr = newException(KVConflictError, "test conflict")

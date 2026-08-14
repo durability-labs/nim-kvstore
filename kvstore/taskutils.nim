@@ -11,6 +11,7 @@ when not compileOption("threads"):
 
 import std/locks
 import std/hashes
+import std/strutils
 
 import pkg/chronos
 import pkg/questionable/results
@@ -40,26 +41,76 @@ const
   TimeSlotDuration = 1.milliseconds
   LastCalledInterval = 10.milliseconds
 
+type KVStoreErrorKind* = enum
+  generic ## Unclassified backend failure.
+  conflict ## Destination already exists (move conflict).
+  keyNotFound ## Key absent from the store.
+
+proc encodeSpawnErr*(err: ref CatchableError): string =
+  ## Encode an error for the threadspawn string channel: a kind prefix
+  ## followed by the message.  The kind survives the thread boundary so the
+  ## public API can reconstruct the typed exception on unpack.
+  let kind =
+    if err of KVConflictError:
+      conflict
+    elif err of KVStoreKeyNotFound:
+      keyNotFound
+    else:
+      generic
+  $kind & ":" & err.msg
+
+proc decodeSpawnErr*(e: string): (KVStoreErrorKind, string) =
+  ## Split an encoded error back into kind and message.  Messages without
+  ## a kind prefix (plain worker strings) decode as generic.
+  let idx = e.find(':')
+  if idx < 0:
+    (generic, e)
+  else:
+    (parseEnum[KVStoreErrorKind](e[0 ..< idx], generic), e[idx + 1 .. ^1])
+
+template toSpawnRes*[T](exp: Result[T, ref CatchableError]): ThreadSpawnRes[T] =
+  ## Convert a worker result to the threadspawn channel, encoding the error
+  ## kind so the caller can reconstruct the typed exception.
+  exp.mapErr(
+    proc(e: ref CatchableError): string =
+      encodeSpawnErr(e)
+  )
+
 template fromSpawn*[T](res: ThreadSpawnRes[T]): ?!T =
   ## Convert a threadspawn bridge result to a KVStore error result.
-  ## The string error becomes a KVStoreError with the message preserved.
+  ## The encoded error kind is mapped back to the typed KVStore error;
+  ## the message is preserved.
   ## Restricted to ThreadSpawnRes: only string errors cross the thread
   ## boundary, and only they belong here.
   res.mapErr(
     proc(e: string): ref CatchableError =
-      newException(KVStoreError, e)
+      let (kind, msg) = decodeSpawnErr(e)
+      case kind
+      of conflict:
+        newException(KVConflictError, msg)
+      of keyNotFound:
+        newException(KVStoreKeyNotFound, msg)
+      of generic:
+        newException(KVStoreError, msg)
   )
 
 template toKVStoreError*[T](res: ?!T): ?!T =
   ## Normalize a spawnJoin result (caller-side ref errors) to KVStoreError:
-  ## KVStoreError subtypes are preserved, everything else is wrapped with
-  ## its message.
+  ## KVStoreError subtypes are preserved, everything else is decoded from
+  ## the threadspawn channel and mapped back to the typed error.
   res.mapErr(
     proc(e: ref CatchableError): ref CatchableError =
       if e of KVStoreError:
         e
       else:
-        newException(KVStoreError, e.msg)
+        let (kind, msg) = decodeSpawnErr(e.msg)
+        case kind
+        of conflict:
+          newException(KVConflictError, msg)
+        of keyNotFound:
+          newException(KVStoreKeyNotFound, msg)
+        of generic:
+          newException(KVStoreError, msg)
   )
 
 proc hash*(fut: FutureBase): Hash =

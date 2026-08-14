@@ -75,7 +75,7 @@ proc runHasTask(
 
   withLock(lock[]):
     var r = hasSync(db[], keyId)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runHasManyTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -90,7 +90,7 @@ proc runHasManyTask(
 
   withLock(lock[]):
     var r = hasManySync(db[], keys[])
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runGetTask(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
@@ -107,10 +107,10 @@ proc runGetTask(
       if err of KVStoreKeyNotFound:
         res = ThreadSpawnRes[?RawKVRecord].ok(RawKVRecord.none)
       else:
-        res = ThreadSpawnRes[?RawKVRecord].err(err.msg)
+        res = ThreadSpawnRes[?RawKVRecord].err(encodeSpawnErr(err))
     else:
       res = ThreadSpawnRes[?RawKVRecord].ok(some(r.value))
-    ctx[].result = unsafeIsolate(move res)
+    ctx[].result = isolate(move res)
 
 proc runGetManyTask(
     ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]],
@@ -125,7 +125,7 @@ proc runGetManyTask(
 
   withLock(lock[]):
     var r = getManySync(db[], keys[])
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runPutTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -141,7 +141,7 @@ proc runPutTask(
 
   withLock(lock[]):
     var r = putSync(db[], records[], readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runDeleteTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -157,7 +157,7 @@ proc runDeleteTask(
 
   withLock(lock[]):
     var r = deleteSync(db[], records[], readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runPutAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -173,7 +173,7 @@ proc runPutAtomicTask(
 
   withLock(lock[]):
     var r = putAtomicSync(db[], records[], readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runDeleteAtomicTask(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -189,7 +189,7 @@ proc runDeleteAtomicTask(
 
   withLock(lock[]):
     var r = deleteAtomicSync(db[], records[], readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runMoveTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -205,7 +205,7 @@ proc runMoveTask(
 
   withLock(lock[]):
     var r = moveSync(db[], oldPrefix, newPrefix, readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runMoveMultiTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -221,7 +221,7 @@ proc runMoveMultiTask(
 
   withLock(lock[]):
     var r = moveSyncMulti(db[], moves[], readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runDropPrefixTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -237,7 +237,7 @@ proc runDropPrefixTask(
 
   withLock(lock[]):
     var r = dropPrefixSync(db[], prefix, readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runDropPrefixMultiTask(
     ctx: SharedPtr[TaskCtx[void]],
@@ -253,7 +253,7 @@ proc runDropPrefixMultiTask(
 
   withLock(lock[]):
     var r = dropPrefixSyncMulti(db[], prefixes[], readOnly)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 proc runNextTask(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]],
@@ -272,18 +272,18 @@ proc runNextTask(
   # Check finished atomically before acquiring lock
   if finished[].load():
     var r = success(RawKVRecord.none)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
     return
 
   withLock(lock[]):
     # Double-check after acquiring lock
     if finished[].load():
       var r = success(RawKVRecord.none)
-      ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+      ctx[].result = isolate(toSpawnRes(move r))
       return
 
     var r = nextSync(stmt[], queryValue)
-    ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+    ctx[].result = isolate(toSpawnRes(move r))
 
 # =============================================================================
 # Async Methods (public API)

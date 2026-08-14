@@ -306,7 +306,7 @@ proc runHasTask*(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
       warn "fireSync failed in runHasTask", error = res.error
 
   var r = success(isFile(path))
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runHasTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[string]]], paths: ptr seq[string]
@@ -317,7 +317,7 @@ proc runHasTaskMany*(
       warn "fireSync failed in runHasTask", error = res.error
 
   var r = success(paths[].filterIt(isFile(it)))
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runGetTask*(
     ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key
@@ -328,7 +328,7 @@ proc runGetTask*(
       warn "fireSync failed in runGetTask", error = res.error
 
   var r = getSync(path, key)
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runGetTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]], keys: SharedPtr[seq[(string, Key)]]
@@ -339,7 +339,7 @@ proc runGetTaskMany*(
       warn "fireSync failed in runGetTask", error = res.error
 
   var r = getSyncMany(keys[])
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runPutTask*(
     ctx: SharedPtr[TaskCtx[void]],
@@ -352,7 +352,7 @@ proc runPutTask*(
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
   var r = putSync(path, record, config)
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runPutTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -364,7 +364,7 @@ proc runPutTaskMany*(
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
   var r = putSyncMany(records[], config)
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runDeleteTask*(
     ctx: SharedPtr[TaskCtx[void]],
@@ -377,7 +377,7 @@ proc runDeleteTask*(
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
   var r = deleteSync(path, record, config)
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runDeleteTaskMany*(
     ctx: SharedPtr[TaskCtx[seq[Key]]],
@@ -389,7 +389,7 @@ proc runDeleteTaskMany*(
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
   var r = deleteSyncMany(records[], config)
-  ctx[].result = unsafeIsolate(mapThreadSpawnErr(move r))
+  ctx[].result = isolate(toSpawnRes(move r))
 
 proc runReadRecordTask*(
     ctx: SharedPtr[TaskCtx[?RawKVRecord]], path: string, key: Key, includeValue: bool
@@ -409,7 +409,7 @@ proc runReadRecordTask*(
     if err of KVStoreKeyNotFound:
       res = ThreadSpawnRes[?RawKVRecord].ok(RawKVRecord.none)
     else:
-      res = ThreadSpawnRes[?RawKVRecord].err(err.msg)
+      res = ThreadSpawnRes[?RawKVRecord].err(encodeSpawnErr(err))
   else:
     res = ThreadSpawnRes[?RawKVRecord].ok(some(r.value))
-  ctx[].result = unsafeIsolate(move res)
+  ctx[].result = isolate(move res)
