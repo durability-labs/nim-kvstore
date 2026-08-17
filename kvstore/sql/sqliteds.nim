@@ -66,7 +66,10 @@ proc `readOnly=`*(
 # =============================================================================
 
 proc runHasTask(
-    ctx: SharedPtr[TaskCtx[bool]], db: ptr SQLiteDsDb, lock: ptr Lock, keyId: string
+    ctx: SharedPtr[TaskCtx[bool, KVSpawnError]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    keyId: string,
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -75,10 +78,10 @@ proc runHasTask(
 
   withLock(lock[]):
     var r = hasSync(db[], keyId)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runHasManyTask(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[seq[Key], KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     keys: ptr seq[Key],
@@ -90,10 +93,13 @@ proc runHasManyTask(
 
   withLock(lock[]):
     var r = hasManySync(db[], keys[])
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runGetTask(
-    ctx: SharedPtr[TaskCtx[?RawKVRecord]], db: ptr SQLiteDsDb, lock: ptr Lock, key: Key
+    ctx: SharedPtr[TaskCtx[?RawKVRecord, KVSpawnError]],
+    db: ptr SQLiteDsDb,
+    lock: ptr Lock,
+    key: Key,
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -102,18 +108,18 @@ proc runGetTask(
 
   withLock(lock[]):
     let r = getSync(db[], key)
-    var res: ThreadSpawnRes[?RawKVRecord]
+    var res: ThreadSpawnRes[?RawKVRecord, KVSpawnError]
     if err =? r.errorOption:
       if err of KVStoreKeyNotFound:
-        res = ThreadSpawnRes[?RawKVRecord].ok(RawKVRecord.none)
+        res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(RawKVRecord.none)
       else:
-        res = ThreadSpawnRes[?RawKVRecord].err(encodeSpawnErr(err))
+        res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].err(toSpawnErr(err))
     else:
-      res = ThreadSpawnRes[?RawKVRecord].ok(some(r.value))
-    ctx[].result = isolate(move res)
+      res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(some(r.value))
+    ctx[].result = move res
 
 proc runGetManyTask(
-    ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]],
+    ctx: SharedPtr[TaskCtx[seq[RawKVRecord], KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     keys: ptr seq[Key],
@@ -125,10 +131,10 @@ proc runGetManyTask(
 
   withLock(lock[]):
     var r = getManySync(db[], keys[])
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runPutTask(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[seq[Key], KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: ptr seq[RawKVRecord],
@@ -141,10 +147,10 @@ proc runPutTask(
 
   withLock(lock[]):
     var r = putSync(db[], records[], readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runDeleteTask(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[seq[Key], KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: ptr seq[KeyKVRecord],
@@ -157,10 +163,10 @@ proc runDeleteTask(
 
   withLock(lock[]):
     var r = deleteSync(db[], records[], readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runPutAtomicTask(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[seq[Key], KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: ptr seq[RawKVRecord],
@@ -173,10 +179,10 @@ proc runPutAtomicTask(
 
   withLock(lock[]):
     var r = putAtomicSync(db[], records[], readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runDeleteAtomicTask(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[seq[Key], KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     records: ptr seq[KeyKVRecord],
@@ -189,10 +195,10 @@ proc runDeleteAtomicTask(
 
   withLock(lock[]):
     var r = deleteAtomicSync(db[], records[], readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runMoveTask(
-    ctx: SharedPtr[TaskCtx[void]],
+    ctx: SharedPtr[TaskCtx[void, KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     oldPrefix, newPrefix: Key,
@@ -205,10 +211,10 @@ proc runMoveTask(
 
   withLock(lock[]):
     var r = moveSync(db[], oldPrefix, newPrefix, readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runMoveMultiTask(
-    ctx: SharedPtr[TaskCtx[void]],
+    ctx: SharedPtr[TaskCtx[void, KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     moves: ptr seq[(Key, Key)],
@@ -221,10 +227,10 @@ proc runMoveMultiTask(
 
   withLock(lock[]):
     var r = moveSyncMulti(db[], moves[], readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runDropPrefixTask(
-    ctx: SharedPtr[TaskCtx[void]],
+    ctx: SharedPtr[TaskCtx[void, KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     prefix: Key,
@@ -237,10 +243,10 @@ proc runDropPrefixTask(
 
   withLock(lock[]):
     var r = dropPrefixSync(db[], prefix, readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runDropPrefixMultiTask(
-    ctx: SharedPtr[TaskCtx[void]],
+    ctx: SharedPtr[TaskCtx[void, KVSpawnError]],
     db: ptr SQLiteDsDb,
     lock: ptr Lock,
     prefixes: ptr seq[Key],
@@ -253,10 +259,10 @@ proc runDropPrefixMultiTask(
 
   withLock(lock[]):
     var r = dropPrefixSyncMulti(db[], prefixes[], readOnly)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 proc runNextTask(
-    ctx: SharedPtr[TaskCtx[?RawKVRecord]],
+    ctx: SharedPtr[TaskCtx[?RawKVRecord, KVSpawnError]],
     stmt: ptr RawStmtPtr,
     lock: ptr Lock,
     finished: ptr Atomic[bool],
@@ -272,18 +278,18 @@ proc runNextTask(
   # Check finished atomically before acquiring lock
   if finished[].load():
     var r = success(RawKVRecord.none)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
     return
 
   withLock(lock[]):
     # Double-check after acquiring lock
     if finished[].load():
       var r = success(RawKVRecord.none)
-      ctx[].result = isolate(toSpawnRes(move r))
+      ctx[].result = toSpawnRes(move r)
       return
 
     var r = nextSync(stmt[], queryValue)
-    ctx[].result = isolate(toSpawnRes(move r))
+    ctx[].result = toSpawnRes(move r)
 
 # =============================================================================
 # Async Methods (public API)
@@ -662,7 +668,7 @@ method queryImpl*(
     if state.finished.load():
       return success(RawKVRecord.none)
 
-    let ctx = newSharedPtr(TaskCtx[?RawKVRecord](signal: state.signal))
+    let ctx = newSharedPtr(TaskCtx[?RawKVRecord, KVSpawnError](signal: state.signal))
 
     let taskFut = signal.wait()
     if taskFut.failed():

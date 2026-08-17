@@ -368,7 +368,7 @@ method queryImpl*(
 
       let absPath = state.basePath / relPath
 
-      let ctx = newSharedPtr(TaskCtx[?RawKVRecord](signal: state.signal))
+      let ctx = newSharedPtr(TaskCtx[?RawKVRecord, KVSpawnError](signal: state.signal))
 
       let taskFut = signal.wait()
       if taskFut.failed():

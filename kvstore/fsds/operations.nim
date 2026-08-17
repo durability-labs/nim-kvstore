@@ -299,17 +299,17 @@ proc deleteSyncMany*(
 # Task Workers (top-level procs for threadpool)
 # =============================================================================
 
-proc runHasTask*(ctx: SharedPtr[TaskCtx[bool]], path: string) {.gcsafe.} =
+proc runHasTask*(ctx: SharedPtr[TaskCtx[bool, KVSpawnError]], path: string) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
     if res.isErr:
       warn "fireSync failed in runHasTask", error = res.error
 
   var r = success(isFile(path))
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runHasTaskMany*(
-    ctx: SharedPtr[TaskCtx[seq[string]]], paths: ptr seq[string]
+    ctx: SharedPtr[TaskCtx[seq[string], KVSpawnError]], paths: ptr seq[string]
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -317,10 +317,10 @@ proc runHasTaskMany*(
       warn "fireSync failed in runHasTask", error = res.error
 
   var r = success(paths[].filterIt(isFile(it)))
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runGetTask*(
-    ctx: SharedPtr[TaskCtx[RawKVRecord]], path: string, key: Key
+    ctx: SharedPtr[TaskCtx[RawKVRecord, KVSpawnError]], path: string, key: Key
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -328,10 +328,11 @@ proc runGetTask*(
       warn "fireSync failed in runGetTask", error = res.error
 
   var r = getSync(path, key)
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runGetTaskMany*(
-    ctx: SharedPtr[TaskCtx[seq[RawKVRecord]]], keys: SharedPtr[seq[(string, Key)]]
+    ctx: SharedPtr[TaskCtx[seq[RawKVRecord], KVSpawnError]],
+    keys: SharedPtr[seq[(string, Key)]],
 ) {.gcsafe.} =
   defer:
     let res = ctx[].signal.fireSync()
@@ -339,10 +340,10 @@ proc runGetTaskMany*(
       warn "fireSync failed in runGetTask", error = res.error
 
   var r = getSyncMany(keys[])
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runPutTask*(
-    ctx: SharedPtr[TaskCtx[void]],
+    ctx: SharedPtr[TaskCtx[void, KVSpawnError]],
     path: string,
     record: RawKVRecord,
     config: FsWriteConfig,
@@ -352,10 +353,10 @@ proc runPutTask*(
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
   var r = putSync(path, record, config)
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runPutTaskMany*(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[seq[Key], KVSpawnError]],
     records: ptr seq[(string, RawKVRecord)],
     config: FsWriteConfig,
 ) {.gcsafe.} =
@@ -364,10 +365,10 @@ proc runPutTaskMany*(
     if res.isErr:
       warn "fireSync failed in runPutTask", error = res.error
   var r = putSyncMany(records[], config)
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runDeleteTask*(
-    ctx: SharedPtr[TaskCtx[void]],
+    ctx: SharedPtr[TaskCtx[void, KVSpawnError]],
     path: string,
     record: KeyKVRecord,
     config: FsWriteConfig,
@@ -377,10 +378,10 @@ proc runDeleteTask*(
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
   var r = deleteSync(path, record, config)
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runDeleteTaskMany*(
-    ctx: SharedPtr[TaskCtx[seq[Key]]],
+    ctx: SharedPtr[TaskCtx[seq[Key], KVSpawnError]],
     records: ptr seq[(string, KeyKVRecord)],
     config: FsWriteConfig,
 ) {.gcsafe.} =
@@ -389,10 +390,13 @@ proc runDeleteTaskMany*(
     if res.isErr:
       warn "fireSync failed in runDeleteTask", error = res.error
   var r = deleteSyncMany(records[], config)
-  ctx[].result = isolate(toSpawnRes(move r))
+  ctx[].result = toSpawnRes(move r)
 
 proc runReadRecordTask*(
-    ctx: SharedPtr[TaskCtx[?RawKVRecord]], path: string, key: Key, includeValue: bool
+    ctx: SharedPtr[TaskCtx[?RawKVRecord, KVSpawnError]],
+    path: string,
+    key: Key,
+    includeValue: bool,
 ) {.gcsafe.} =
   ## Task worker for reading a single record from disk.
   ## Walker stepping happens on the async thread; this only does file I/O.
@@ -404,12 +408,12 @@ proc runReadRecordTask*(
       warn "fireSync failed in runReadRecordTask", error = res.error
 
   let r = readVersioned(path, key, includeValue)
-  var res: ThreadSpawnRes[?RawKVRecord]
+  var res: ThreadSpawnRes[?RawKVRecord, KVSpawnError]
   if err =? r.errorOption:
     if err of KVStoreKeyNotFound:
-      res = ThreadSpawnRes[?RawKVRecord].ok(RawKVRecord.none)
+      res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(RawKVRecord.none)
     else:
-      res = ThreadSpawnRes[?RawKVRecord].err(encodeSpawnErr(err))
+      res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].err(toSpawnErr(err))
   else:
-    res = ThreadSpawnRes[?RawKVRecord].ok(some(r.value))
-  ctx[].result = isolate(move res)
+    res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(some(r.value))
+  ctx[].result = move res

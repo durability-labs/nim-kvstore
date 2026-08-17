@@ -152,8 +152,9 @@ suite "batchChunks":
         check chunkCount == expectedChunks
 
 suite "fromSpawn":
-  test "converts string errors to KVStoreError with message preserved":
-    let res = Result[int, string].err("worker failure")
+  test "converts generic KVSpawnError to KVStoreError with message preserved":
+    let res =
+      Result[int, KVSpawnError].err(KVSpawnError(kind: Generic, msg: "worker failure"))
 
     let converted = res.fromSpawn()
 
@@ -161,8 +162,10 @@ suite "fromSpawn":
     check converted.error of KVStoreError
     check converted.error.msg == "worker failure"
 
-  test "maps encoded conflict kind to KVConflictError":
-    let res = Result[int, string].err("conflict:destination exists")
+  test "maps Conflict kind to KVConflictError":
+    let res = Result[int, KVSpawnError].err(
+      KVSpawnError(kind: Conflict, msg: "destination exists")
+    )
 
     let converted = res.fromSpawn()
 
@@ -170,8 +173,9 @@ suite "fromSpawn":
     check converted.error of KVConflictError
     check converted.error.msg == "destination exists"
 
-  test "maps encoded keyNotFound kind to KVStoreKeyNotFound":
-    let res = Result[int, string].err("keyNotFound:no such key")
+  test "maps KeyNotFound kind to KVStoreKeyNotFound":
+    let res =
+      Result[int, KVSpawnError].err(KVSpawnError(kind: KeyNotFound, msg: "no such key"))
 
     let converted = res.fromSpawn()
 
@@ -179,24 +183,57 @@ suite "fromSpawn":
     check converted.error of KVStoreKeyNotFound
     check converted.error.msg == "no such key"
 
-  test "roundtrips a typed conflict through encode and decode":
+  test "roundtrips a typed conflict through toSpawnRes and fromSpawn":
     let conflictErr = newException(KVConflictError, "move blocked")
     let res = Result[int, ref CatchableError].err(conflictErr)
 
-    let converted = res.toSpawnRes().fromSpawn()
+    var spawn = res.toSpawnRes()
+    let converted = extract(spawn).fromSpawn()
 
     check converted.isErr
     check converted.error of KVConflictError
     check converted.error.msg == "move blocked"
 
-  test "keeps the message intact when it contains a colon":
-    let res = Result[int, string].err("generic:move failed: retry later")
+  test "roundtrips a keyNotFound through toSpawnRes and fromSpawn":
+    let missingErr = newException(KVStoreKeyNotFound, "missing key")
+    let res = Result[int, ref CatchableError].err(missingErr)
 
-    let converted = res.fromSpawn()
+    var spawn = res.toSpawnRes()
+    let converted = extract(spawn).fromSpawn()
+
+    check converted.isErr
+    check converted.error of KVStoreKeyNotFound
+    check converted.error.msg == "missing key"
+
+  test "roundtrips a generic error through toSpawnRes and fromSpawn":
+    let genericErr = newException(KVStoreError, "backend failure")
+    let res = Result[int, ref CatchableError].err(genericErr)
+
+    var spawn = res.toSpawnRes()
+    let converted = extract(spawn).fromSpawn()
 
     check converted.isErr
     check converted.error of KVStoreError
-    check converted.error.msg == "move failed: retry later"
+    check converted.error.msg == "backend failure"
+
+  test "preserves a success payload through the spawn channel":
+    let res = Result[int, ref CatchableError].ok(42)
+
+    var spawn = res.toSpawnRes()
+    let converted = extract(spawn).fromSpawn()
+
+    check converted.isOk
+    check converted.get == 42
+
+suite "spawnErrToException":
+  test "preserves the message across the mapping":
+    let exc = spawnErrToException(KVSpawnError(kind: Generic, msg: "failure text"))
+    check exc.msg == "failure text"
+
+  test "maps each kind to the typed exception":
+    check spawnErrToException(KVSpawnError(kind: Generic, msg: "g")) of KVStoreError
+    check spawnErrToException(KVSpawnError(kind: Conflict, msg: "c")) of KVConflictError
+    check spawnErrToException(KVSpawnError(kind: KeyNotFound, msg: "k")) of KVStoreKeyNotFound
 
 suite "toKVStoreError":
   test "preserves KVStoreError subtypes":
@@ -209,12 +246,12 @@ suite "toKVStoreError":
     check converted.error of KVConflictError
     check converted.error.msg == "test conflict"
 
-  test "wraps generic CatchableError with message preserved":
-    let genericErr = newException(CatchableError, "generic error")
-    let res = Result[int, ref CatchableError].err(genericErr)
+  test "wraps non-KVStore errors (spawnJoin infrastructure failures)":
+    let spawnErr = newException(SpawnFailure, "signal creation failed")
+    let res = Result[int, ref CatchableError].err(spawnErr)
 
     let converted = res.toKVStoreError()
 
     check converted.isErr
     check converted.error of KVStoreError
-    check converted.error.msg == "generic error"
+    check converted.error.msg == "signal creation failed"
