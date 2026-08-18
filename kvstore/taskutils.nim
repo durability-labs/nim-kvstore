@@ -39,7 +39,10 @@ type KVSpawnError* = object
   kind*: KVStoreErrorKind
   msg*: string
 
-proc toSpawnErr*(err: ref CatchableError): KVSpawnError {.gcsafe, raises: [].} =
+proc `$`*(e: KVSpawnError): string =
+  e.msg
+
+proc toKVSpawnError*(err: ref CatchableError): KVSpawnError {.gcsafe, raises: [].} =
   ## Map a backend exception to the typed spawn channel error.  The kind
   ## survives the thread boundary so the public API can reconstruct the
   ## typed exception on unpack.
@@ -64,15 +67,27 @@ proc spawnErrToException*(e: KVSpawnError): ref CatchableError {.gcsafe, raises:
   of Generic:
     newException(KVStoreError, e.msg)
 
-template spawnJoinOn*[T, E = KVSpawnError](
+proc spawnJoinKVS*[T](
+    spawnFn: SpawnFn[T, KVSpawnError]
+): Future[Result[T, SpawnUserError[KVSpawnError]]] {.async: (raises: [CancelledError]).} =
+  ## Join a spawned worker, converting spawnJoin's raised contract failures
+  ## to SpawnUserError[KVSpawnError] with the generic kind, so store methods
+  ## keep surfacing typed failures instead of exceptions.
+  try:
+    await spawnJoin[T, KVSpawnError](spawnFn)
+  except SpawnContractError as e:
+    return err(toSpawnError(KVSpawnError(kind: Generic, msg: e.msg)))
+
+template spawnJoinOn*[T](
     tp: Taskpool, worker: untyped, args: varargs[untyped]
 ): untyped =
-  ## Spawn `worker(ctx, args...)` on `tp` and join via `spawnJoin`.
+  ## Spawn `worker(ctx, args...)` on `tp` and join via `spawnJoin`,
+  ## mapping contract failures to generic KVSpawnErrors.
   ## Collapses the repetitive SpawnFn wrapper at every call site.
   ## Returns `untyped` so the expansion's typed-raises future flows through.
-  let spawnFn = proc(ctx: SharedPtr[TaskCtx[T, E]]) {.gcsafe, raises: [].} =
+  let spawnFn = proc(ctx: SharedPtr[TaskCtx[T, KVSpawnError]]) {.gcsafe, raises: [].} =
     tp.spawn worker(ctx, args)
-  spawnJoin[T, E](spawnFn, errMap = spawnErrToException)
+  spawnJoinKVS[T](spawnFn)
 
 template toSpawnRes*[T](
     exp: Result[T, ref CatchableError]
@@ -82,26 +97,16 @@ template toSpawnRes*[T](
   ## isolated here, so callers must not wrap it again.
   isolate exp.mapErr(
     proc(e: ref CatchableError): KVSpawnError =
-      toSpawnErr(e)
+      toKVSpawnError(e)
   )
 
-template fromSpawn*[T](res: Result[T, KVSpawnError]): ?!T =
-  ## Convert an extracted threadspawn result to a KVStore error result.
-  ## The typed error kind is mapped back to the KVStore exception; the
-  ## message is preserved.
-  ## Restricted to ThreadSpawnRes[T, KVSpawnError] results.
-  res.mapErr(spawnErrToException)
-
-template toKVStoreError*[T](res: ?!T): ?!T =
-  ## Normalize a spawnJoin result (caller-side ref errors) to KVStoreError:
-  ## KVStoreError subtypes are preserved, everything else (spawnJoin
-  ## infrastructure failures such as signal creation) is wrapped.
+template fromSpawn*[T](res: Result[T, SpawnUserError[KVSpawnError]]): ?!T =
+  ## Convert a spawnJoin result to a KVStore error result.  The worker's
+  ## typed error (inside the SpawnUserError envelope) is mapped back to the
+  ## KVStore exception; the message is preserved.
   res.mapErr(
-    proc(e: ref CatchableError): ref CatchableError =
-      if e of KVStoreError:
-        e
-      else:
-        newException(KVStoreError, e.msg)
+    proc(e: SpawnUserError[KVSpawnError]): ref CatchableError =
+      spawnErrToException(e.error)
   )
 
 proc hash*(fut: FutureBase): Hash =
