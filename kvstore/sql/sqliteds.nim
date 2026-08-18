@@ -50,8 +50,7 @@ type
     finished*: Atomic[bool]
     isDisposed*: bool
     tp*: Taskpool # For spawning next() workers
-    signal: ThreadSignalPtr
-    iterTaskHandle*: Future[?!void] # Track outstanding iterator tasks
+    iterTaskHandle*: SpawnJoinFuture[?RawKVRecord] # Track outstanding iterator tasks
     queryValue*: bool # Whether to include value in results
 
 proc path*(self: SQLiteKVStore): cstring =
@@ -630,14 +629,10 @@ method queryImpl*(
     return failure(newException(KVStoreError, "SQLiteKVStore is closed"))
 
   # Prepare private statement (no store lock needed - SQLite FULLMUTEX handles it)
-  let
-    s = ?prepareQueryStmt(self.db.env, query)
-    signal =
-      ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
+  let s = ?prepareQueryStmt(self.db.env, query)
 
   # Create per-iterator state using module-level type
-  var state =
-    QueryIterState(stmt: s, tp: self.tp, queryValue: query.value, signal: signal)
+  var state = QueryIterState(stmt: s, tp: self.tp, queryValue: query.value)
   state.finished.store(false)
   state.isDisposed = false
   initLock(state.lock)
@@ -668,18 +663,14 @@ method queryImpl*(
     if state.finished.load():
       return success(RawKVRecord.none)
 
-    let ctx = newSharedPtr(TaskCtx[?RawKVRecord, KVSpawnError](signal: state.signal))
-
-    let taskFut = signal.wait()
-    if taskFut.failed():
-      state.finished.store(true)
-      return failure(taskFut.error())
-
-    state.tp.spawn runNextTask(
-      ctx, addr state.stmt, addr state.lock, addr state.finished, state.queryValue
+    let fut = spawnJoinOn[?RawKVRecord](
+      state.tp,
+      runNextTask,
+      addr state.stmt,
+      addr state.lock,
+      addr state.finished,
+      state.queryValue,
     )
-
-    let fut = awaitSpawn(taskFut)
 
     # disposer task handle for graceful dispose
     state.iterTaskHandle = fut
@@ -688,19 +679,10 @@ method queryImpl*(
       self.tasks.excl(fut)
       state.iterTaskHandle = nil
 
-    let awaited = await fut
-    if err =? awaited.errorOption:
-      state.finished.store(true)
-      return failure(err)
-
-    let r = extract(ctx[].result)
-      .mapErr(
-        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
-          toSpawnError(e)
-      )
-      .fromSpawn()
+    let r = (await fut).fromSpawn()
     if r.isErr or (r.isOk and r.get.isNone):
       state.finished.store(true)
+
     return r
 
   proc isFinished(): bool =
@@ -715,10 +697,6 @@ method queryImpl*(
       if not state.iterTaskHandle.isNil:
         await noCancel state.iterTaskHandle.cancelAndWait()
     finally:
-      if err =? state.signal.close().errorOption:
-        warn "signal.close failed in query next", error = err
-        # SharedPtr handles TaskCtx cleanup automatically
-
       # don't leak resources
       discard disposeStmtSync(state.stmt)
       deinitLock(state.lock)

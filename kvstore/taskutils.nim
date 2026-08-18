@@ -39,6 +39,10 @@ type KVSpawnError* = object
   kind*: KVStoreErrorKind
   msg*: string
 
+type SpawnJoinFuture*[T] = Future[Result[T, SpawnUserError[KVSpawnError]]]
+  ## Future type returned by spawnJoinKVS/spawnJoinOn, for fields that hold
+  ## outstanding task handles.
+
 proc `$`*(e: KVSpawnError): string =
   e.msg
 
@@ -92,13 +96,10 @@ template spawnJoinOn*[T](
 template toSpawnRes*[T](
     exp: Result[T, ref CatchableError]
 ): ThreadSpawnRes[T, KVSpawnError] =
-  ## Convert a worker result to the threadspawn channel, mapping the error
-  ## kind so the caller can reconstruct the typed exception.  The result is
-  ## isolated here, so callers must not wrap it again.
-  isolate exp.mapErr(
-    proc(e: ref CatchableError): KVSpawnError =
-      toKVSpawnError(e)
-  )
+  ## Worker-side boundary converter: `mapThreadSpawnErr` with the
+  ## kind-preserving `KVSpawnError` converter, so the caller can reconstruct
+  ## the typed exception.
+  mapThreadSpawnErr(exp, toKVSpawnError)
 
 template fromSpawn*[T](res: Result[T, SpawnUserError[KVSpawnError]]): ?!T =
   ## Convert a spawnJoin result to a KVStore error result.  The worker's

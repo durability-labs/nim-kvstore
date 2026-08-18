@@ -57,10 +57,9 @@ type
     queryValue: bool
     finished: bool
     isDisposed: bool
-    iterTaskHandle: Future[?!void]
+    iterTaskHandle: SpawnJoinFuture[?RawKVRecord]
     lock: AsyncLock
     tp: Taskpool
-    signal: ThreadSignalPtr
 
 proc validDepth*(self: FSKVStore, key: Key): bool =
   key.len <= self.depth
@@ -311,9 +310,6 @@ method queryImpl*(
       p.changeFileExt("")
 
   # Found a valid path - spawn worker to read the file
-  let signal =
-    ?ThreadSignalPtr.new().toKVError(context = "Failed to create signal for query")
-
   var state = FsQueryIterState(
     basePath: basePath,
     walker: dirWalker(basePath),
@@ -321,7 +317,6 @@ method queryImpl*(
     queryKey: query.key,
     queryValue: query.value,
     tp: self.tp,
-    signal: signal,
     lock: newAsyncLock(),
   )
   state.finished = false
@@ -372,15 +367,9 @@ method queryImpl*(
 
       let absPath = state.basePath / relPath
 
-      let ctx = newSharedPtr(TaskCtx[?RawKVRecord, KVSpawnError](signal: state.signal))
-
-      let taskFut = signal.wait()
-      if taskFut.failed():
-        state.finished = true
-        return failure(taskFut.error())
-
-      state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
-      let fut = awaitSpawn(taskFut)
+      let fut = spawnJoinOn[?RawKVRecord](
+        state.tp, runReadRecordTask, absPath, key, state.queryValue
+      )
 
       # disposer task handle for graceful dispose
       state.iterTaskHandle = fut
@@ -389,21 +378,14 @@ method queryImpl*(
         self.tasks.excl(fut)
         state.iterTaskHandle = nil
 
-      let awaited = await fut
-      if err =? awaited.errorOption:
+      without awaited =? (await fut).fromSpawn(), err:
         state.finished = true
         return failure(err)
 
-      let record =
-        ?extract(ctx[].result)
-        .mapErr(
-          proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
-            toSpawnError(e)
-        )
-        .fromSpawn()
-      if record.isNone:
+      if awaited.isNone:
         continue # file vanished between walk and read - skip it
-      return success(record)
+
+      return success awaited
 
   proc isFinished(): bool =
     state.finished
@@ -417,10 +399,6 @@ method queryImpl*(
       if not state.iterTaskHandle.isNil:
         await noCancel state.iterTaskHandle.cancelAndWait()
     finally:
-      if err =? state.signal.close().errorOption:
-        warn "signal.close failed in query next", error = err
-        # SharedPtr handles TaskCtx cleanup automatically
-
       if state.lock.locked:
         if err =? catch(state.lock.release()).errorOption:
           state.finished = true
