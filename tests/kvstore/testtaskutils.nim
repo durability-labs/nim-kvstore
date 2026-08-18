@@ -153,8 +153,9 @@ suite "batchChunks":
 
 suite "fromSpawn":
   test "converts generic KVSpawnError to KVStoreError with message preserved":
-    let res =
-      Result[int, KVSpawnError].err(KVSpawnError(kind: Generic, msg: "worker failure"))
+    let res = Result[int, SpawnUserError[KVSpawnError]].err(
+      toSpawnError(KVSpawnError(kind: Generic, msg: "worker failure"))
+    )
 
     let converted = res.fromSpawn()
 
@@ -163,8 +164,8 @@ suite "fromSpawn":
     check converted.error.msg == "worker failure"
 
   test "maps Conflict kind to KVConflictError":
-    let res = Result[int, KVSpawnError].err(
-      KVSpawnError(kind: Conflict, msg: "destination exists")
+    let res = Result[int, SpawnUserError[KVSpawnError]].err(
+      toSpawnError(KVSpawnError(kind: Conflict, msg: "destination exists"))
     )
 
     let converted = res.fromSpawn()
@@ -174,8 +175,9 @@ suite "fromSpawn":
     check converted.error.msg == "destination exists"
 
   test "maps KeyNotFound kind to KVStoreKeyNotFound":
-    let res =
-      Result[int, KVSpawnError].err(KVSpawnError(kind: KeyNotFound, msg: "no such key"))
+    let res = Result[int, SpawnUserError[KVSpawnError]].err(
+      toSpawnError(KVSpawnError(kind: KeyNotFound, msg: "no such key"))
+    )
 
     let converted = res.fromSpawn()
 
@@ -183,34 +185,49 @@ suite "fromSpawn":
     check converted.error of KVStoreKeyNotFound
     check converted.error.msg == "no such key"
 
-  test "roundtrips a typed conflict through toSpawnRes and fromSpawn":
+  test "roundtrips a typed conflict through toSpawnRes, envelope, and fromSpawn":
     let conflictErr = newException(KVConflictError, "move blocked")
     let res = Result[int, ref CatchableError].err(conflictErr)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn).fromSpawn()
+    let converted = extract(spawn)
+      .mapErr(
+        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
+          toSpawnError(e)
+      )
+      .fromSpawn()
 
     check converted.isErr
     check converted.error of KVConflictError
     check converted.error.msg == "move blocked"
 
-  test "roundtrips a keyNotFound through toSpawnRes and fromSpawn":
+  test "roundtrips a keyNotFound through toSpawnRes, envelope, and fromSpawn":
     let missingErr = newException(KVStoreKeyNotFound, "missing key")
     let res = Result[int, ref CatchableError].err(missingErr)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn).fromSpawn()
+    let converted = extract(spawn)
+      .mapErr(
+        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
+          toSpawnError(e)
+      )
+      .fromSpawn()
 
     check converted.isErr
     check converted.error of KVStoreKeyNotFound
     check converted.error.msg == "missing key"
 
-  test "roundtrips a generic error through toSpawnRes and fromSpawn":
+  test "roundtrips a generic error through toSpawnRes, envelope, and fromSpawn":
     let genericErr = newException(KVStoreError, "backend failure")
     let res = Result[int, ref CatchableError].err(genericErr)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn).fromSpawn()
+    let converted = extract(spawn)
+      .mapErr(
+        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
+          toSpawnError(e)
+      )
+      .fromSpawn()
 
     check converted.isErr
     check converted.error of KVStoreError
@@ -220,7 +237,12 @@ suite "fromSpawn":
     let res = Result[int, ref CatchableError].ok(42)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn).fromSpawn()
+    let converted = extract(spawn)
+      .mapErr(
+        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
+          toSpawnError(e)
+      )
+      .fromSpawn()
 
     check converted.isOk
     check converted.get == 42
@@ -233,25 +255,5 @@ suite "spawnErrToException":
   test "maps each kind to the typed exception":
     check spawnErrToException(KVSpawnError(kind: Generic, msg: "g")) of KVStoreError
     check spawnErrToException(KVSpawnError(kind: Conflict, msg: "c")) of KVConflictError
-    check spawnErrToException(KVSpawnError(kind: KeyNotFound, msg: "k")) of KVStoreKeyNotFound
-
-suite "toKVStoreError":
-  test "preserves KVStoreError subtypes":
-    let conflictErr = newException(KVConflictError, "test conflict")
-    let res = Result[int, ref CatchableError].err(conflictErr)
-
-    let converted = res.toKVStoreError()
-
-    check converted.isErr
-    check converted.error of KVConflictError
-    check converted.error.msg == "test conflict"
-
-  test "wraps non-KVStore errors (spawnJoin infrastructure failures)":
-    let spawnErr = newException(SpawnFailure, "signal creation failed")
-    let res = Result[int, ref CatchableError].err(spawnErr)
-
-    let converted = res.toKVStoreError()
-
-    check converted.isErr
-    check converted.error of KVStoreError
-    check converted.error.msg == "signal creation failed"
+    check spawnErrToException(KVSpawnError(kind: KeyNotFound, msg: "k")) of
+      KVStoreKeyNotFound

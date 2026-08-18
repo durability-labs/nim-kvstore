@@ -113,7 +113,7 @@ proc runGetTask(
       if err of KVStoreKeyNotFound:
         res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(RawKVRecord.none)
       else:
-        res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].err(toSpawnErr(err))
+        res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].err(toKVSpawnError(err))
     else:
       res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(some(r.value))
     ctx[].result = move res
@@ -318,7 +318,7 @@ method hasImpl*(
     defer:
       self.tasks.excl(fut)
 
-    let exists = ?((await fut).toKVStoreError())
+    let exists = ?((await fut).fromSpawn())
     return success(
       if exists:
         @[keys[0]]
@@ -334,7 +334,7 @@ method hasImpl*(
     defer:
       self.tasks.excl(fut)
 
-    return success ?((await fut).toKVStoreError())
+    return success ?((await fut).fromSpawn())
 
 method getImpl*(
     self: SQLiteKVStore, keys: seq[Key]
@@ -356,7 +356,7 @@ method getImpl*(
       self.tasks.excl(fut)
 
     # Match batch get semantics: return empty seq for missing key, not error
-    without rec =? (await fut).toKVStoreError(), err:
+    without rec =? (await fut).fromSpawn(), err:
       return failure(err)
     if rec.isNone:
       return success(newSeq[RawKVRecord]())
@@ -373,7 +373,7 @@ method getImpl*(
     defer:
       self.tasks.excl(fut)
 
-    let records = ?((await fut).toKVStoreError())
+    let records = ?((await fut).fromSpawn())
     when defined(kvstore_expensive_metrics):
       for record in records:
         kvstore_sql_get_value_bytes.observe(record.val.len.float64)
@@ -395,7 +395,7 @@ method putImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let skipped = ?((await fut).toKVStoreError())
+  let skipped = ?((await fut).fromSpawn())
   if skipped.len > 0:
     kvstore_sql_put_conflict_total.inc(skipped.len.int64)
   return success(skipped)
@@ -418,7 +418,7 @@ method deleteImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let skipped = ?((await fut).toKVStoreError())
+  let skipped = ?((await fut).fromSpawn())
   if skipped.len > 0:
     kvstore_sql_delete_conflict_total.inc(skipped.len.int64)
   return success(skipped)
@@ -452,7 +452,7 @@ method putAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let conflicts = ?((await fut).toKVStoreError())
+  let conflicts = ?((await fut).fromSpawn())
   if conflicts.len > 0:
     kvstore_sql_putatomic_conflict_total.inc(conflicts.len.int64)
     kvstore_sql_putatomic_rollback_total.inc()
@@ -484,7 +484,7 @@ method deleteAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let conflicts = ?((await fut).toKVStoreError())
+  let conflicts = ?((await fut).fromSpawn())
   if conflicts.len > 0:
     kvstore_sql_deleteatomic_conflict_total.inc(conflicts.len.int64)
     kvstore_sql_deleteatomic_rollback_total.inc()
@@ -518,7 +518,7 @@ method moveKeysAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).toKVStoreError()).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_moveatomic_error_total.inc()
     return failure(err)
 
@@ -542,7 +542,7 @@ method moveKeysAtomicImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).toKVStoreError()).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_moveatomic_error_total.inc()
     return failure(err)
 
@@ -565,7 +565,7 @@ method dropPrefixImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).toKVStoreError()).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_dropprefix_error_total.inc()
     return failure(err)
 
@@ -593,7 +593,7 @@ method dropPrefixImpl*(
   defer:
     self.tasks.excl(fut)
 
-  if err =? ((await fut).toKVStoreError()).errorOption:
+  if err =? ((await fut).fromSpawn()).errorOption:
     kvstore_sql_dropprefix_error_total.inc()
     return failure(err)
 
@@ -679,11 +679,7 @@ method queryImpl*(
       ctx, addr state.stmt, addr state.lock, addr state.finished, state.queryValue
     )
 
-    let fut = awaitSpawn(
-      taskFut,
-      onError = proc() {.async: (raises: []).} =
-        state.finished.store(true),
-    )
+    let fut = awaitSpawn(taskFut)
 
     # disposer task handle for graceful dispose
     state.iterTaskHandle = fut
@@ -692,9 +688,17 @@ method queryImpl*(
       self.tasks.excl(fut)
       state.iterTaskHandle = nil
 
-    ?await fut
+    let awaited = await fut
+    if err =? awaited.errorOption:
+      state.finished.store(true)
+      return failure(err)
 
-    let r = extract(ctx[].result).fromSpawn()
+    let r = extract(ctx[].result)
+      .mapErr(
+        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
+          toSpawnError(e)
+      )
+      .fromSpawn()
     if r.isErr or (r.isOk and r.get.isNone):
       state.finished.store(true)
     return r

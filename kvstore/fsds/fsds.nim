@@ -127,7 +127,7 @@ method hasImpl*(
   defer:
     self.tasks.excl(fut)
 
-  let hasPaths = (?((await fut).toKVStoreError())).toHashSet
+  let hasPaths = (?((await fut).fromSpawn())).toHashSet
 
   success keys.filterIt(?self.path(it) in hasPaths)
 
@@ -146,7 +146,11 @@ method getImpl*(
     # Parallel read - chunk keys and spawn multiple workers
     maxParallel = min(self.tp.numThreads, 8)
 
-  var chunkFuts: seq[Future[?!seq[RawKVRecord]].Raising([CancelledError])]
+  var chunkFuts: seq[
+    Future[Result[seq[RawKVRecord], SpawnUserError[KVSpawnError]]].Raising(
+      [CancelledError]
+    )
+  ]
 
   batchChunks(keyPaths, maxParallel, chunk):
     trace "Getting batch chunk", size = chunk.len, chunkIdx
@@ -167,7 +171,7 @@ method getImpl*(
   # Check for errors and collect results
   var allRecords: seq[RawKVRecord]
   for fut in chunkFuts:
-    allRecords.add(?((await fut).toKVStoreError()))
+    allRecords.add(?((await fut).fromSpawn()))
     trace "Got records from store", records = allRecords.len
 
   when defined(kvstore_expensive_metrics):
@@ -224,7 +228,7 @@ method putImpl*(
   defer:
     self.tasks.excl(fut)
 
-  return success ?((await fut).toKVStoreError())
+  return success ?((await fut).fromSpawn())
 
 method deleteImpl*(
     self: FSKVStore, records: seq[KeyKVRecord]
@@ -255,7 +259,7 @@ method deleteImpl*(
   defer:
     self.tasks.excl(fut)
 
-  return success ?((await fut).toKVStoreError())
+  return success ?((await fut).fromSpawn())
 
 method closeImpl*(self: FSKVStore): Future[?!void] {.async: (raises: []).} =
   if self.closed:
@@ -376,11 +380,7 @@ method queryImpl*(
         return failure(taskFut.error())
 
       state.tp.spawn runReadRecordTask(ctx, absPath, key, state.queryValue)
-      let fut = awaitSpawn(
-        taskFut,
-        onError = proc() {.async: (raises: []).} =
-          state.finished = true,
-      )
+      let fut = awaitSpawn(taskFut)
 
       # disposer task handle for graceful dispose
       state.iterTaskHandle = fut
@@ -389,9 +389,18 @@ method queryImpl*(
         self.tasks.excl(fut)
         state.iterTaskHandle = nil
 
-      ?await fut
+      let awaited = await fut
+      if err =? awaited.errorOption:
+        state.finished = true
+        return failure(err)
 
-      let record = ?extract(ctx[].result).fromSpawn()
+      let record =
+        ?extract(ctx[].result)
+        .mapErr(
+          proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
+            toSpawnError(e)
+        )
+        .fromSpawn()
       if record.isNone:
         continue # file vanished between walk and read - skip it
       return success(record)

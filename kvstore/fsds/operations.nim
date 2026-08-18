@@ -413,7 +413,7 @@ proc runReadRecordTask*(
     if err of KVStoreKeyNotFound:
       res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(RawKVRecord.none)
     else:
-      res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].err(toSpawnErr(err))
+      res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].err(toKVSpawnError(err))
   else:
     res = ThreadSpawnRes[?RawKVRecord, KVSpawnError].ok(some(r.value))
   ctx[].result = move res
