@@ -190,12 +190,7 @@ suite "fromSpawn":
     let res = Result[int, ref CatchableError].err(conflictErr)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn)
-      .mapErr(
-        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
-          toSpawnError(e)
-      )
-      .fromSpawn()
+    let converted = extract(spawn).mapErr(toSpawnError).fromSpawn()
 
     check converted.isErr
     check converted.error of KVConflictError
@@ -206,12 +201,7 @@ suite "fromSpawn":
     let res = Result[int, ref CatchableError].err(missingErr)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn)
-      .mapErr(
-        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
-          toSpawnError(e)
-      )
-      .fromSpawn()
+    let converted = extract(spawn).mapErr(toSpawnError).fromSpawn()
 
     check converted.isErr
     check converted.error of KVStoreKeyNotFound
@@ -222,12 +212,7 @@ suite "fromSpawn":
     let res = Result[int, ref CatchableError].err(genericErr)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn)
-      .mapErr(
-        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
-          toSpawnError(e)
-      )
-      .fromSpawn()
+    let converted = extract(spawn).mapErr(toSpawnError).fromSpawn()
 
     check converted.isErr
     check converted.error of KVStoreError
@@ -237,12 +222,7 @@ suite "fromSpawn":
     let res = Result[int, ref CatchableError].ok(42)
 
     var spawn = res.toSpawnRes()
-    let converted = extract(spawn)
-      .mapErr(
-        proc(e: KVSpawnError): SpawnUserError[KVSpawnError] =
-          toSpawnError(e)
-      )
-      .fromSpawn()
+    let converted = extract(spawn).mapErr(toSpawnError).fromSpawn()
 
     check converted.isOk
     check converted.get == 42
