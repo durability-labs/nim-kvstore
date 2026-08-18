@@ -15,7 +15,8 @@ requires "nim >= 2.0.14",
   "sqlite3_abi >= 3.47.0.0 & < 4.0.0.0", "stew >= 0.2.0 & < 0.5.0",
   "taskpools >= 0.0.5", "threading >= 0.2.1 & < 0.3.0",
   "unittest2 >= 0.2.3 & < 0.3.0",
-  "https://github.com/durability-labs/nim-threadspawn"
+  "https://github.com/durability-labs/nim-threadspawn#df7ed0a24bb93f44178678ed0ee1944b0ba1da7d",
+  "https://github.com/durability-labs/nim-iter#24723897da252aa48c72e5ffb7d8c1e35fefbb93"
 
 task coverage, "generates code coverage report":
   var (output, exitCode) = gorgeEx("which lcov")

@@ -207,6 +207,26 @@
       "checksums": {
         "sha1": "594ec27a467847166ef78767ff60e1c87d0f743f"
       }
+    },
+    "threadspawn": {
+      "version": "0.1.0",
+      "vcsRevision": "df7ed0a24bb93f44178678ed0ee1944b0ba1da7d",
+      "url": "https://github.com/durability-labs/nim-threadspawn",
+      "downloadMethod": "git",
+      "dependencies": [],
+      "checksums": {
+        "sha1": "ec1171aa7e9b2b105a2768d75527d8f333f7774b"
+      }
+    },
+    "iter": {
+      "version": "0.1.0",
+      "vcsRevision": "24723897da252aa48c72e5ffb7d8c1e35fefbb93",
+      "url": "https://github.com/durability-labs/nim-iter",
+      "downloadMethod": "git",
+      "dependencies": [],
+      "checksums": {
+        "sha1": "bce2e68bace1a89002ec13d3480ef6e843f4554b"
+      }
     }
   },
   "tasks": {}
