@@ -3,7 +3,7 @@ import std/os
 mode = ScriptMode.Verbose
 
 packageName = "kvstore"
-version = "0.1.0"
+version = "0.2.0"
 author = "nim-kvstore authors, Status Research & Development GmbH"
 description = "Simple, unified API for multiple data stores with optimistic concurrency control"
 license = "Apache License 2.0 or MIT"
